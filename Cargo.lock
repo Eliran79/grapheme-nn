@@ -254,6 +254,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-reason"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "grapheme-core",
+ "grapheme-memory",
+ "petgraph",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-train"
 version = "0.1.0"
 dependencies = [
