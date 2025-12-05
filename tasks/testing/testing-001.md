@@ -1,7 +1,7 @@
 ---
 id: testing-001
 title: Review Test Strategy and Benchmarking Plan
-status: todo
+status: done
 priority: medium
 tags:
 - testing
@@ -20,94 +20,136 @@ area: testing
 
 # Review Test Strategy and Benchmarking Plan
 
-> **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
+> **SESSION WORKFLOW NOTICE (for AI Agents):**
 >
 > **This task should be completed in ONE dedicated session.**
->
-> When you mark this task as `done`, you MUST:
-> 1. Fill the "Session Handoff" section at the bottom with complete implementation details
-> 2. Document what was changed, what runtime behavior to expect, and what dependencies were affected
-> 3. Create a clear handoff for the developer/next AI agent working on dependent tasks
->
-> **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Reviewed test coverage across all crates and enhanced the benchmark infrastructure to provide comprehensive performance measurements for the GRAPHEME project.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Review existing test coverage across all crates
+- [x] Review existing benchmark infrastructure
+- [x] Enhance benchmarks with comprehensive coverage
+- [x] Verify all benchmarks compile and run correctly
+- [x] All tests pass (106 tests)
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Audit test counts per crate (106 total: core=25, polish=32, math=13, engine=20, train=16)
+- [x] Fix train_bench.rs compilation errors (mutability, API usage)
+- [x] Enhance engine_bench.rs with symbolic differentiation benchmarks
+- [x] Enhance polish_bench.rs with parsing and conversion benchmarks
+- [x] Enhance math_bench.rs with graph construction and conversion benchmarks
+- [x] Enhance core_bench.rs with Unicode and scaling benchmarks
+- [x] Enhance train_bench.rs with dataset and GED benchmarks
+- [x] Verify all benchmarks run with `--test` flag
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+**Test Coverage:**
+- 106 tests total across 5 crates
+- grapheme-core: 25 tests
+- grapheme-polish: 32 tests
+- grapheme-math: 13 tests
+- grapheme-engine: 20 tests
+- grapheme-train: 16 tests
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+**Benchmark Coverage:**
+- engine_bench: 16 benchmarks (evaluation, symbolic, analysis, scaling)
+- polish_bench: 16 benchmarks (parsing, conversion, round-trip, scaling)
+- math_bench: 13 benchmarks (construction, conversion, operations, scaling)
+- core_bench: 17 benchmarks (text, unicode, math, operations, scaling)
+- train_bench: 13 benchmarks (generation, dataset, GED, scaling)
+
+**Build & Test:**
+- `cargo build` succeeds
+- `cargo test` passes (106 tests)
+- `cargo bench --bench <name> -- --test` succeeds for all 5 benches
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- All benchmarks use criterion crate with BenchmarkId for parameterized tests
+- Scaling benchmarks test performance at various depths/sizes
+- Unicode benchmarks cover CJK, Arabic, emoji, and math symbols
+- GED benchmarks use `compute_math()` for MathGraph comparison
+- SymbolicEngine requires instance creation (`SymbolicEngine::new()`)
+- Dataset::from_examples() takes name and examples parameters
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
-
-## Version Control
-
-**⚠️ CRITICAL: Always test AND run before committing!**
-
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] All 106 tests pass
+- [x] All 5 benchmark suites compile and run
 
 ## Updates
 - 2025-12-05: Task created
+- 2025-12-05: Enhanced all benchmark files with comprehensive coverage
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **grapheme-engine/benches/engine_bench.rs** - Enhanced from 2 to 16 benchmarks:
+  - Basic evaluation: simple, nested, deeply nested (10 levels)
+  - Function evaluation: sin, compound trig (sin^2 + cos^2)
+  - Symbolic engine: differentiate (simple, polynomial, trig), substitute, evaluate_at
+  - Expression analysis: builders, collect_symbols, depth, node_count
+  - Scaling: evaluation at depths 5, 10, 20, 50
+
+- **grapheme-polish/benches/polish_bench.rs** - Enhanced from 2 to 16 benchmarks:
+  - Parsing: simple, nested, deeply nested, functions, compound, polynomial, symbols, floats, negative
+  - Conversion: simple, nested, function, complex
+  - Round-trip: parse and convert
+  - Scaling: parse at depths 2, 4, 6, 8, 10
+
+- **grapheme-math/benches/math_bench.rs** - Enhanced from 2 to 13 benchmarks:
+  - Graph construction: simple, nested, deeply nested, functions, polynomial
+  - Graph conversion: simple, nested, deeply nested
+  - Round-trip: expr -> graph -> expr
+  - Graph operations: node_count, edge_count
+  - Scaling: construction and conversion at depths 5, 10, 20, 50
+
+- **grapheme-core/benches/core_bench.rs** - Enhanced from 3 to 17 benchmarks:
+  - Text to graph: short, medium, long
+  - Unicode: basic, CJK, Arabic, emoji, math symbols, mixed
+  - Mathematical text: expression, equation, calculus
+  - Graph operations: node_count, edge_count
+  - Scaling: text (1-50 repeats), unicode (1-50), word count (1-5)
+
+- **grapheme-train/benches/train_bench.rs** - Fixed and enhanced from 2 to 13 benchmarks:
+  - Fixed: mutability issues, API calls (from_examples, compute_math)
+  - Data generation: level1, level2, level3 (symbols), level5 (diff), curriculum, from_spec
+  - Dataset operations: creation, split, batch iterator, filter by level
+  - Graph edit distance: simple, nested
+  - Scaling: generation at sizes 10, 50, 100, 500
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Benchmarks are read-only and don't modify production code
+- All benchmarks use `black_box` to prevent compiler optimizations
+- Scaling benchmarks help identify performance bottlenecks
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- All benchmarks depend on criterion crate
+- engine_bench uses SymbolicEngine (requires instance creation)
+- train_bench uses Dataset, GraphEditDistance, CurriculumLevel from grapheme-train
+- No new dependencies added
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+```bash
+cargo build        # Should succeed
+cargo test         # 106 tests should pass
+cargo bench --bench engine_bench -- --test   # Verify benchmarks run
+cargo bench --bench polish_bench -- --test
+cargo bench --bench math_bench -- --test
+cargo bench --bench core_bench -- --test
+cargo bench --bench train_bench -- --test
+```
+
+To run full benchmarks:
+```bash
+cargo bench        # Run all benchmarks
+cargo bench --bench engine_bench   # Run specific benchmark suite
+```
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **testing-002** can proceed - benchmark infrastructure is complete
+- Key benchmarks now exist for all major components
+- Scaling benchmarks help track performance characteristics
+- Criterion reports are generated in `target/criterion/`
+- Future work: Add more edge case benchmarks, memory benchmarks
