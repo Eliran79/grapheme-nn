@@ -7,8 +7,7 @@ tags:
 - backend
 - algorithm
 - clique
-dependencies:
-- backend-008
+dependencies: []
 assignee: developer
 created: 2025-12-05T21:39:47.697874221Z
 estimate: ~

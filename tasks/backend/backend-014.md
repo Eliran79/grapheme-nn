@@ -8,7 +8,6 @@ tags:
 - validation
 - safety
 dependencies:
-- backend-008
 - backend-009
 assignee: developer
 created: 2025-12-05T21:52:58.768987970Z
