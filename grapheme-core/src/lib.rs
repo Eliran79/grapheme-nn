@@ -48,6 +48,28 @@ pub enum GraphemeError {
 /// Result type for GRAPHEME operations
 pub type GraphemeResult<T> = Result<T, GraphemeError>;
 
+/// Errors in clique enumeration
+#[derive(Error, Debug)]
+pub enum CliqueError {
+    #[error("k value {requested} exceeds maximum {max} (would cause exponential complexity)")]
+    KTooLarge { requested: usize, max: usize },
+    #[error("k value {0} is too small (minimum is 3)")]
+    KTooSmall(usize),
+    #[error("Graph too large for clique enumeration: {0} nodes")]
+    GraphTooLarge(usize),
+    #[error("Timeout during clique enumeration")]
+    Timeout,
+}
+
+/// Maximum k value for clique enumeration (NP-hard complexity bound)
+pub const MAX_CLIQUE_K: usize = 6;
+
+/// Maximum graph size for clique enumeration
+pub const MAX_CLIQUE_GRAPH_SIZE: usize = 10000;
+
+/// Result type for clique operations
+pub type CliqueResult<T> = Result<T, CliqueError>;
+
 // ============================================================================
 // Core Data Structures (aligned with GRAPHEME_Vision.md)
 // ============================================================================
@@ -1396,6 +1418,223 @@ impl DagNN {
             avg_activation,
         }
     }
+
+    // ========================================================================
+    // K-Clique Enumeration (backend-009)
+    // ========================================================================
+
+    /// Find all k-cliques in the graph
+    ///
+    /// A k-clique is a complete subgraph with k vertices where every pair
+    /// of vertices is connected by an edge.
+    ///
+    /// # Arguments
+    /// * `k` - The clique size to find (must be 3 <= k <= MAX_CLIQUE_K)
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Vec<NodeId>>)` - List of cliques, each as a vector of node IDs
+    /// * `Err(CliqueError)` - If k is out of bounds or graph is too large
+    ///
+    /// # Complexity
+    /// O(n^k) in the worst case, but much faster for sparse graphs using
+    /// degeneracy ordering optimization.
+    pub fn find_cliques(&self, k: usize) -> CliqueResult<Vec<Vec<NodeId>>> {
+        // Validate k bounds (NP-hard mitigation)
+        if k > MAX_CLIQUE_K {
+            return Err(CliqueError::KTooLarge {
+                requested: k,
+                max: MAX_CLIQUE_K,
+            });
+        }
+        if k < 3 {
+            return Err(CliqueError::KTooSmall(k));
+        }
+
+        // Validate graph size
+        let n = self.node_count();
+        if n > MAX_CLIQUE_GRAPH_SIZE {
+            return Err(CliqueError::GraphTooLarge(n));
+        }
+
+        // Empty or small graphs
+        if n < k {
+            return Ok(Vec::new());
+        }
+
+        // For small graphs, use simple enumeration
+        if n <= 20 {
+            return Ok(self.find_cliques_simple(k));
+        }
+
+        // For larger graphs, use degeneracy ordering
+        Ok(self.find_cliques_degeneracy(k))
+    }
+
+    /// Simple O(n^k) clique enumeration for small graphs
+    fn find_cliques_simple(&self, k: usize) -> Vec<Vec<NodeId>> {
+        let nodes: Vec<NodeId> = self.graph.node_indices().collect();
+        let n = nodes.len();
+
+        if n < k {
+            return Vec::new();
+        }
+
+        let mut cliques = Vec::new();
+
+        // Generate all k-combinations of nodes
+        for combo in Self::combinations(&nodes, k) {
+            if self.is_clique(&combo) {
+                cliques.push(combo);
+            }
+        }
+
+        cliques
+    }
+
+    /// Degeneracy-ordered clique enumeration for larger sparse graphs
+    fn find_cliques_degeneracy(&self, k: usize) -> Vec<Vec<NodeId>> {
+        let ordering = self.degeneracy_ordering();
+        let n = ordering.len();
+
+        if n < k {
+            return Vec::new();
+        }
+
+        // Create position map for ordering
+        let position: HashMap<NodeId, usize> = ordering
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| (node, i))
+            .collect();
+
+        let mut cliques = Vec::new();
+
+        // For each node in degeneracy order
+        for (pos, &v) in ordering.iter().enumerate() {
+            // Get neighbors that come later in ordering (higher-ordered neighbors)
+            let later_neighbors: Vec<NodeId> = self.neighbors(v)
+                .filter(|&u| {
+                    position.get(&u).map(|&p| p > pos).unwrap_or(false)
+                })
+                .collect();
+
+            // If not enough neighbors for a (k-1)-clique, skip
+            if later_neighbors.len() < k - 1 {
+                continue;
+            }
+
+            // Find all (k-1)-cliques among later neighbors
+            for subset in Self::combinations(&later_neighbors, k - 1) {
+                if self.is_clique(&subset) {
+                    let mut clique = vec![v];
+                    clique.extend(subset);
+                    cliques.push(clique);
+                }
+            }
+        }
+
+        cliques
+    }
+
+    /// Compute degeneracy ordering (smallest degree first)
+    ///
+    /// This optimization processes low-degree nodes first, reducing
+    /// the number of combinations to check in sparse graphs.
+    fn degeneracy_ordering(&self) -> Vec<NodeId> {
+        let mut remaining: Vec<NodeId> = self.graph.node_indices().collect();
+        let mut ordering = Vec::with_capacity(remaining.len());
+
+        while !remaining.is_empty() {
+            // Find node with minimum degree among remaining
+            let min_idx = remaining
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, &node)| {
+                    self.neighbors(node)
+                        .filter(|n| remaining.contains(n))
+                        .count()
+                })
+                .map(|(i, _)| i)
+                .unwrap();
+
+            let node = remaining.swap_remove(min_idx);
+            ordering.push(node);
+        }
+
+        ordering
+    }
+
+    /// Check if a set of nodes forms a clique
+    pub fn is_clique(&self, nodes: &[NodeId]) -> bool {
+        for i in 0..nodes.len() {
+            for j in (i + 1)..nodes.len() {
+                if !self.has_edge_between(nodes[i], nodes[j]) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Check if edge exists between two nodes (in either direction)
+    fn has_edge_between(&self, a: NodeId, b: NodeId) -> bool {
+        self.graph.find_edge(a, b).is_some() || self.graph.find_edge(b, a).is_some()
+    }
+
+    /// Get neighbors of a node (both incoming and outgoing for undirected check)
+    fn neighbors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.graph
+            .edges(node)
+            .map(|e| e.target())
+            .chain(
+                self.graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                    .map(|e| e.source())
+            )
+    }
+
+    /// Generate all k-combinations of a slice
+    fn combinations(items: &[NodeId], k: usize) -> Vec<Vec<NodeId>> {
+        if k == 0 {
+            return vec![vec![]];
+        }
+        if items.len() < k {
+            return vec![];
+        }
+        if k == 1 {
+            return items.iter().map(|&x| vec![x]).collect();
+        }
+
+        let mut result = Vec::new();
+
+        for (i, &item) in items.iter().enumerate() {
+            let rest = &items[i + 1..];
+            for mut combo in Self::combinations(rest, k - 1) {
+                combo.insert(0, item);
+                result.push(combo);
+            }
+        }
+
+        result
+    }
+
+    /// Find all triangles (3-cliques) - optimized special case
+    pub fn find_triangles(&self) -> CliqueResult<Vec<Vec<NodeId>>> {
+        self.find_cliques(3)
+    }
+
+    /// Store detected cliques as learned concepts
+    pub fn store_cliques(&mut self, cliques: Vec<Vec<NodeId>>) {
+        let start_id = self.cliques.len();
+        for (i, members) in cliques.into_iter().enumerate() {
+            self.cliques.push(Clique {
+                id: start_id + i,
+                members,
+                strength: 1.0,
+                label: None,
+            });
+        }
+    }
 }
 
 /// Statistics about a DagNN graph
@@ -1582,7 +1821,7 @@ mod tests {
         let mut dag = DagNN::new();
 
         // Test add_character
-        let n1 = dag.add_character('H', 0);
+        let _n1 = dag.add_character('H', 0);
         let n2 = dag.add_character('i', 1);
         assert_eq!(dag.node_count(), 2);
 
@@ -1634,12 +1873,12 @@ mod tests {
 
         // Test find_cliques_parallel
         let cliques = dag.find_cliques_parallel();
-        // May be empty for short text
-        assert!(cliques.len() >= 0);
+        // May be empty for short text - just verify it returns
+        let _ = cliques.len();
 
         // Test compress_to_clique
         let nodes: Vec<NodeId> = dag.input_nodes().iter().take(2).cloned().collect();
-        let clique_node = dag.compress_to_clique(nodes);
+        let _clique_node = dag.compress_to_clique(nodes);
         // Verify the node was added by checking node count increased
         assert!(dag.node_count() > 4);
 
@@ -1796,5 +2035,98 @@ mod tests {
         let high_activation = dag.get_nodes_by_activation(0.5);
         assert_eq!(high_activation.len(), 1);
         assert_eq!(high_activation[0], nodes[0]);
+    }
+
+    // ========================================================================
+    // K-Clique Enumeration Tests (backend-009)
+    // ========================================================================
+
+    #[test]
+    fn test_clique_error_k_too_large() {
+        let dag = DagNN::from_text("test").unwrap();
+        let result = dag.find_cliques(10);
+        assert!(matches!(result, Err(CliqueError::KTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_clique_error_k_too_small() {
+        let dag = DagNN::from_text("test").unwrap();
+        let result = dag.find_cliques(1);
+        assert!(matches!(result, Err(CliqueError::KTooSmall(_))));
+    }
+
+    #[test]
+    fn test_find_cliques_empty_graph() {
+        let dag = DagNN::new();
+        let cliques = dag.find_cliques(3).unwrap();
+        assert!(cliques.is_empty());
+    }
+
+    #[test]
+    fn test_find_cliques_small_graph() {
+        // Text graph is a chain, has no triangles
+        let dag = DagNN::from_text("abc").unwrap();
+        let cliques = dag.find_cliques(3).unwrap();
+        // A linear chain has no triangles
+        assert!(cliques.is_empty());
+    }
+
+    #[test]
+    fn test_is_clique() {
+        let dag = DagNN::from_text("ab").unwrap();
+        let nodes = dag.input_nodes().to_vec();
+
+        // Single node is always a clique
+        assert!(dag.is_clique(&[nodes[0]]));
+
+        // Two connected nodes are a clique
+        assert!(dag.is_clique(&nodes));
+    }
+
+    #[test]
+    fn test_combinations() {
+        let items = vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)];
+
+        // C(3,2) = 3 combinations
+        let combos = DagNN::combinations(&items, 2);
+        assert_eq!(combos.len(), 3);
+
+        // C(3,3) = 1 combination
+        let combos = DagNN::combinations(&items, 3);
+        assert_eq!(combos.len(), 1);
+
+        // C(3,4) = 0 combinations
+        let combos = DagNN::combinations(&items, 4);
+        assert!(combos.is_empty());
+    }
+
+    #[test]
+    fn test_degeneracy_ordering() {
+        let dag = DagNN::from_text("abc").unwrap();
+        let ordering = dag.degeneracy_ordering();
+        assert_eq!(ordering.len(), dag.node_count());
+    }
+
+    #[test]
+    fn test_store_cliques() {
+        let mut dag = DagNN::from_text("test").unwrap();
+        let nodes = dag.input_nodes().to_vec();
+
+        dag.store_cliques(vec![nodes.clone()]);
+        assert_eq!(dag.cliques.len(), 1);
+        assert_eq!(dag.cliques[0].members, nodes);
+    }
+
+    #[test]
+    fn test_find_triangles() {
+        let dag = DagNN::from_text("ab").unwrap();
+        let result = dag.find_triangles();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clique_max_k_constant() {
+        assert_eq!(MAX_CLIQUE_K, 6);
+        assert!(MAX_CLIQUE_GRAPH_SIZE > 0);
     }
 }

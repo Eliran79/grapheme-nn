@@ -1,7 +1,7 @@
 ---
 id: backend-009
 title: Implement fixed-k clique enumeration
-status: todo
+status: done
 priority: medium
 tags:
 - backend
