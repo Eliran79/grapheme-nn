@@ -219,11 +219,340 @@ impl MathGraph {
     }
 }
 
+// ============================================================================
+// Math Intent (extracted from expressions)
+// ============================================================================
+
+/// Mathematical intent extracted from an expression
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MathIntent {
+    /// Arithmetic computation (2 + 3)
+    Compute,
+    /// Simplification (x + 0 → x)
+    Simplify,
+    /// Solve equation (x + 2 = 5 → x = 3)
+    Solve,
+    /// Evaluate at point (f(x) at x=2)
+    Evaluate,
+    /// Differentiate (d/dx of x²)
+    Differentiate,
+    /// Integrate (∫x dx)
+    Integrate,
+    /// Factor expression (x² - 1 → (x-1)(x+1))
+    Factor,
+    /// Expand expression ((x+1)² → x² + 2x + 1)
+    Expand,
+}
+
+/// Extracted math problem with intent and components
+#[derive(Debug, Clone)]
+pub struct MathProblem {
+    /// The identified intent
+    pub intent: MathIntent,
+    /// The main expression
+    pub expression: Expr,
+    /// Variable of interest (for calculus operations)
+    pub variable: Option<String>,
+    /// Bounds (for definite integrals)
+    pub bounds: Option<(f64, f64)>,
+    /// Expected result (if known)
+    pub expected: Option<f64>,
+}
+
+// ============================================================================
+// Simplification Rules
+// ============================================================================
+
+/// A simplification rule for algebraic expressions
+#[derive(Debug, Clone)]
+pub struct SimplificationRule {
+    /// Rule name
+    pub name: &'static str,
+    /// Description
+    pub description: &'static str,
+}
+
+impl SimplificationRule {
+    /// Identity rules (x + 0 = x, x * 1 = x, etc.)
+    pub const ADDITIVE_IDENTITY: Self = SimplificationRule {
+        name: "additive_identity",
+        description: "x + 0 = x",
+    };
+
+    pub const MULTIPLICATIVE_IDENTITY: Self = SimplificationRule {
+        name: "multiplicative_identity",
+        description: "x * 1 = x",
+    };
+
+    pub const ZERO_PRODUCT: Self = SimplificationRule {
+        name: "zero_product",
+        description: "x * 0 = 0",
+    };
+
+    pub const ADDITIVE_INVERSE: Self = SimplificationRule {
+        name: "additive_inverse",
+        description: "x - x = 0",
+    };
+
+    pub const DIVISION_IDENTITY: Self = SimplificationRule {
+        name: "division_identity",
+        description: "x / 1 = x",
+    };
+
+    pub const POWER_ONE: Self = SimplificationRule {
+        name: "power_one",
+        description: "x ^ 1 = x",
+    };
+
+    pub const POWER_ZERO: Self = SimplificationRule {
+        name: "power_zero",
+        description: "x ^ 0 = 1",
+    };
+}
+
+// ============================================================================
+// Math Transformer
+// ============================================================================
+
+/// Transformer for applying algebraic transformations to expressions
+#[derive(Debug, Default)]
+pub struct MathTransformer {
+    /// Applied rules during transformation
+    applied_rules: Vec<SimplificationRule>,
+}
+
+impl MathTransformer {
+    /// Create a new transformer
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Simplify an expression by applying algebraic rules
+    pub fn simplify(&mut self, expr: &Expr) -> Expr {
+        self.applied_rules.clear();
+        self.simplify_recursive(expr)
+    }
+
+    fn simplify_recursive(&mut self, expr: &Expr) -> Expr {
+        match expr {
+            Expr::Value(_) => expr.clone(),
+
+            Expr::BinOp { op, left, right } => {
+                let left_simplified = self.simplify_recursive(left);
+                let right_simplified = self.simplify_recursive(right);
+
+                // Apply simplification rules
+                match op {
+                    // Addition rules
+                    MathOp::Add => {
+                        // x + 0 = x
+                        if self.is_zero(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            return left_simplified;
+                        }
+                        // 0 + x = x
+                        if self.is_zero(&left_simplified) {
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            return right_simplified;
+                        }
+                    }
+
+                    // Subtraction rules
+                    MathOp::Sub => {
+                        // x - 0 = x
+                        if self.is_zero(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            return left_simplified;
+                        }
+                        // x - x = 0
+                        if self.exprs_equal(&left_simplified, &right_simplified) {
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_INVERSE);
+                            return Expr::Value(Value::Integer(0));
+                        }
+                    }
+
+                    // Multiplication rules
+                    MathOp::Mul => {
+                        // x * 0 = 0
+                        if self.is_zero(&left_simplified) || self.is_zero(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::ZERO_PRODUCT);
+                            return Expr::Value(Value::Integer(0));
+                        }
+                        // x * 1 = x
+                        if self.is_one(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            return left_simplified;
+                        }
+                        // 1 * x = x
+                        if self.is_one(&left_simplified) {
+                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            return right_simplified;
+                        }
+                    }
+
+                    // Division rules
+                    MathOp::Div => {
+                        // x / 1 = x
+                        if self.is_one(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::DIVISION_IDENTITY);
+                            return left_simplified;
+                        }
+                        // 0 / x = 0 (when x != 0)
+                        if self.is_zero(&left_simplified) && !self.is_zero(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::ZERO_PRODUCT);
+                            return Expr::Value(Value::Integer(0));
+                        }
+                    }
+
+                    // Power rules
+                    MathOp::Pow => {
+                        // x ^ 0 = 1
+                        if self.is_zero(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::POWER_ZERO);
+                            return Expr::Value(Value::Integer(1));
+                        }
+                        // x ^ 1 = x
+                        if self.is_one(&right_simplified) {
+                            self.applied_rules.push(SimplificationRule::POWER_ONE);
+                            return left_simplified;
+                        }
+                    }
+
+                    _ => {}
+                }
+
+                // No simplification applied, return with simplified children
+                Expr::BinOp {
+                    op: *op,
+                    left: Box::new(left_simplified),
+                    right: Box::new(right_simplified),
+                }
+            }
+
+            Expr::UnaryOp { op, operand } => {
+                let operand_simplified = self.simplify_recursive(operand);
+                Expr::UnaryOp {
+                    op: *op,
+                    operand: Box::new(operand_simplified),
+                }
+            }
+
+            Expr::Function { func, args } => {
+                let args_simplified: Vec<Expr> = args
+                    .iter()
+                    .map(|a| self.simplify_recursive(a))
+                    .collect();
+                Expr::Function {
+                    func: *func,
+                    args: args_simplified,
+                }
+            }
+        }
+    }
+
+    fn is_zero(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Value(Value::Integer(0)) => true,
+            Expr::Value(Value::Float(f)) if *f == 0.0 => true,
+            _ => false,
+        }
+    }
+
+    fn is_one(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Value(Value::Integer(1)) => true,
+            Expr::Value(Value::Float(f)) if (*f - 1.0).abs() < 1e-10 => true,
+            _ => false,
+        }
+    }
+
+    fn exprs_equal(&self, a: &Expr, b: &Expr) -> bool {
+        // Simple structural equality check
+        match (a, b) {
+            (Expr::Value(va), Expr::Value(vb)) => {
+                match (va, vb) {
+                    (Value::Integer(ia), Value::Integer(ib)) => ia == ib,
+                    (Value::Float(fa), Value::Float(fb)) => (fa - fb).abs() < 1e-10,
+                    (Value::Symbol(sa), Value::Symbol(sb)) => sa == sb,
+                    _ => false,
+                }
+            }
+            _ => false, // More complex equality would require deeper comparison
+        }
+    }
+
+    /// Get the rules applied during the last simplification
+    pub fn applied_rules(&self) -> &[SimplificationRule] {
+        &self.applied_rules
+    }
+
+    /// Constant folding - evaluate constant subexpressions
+    pub fn fold_constants(&self, expr: &Expr, engine: &MathEngine) -> Expr {
+        match expr {
+            Expr::Value(_) => expr.clone(),
+
+            Expr::BinOp { op, left, right } => {
+                let left_folded = self.fold_constants(left, engine);
+                let right_folded = self.fold_constants(right, engine);
+
+                // If both operands are constants, evaluate
+                if let (Expr::Value(Value::Integer(l)), Expr::Value(Value::Integer(r))) =
+                    (&left_folded, &right_folded)
+                {
+                    let result_expr = Expr::BinOp {
+                        op: *op,
+                        left: Box::new(left_folded.clone()),
+                        right: Box::new(right_folded.clone()),
+                    };
+                    if let Ok(result) = engine.evaluate(&result_expr) {
+                        if result.fract() == 0.0 {
+                            return Expr::Value(Value::Integer(result as i64));
+                        } else {
+                            return Expr::Value(Value::Float(result));
+                        }
+                    }
+                }
+
+                Expr::BinOp {
+                    op: *op,
+                    left: Box::new(left_folded),
+                    right: Box::new(right_folded),
+                }
+            }
+
+            Expr::UnaryOp { op, operand } => {
+                let operand_folded = self.fold_constants(operand, engine);
+                Expr::UnaryOp {
+                    op: *op,
+                    operand: Box::new(operand_folded),
+                }
+            }
+
+            Expr::Function { func, args } => {
+                let args_folded: Vec<Expr> = args
+                    .iter()
+                    .map(|a| self.fold_constants(a, engine))
+                    .collect();
+                Expr::Function {
+                    func: *func,
+                    args: args_folded,
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Math Brain
+// ============================================================================
+
 /// The math brain that learns graph transformations
 #[derive(Debug, Default)]
 pub struct MathBrain {
     /// The underlying engine for validation
     engine: MathEngine,
+    /// The transformer for algebraic simplifications
+    transformer: MathTransformer,
 }
 
 impl MathBrain {
@@ -231,6 +560,7 @@ impl MathBrain {
     pub fn new() -> Self {
         Self {
             engine: MathEngine::new(),
+            transformer: MathTransformer::new(),
         }
     }
 
@@ -248,6 +578,71 @@ impl MathBrain {
     /// Get mutable access to the engine for symbol binding
     pub fn engine_mut(&mut self) -> &mut MathEngine {
         &mut self.engine
+    }
+
+    /// Extract intent from an expression
+    pub fn extract_intent(&self, expr: &Expr) -> MathIntent {
+        // Analyze the expression structure to determine intent
+        match expr {
+            Expr::Function { func, .. } => {
+                match func {
+                    MathFn::Sin | MathFn::Cos | MathFn::Tan |
+                    MathFn::Sqrt | MathFn::Abs | MathFn::Log | MathFn::Ln |
+                    MathFn::Exp | MathFn::Floor | MathFn::Ceil => MathIntent::Compute,
+                    MathFn::Derive => MathIntent::Differentiate,
+                    MathFn::Integrate => MathIntent::Integrate,
+                }
+            }
+            Expr::BinOp { .. } | Expr::UnaryOp { .. } => {
+                // Check if it contains symbols (needs evaluation/simplification)
+                if self.contains_symbol(expr) {
+                    MathIntent::Simplify
+                } else {
+                    MathIntent::Compute
+                }
+            }
+            Expr::Value(Value::Symbol(_)) => MathIntent::Simplify,
+            Expr::Value(_) => MathIntent::Compute,
+        }
+    }
+
+    fn contains_symbol(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Value(Value::Symbol(_)) => true,
+            Expr::Value(_) => false,
+            Expr::BinOp { left, right, .. } => {
+                self.contains_symbol(left) || self.contains_symbol(right)
+            }
+            Expr::UnaryOp { operand, .. } => self.contains_symbol(operand),
+            Expr::Function { args, .. } => args.iter().any(|a| self.contains_symbol(a)),
+        }
+    }
+
+    /// Simplify an expression
+    pub fn simplify(&mut self, expr: &Expr) -> Expr {
+        self.transformer.simplify(expr)
+    }
+
+    /// Fold constants in an expression
+    pub fn fold_constants(&self, expr: &Expr) -> Expr {
+        self.transformer.fold_constants(expr, &self.engine)
+    }
+
+    /// Create a math problem from components
+    pub fn create_problem(&self, intent: MathIntent, expr: Expr) -> MathProblem {
+        MathProblem {
+            intent,
+            expression: expr,
+            variable: None,
+            bounds: None,
+            expected: None,
+        }
+    }
+
+    /// Process a problem and return the result
+    pub fn solve(&self, problem: &MathProblem) -> MathGraphResult<f64> {
+        let graph = self.process(&problem.expression)?;
+        graph.evaluate(&self.engine)
     }
 }
 
@@ -303,5 +698,168 @@ mod tests {
         let graph = brain.process(&expr).unwrap();
         assert!(brain.validate(&graph, 5.0).unwrap());
         assert!(!brain.validate(&graph, 6.0).unwrap());
+    }
+
+    // Tests for backend-002: MathIntent, Simplification, Transformer
+
+    #[test]
+    fn test_math_intent_compute() {
+        let brain = MathBrain::new();
+
+        // Pure arithmetic should be Compute
+        let expr = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+        assert_eq!(brain.extract_intent(&expr), MathIntent::Compute);
+    }
+
+    #[test]
+    fn test_math_intent_simplify() {
+        let brain = MathBrain::new();
+
+        // Expression with symbol should be Simplify
+        let expr = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+            right: Box::new(Expr::Value(Value::Integer(0))),
+        };
+        assert_eq!(brain.extract_intent(&expr), MathIntent::Simplify);
+    }
+
+    #[test]
+    fn test_simplify_additive_identity() {
+        let mut brain = MathBrain::new();
+
+        // x + 0 should simplify to x
+        let expr = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+            right: Box::new(Expr::Value(Value::Integer(0))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
+    }
+
+    #[test]
+    fn test_simplify_multiplicative_identity() {
+        let mut brain = MathBrain::new();
+
+        // x * 1 should simplify to x
+        let expr = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::Value(Value::Symbol("y".into()))),
+            right: Box::new(Expr::Value(Value::Integer(1))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Symbol("y".into())));
+    }
+
+    #[test]
+    fn test_simplify_zero_product() {
+        let mut brain = MathBrain::new();
+
+        // x * 0 should simplify to 0
+        let expr = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+            right: Box::new(Expr::Value(Value::Integer(0))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Integer(0)));
+    }
+
+    #[test]
+    fn test_simplify_power_zero() {
+        let mut brain = MathBrain::new();
+
+        // x ^ 0 should simplify to 1
+        let expr = Expr::BinOp {
+            op: MathOp::Pow,
+            left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+            right: Box::new(Expr::Value(Value::Integer(0))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Integer(1)));
+    }
+
+    #[test]
+    fn test_simplify_power_one() {
+        let mut brain = MathBrain::new();
+
+        // x ^ 1 should simplify to x
+        let expr = Expr::BinOp {
+            op: MathOp::Pow,
+            left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+            right: Box::new(Expr::Value(Value::Integer(1))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
+    }
+
+    #[test]
+    fn test_fold_constants() {
+        let brain = MathBrain::new();
+
+        // (2 + 3) * x should fold to 5 * x
+        let expr = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::BinOp {
+                op: MathOp::Add,
+                left: Box::new(Expr::Value(Value::Integer(2))),
+                right: Box::new(Expr::Value(Value::Integer(3))),
+            }),
+            right: Box::new(Expr::Value(Value::Symbol("x".into()))),
+        };
+
+        let folded = brain.fold_constants(&expr);
+
+        // The left side should be folded to 5
+        if let Expr::BinOp { left, .. } = folded {
+            assert_eq!(*left, Expr::Value(Value::Integer(5)));
+        } else {
+            panic!("Expected BinOp");
+        }
+    }
+
+    #[test]
+    fn test_math_problem() {
+        let brain = MathBrain::new();
+
+        let expr = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(10))),
+            right: Box::new(Expr::Value(Value::Integer(5))),
+        };
+
+        let problem = brain.create_problem(MathIntent::Compute, expr);
+        let result = brain.solve(&problem).unwrap();
+
+        assert_eq!(result, 15.0);
+    }
+
+    #[test]
+    fn test_nested_simplification() {
+        let mut brain = MathBrain::new();
+
+        // (x + 0) * 1 should simplify to x
+        let expr = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::BinOp {
+                op: MathOp::Add,
+                left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+                right: Box::new(Expr::Value(Value::Integer(0))),
+            }),
+            right: Box::new(Expr::Value(Value::Integer(1))),
+        };
+
+        let simplified = brain.simplify(&expr);
+        assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
     }
 }
