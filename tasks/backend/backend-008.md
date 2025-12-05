@@ -79,10 +79,32 @@ impl GraphemeGraph {
 }
 ```
 
+### ⚠️ CRITICAL: k-Bounds Enforcement Required
+
+**Inherited from backend-009**: CPM calls `find_cliques(k)` which must validate k.
+
+**Additional Validation in CPM**:
+```rust
+pub fn find_concept_communities(&self, k: usize) -> Result<Vec<Community>, CliqueError> {
+    // Validate k (also validated in find_cliques, but defense in depth)
+    if k > MAX_CLIQUE_K {
+        return Err(CliqueError::KTooLarge { requested: k, max: MAX_CLIQUE_K });
+    }
+
+    // 1. Find all k-cliques (will also validate k)
+    let cliques = self.find_cliques(k)?;
+
+    // ... rest of algorithm
+}
+```
+
+**Must propagate errors** from `find_cliques()` - no silent failures!
+
 ### Key Design Decisions
 - Default k=3 for character-level graphs (trigrams)
 - k=4-5 for concept-level compression
 - Communities can overlap (node belongs to multiple concepts)
+- **k is bounded to 3-6** via shared constant from backend-014
 
 ### Files to Modify
 - `grapheme-core/src/lib.rs`: Add `find_concept_communities()`

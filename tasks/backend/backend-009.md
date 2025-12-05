@@ -95,9 +95,42 @@ impl GraphemeGraph {
 }
 ```
 
+### ⚠️ CRITICAL: k-Bounds Enforcement Required
+
+**NP-Hard Risk**: Clique enumeration is O(n^k). For k > 6, this becomes intractable:
+- k=6: ~10^6 operations for 100 nodes (acceptable)
+- k=10: ~10^10 operations (seconds to minutes)
+- k=20: ~10^20 operations (CATASTROPHIC)
+
+**REQUIRED Implementation**:
+```rust
+/// Maximum k value for clique enumeration
+/// Beyond this, complexity becomes intractable
+pub const MAX_CLIQUE_K: usize = 6;
+
+impl GraphemeGraph {
+    pub fn find_cliques(&self, k: usize) -> Result<Vec<Vec<NodeIndex>>, CliqueError> {
+        // CRITICAL: Validate k before any work
+        if k > MAX_CLIQUE_K {
+            return Err(CliqueError::KTooLarge {
+                requested: k,
+                max: MAX_CLIQUE_K,
+            });
+        }
+        if k < 3 {
+            return Err(CliqueError::KTooSmall(k));
+        }
+        // ... proceed with enumeration
+    }
+}
+```
+
+**This validation MUST be implemented** - see backend-014 for shared constant.
+
 ### Key Design Decisions
 - Degeneracy ordering: process low-degree nodes first
 - For sparse graphs, degeneracy d << n, so O(n · d^(k-1))
+- **k is bounded to 3-6** to guarantee polynomial time
 - Lazy iterator for memory efficiency on large graphs
 
 ### Files to Modify
