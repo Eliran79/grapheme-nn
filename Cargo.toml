@@ -11,6 +11,7 @@ members = [
     "grapheme-world",
     "grapheme-multimodal",
     "grapheme-meta",
+    "grapheme-agent",
 ]
 
 [workspace.package]
