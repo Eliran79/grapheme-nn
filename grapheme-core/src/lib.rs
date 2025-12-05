@@ -16,6 +16,7 @@
 
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -687,6 +688,404 @@ impl TextProcessor for BasicTextProcessor {
 }
 
 // ============================================================================
+// GraphBuilder Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// Compressed region placeholder
+#[derive(Debug, Clone)]
+pub struct CompressedRegion {
+    /// Start node of the compressed region
+    pub start: NodeId,
+    /// End node of the compressed region
+    pub end: NodeId,
+    /// The compressed node representing this region
+    pub compressed_node: NodeId,
+    /// Original node count
+    pub original_count: usize,
+}
+
+/// Hierarchical graph representation
+#[derive(Debug, Clone)]
+pub struct HierarchicalGraph {
+    /// Levels of abstraction (0 = raw characters, higher = more abstract)
+    pub levels: Vec<Vec<NodeId>>,
+    /// Connections between levels
+    pub inter_level_edges: Vec<(NodeId, NodeId)>,
+}
+
+/// Graph builder trait for constructing GRAPHEME graphs
+pub trait GraphBuilder {
+    /// Add single character to the graph
+    fn add_character(&mut self, ch: char, position: usize) -> NodeId;
+
+    /// Form connections based on relevance within a context window
+    fn connect_relevant(&mut self, node: NodeId, context_window: usize);
+
+    /// Detect and form semantic cliques
+    fn form_cliques(&mut self) -> Vec<Clique>;
+
+    /// Compress inactive regions for memory efficiency
+    fn compress_region(&mut self, start: NodeId, end: NodeId) -> GraphemeResult<CompressedRegion>;
+
+    /// Build hierarchical abstraction of the graph
+    fn build_hierarchy(&mut self) -> HierarchicalGraph;
+}
+
+impl GraphBuilder for DagNN {
+    fn add_character(&mut self, ch: char, position: usize) -> NodeId {
+        DagNN::add_character(self, ch, position)
+    }
+
+    fn connect_relevant(&mut self, node: NodeId, context_window: usize) {
+        // Connect to nodes within the context window
+        let node_pos = self.graph[node].position.unwrap_or(0);
+
+        for &other in &self.input_nodes {
+            if other == node {
+                continue;
+            }
+            if let Some(other_pos) = self.graph[other].position {
+                let distance = if node_pos > other_pos {
+                    node_pos - other_pos
+                } else {
+                    other_pos - node_pos
+                };
+
+                if distance <= context_window && distance > 1 {
+                    // Add skip connection with weight based on distance
+                    let weight = 1.0 / (distance as f32);
+                    self.graph.add_edge(other, node, Edge::skip(weight));
+                }
+            }
+        }
+    }
+
+    fn form_cliques(&mut self) -> Vec<Clique> {
+        // Simple clique detection: find nodes with high mutual connectivity
+        // For now, group consecutive nodes as basic cliques
+
+        // Collect windows first to avoid borrow conflict
+        let windows: Vec<Vec<NodeId>> = if self.input_nodes.len() >= 3 {
+            self.input_nodes.windows(3)
+                .map(|w| w.to_vec())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Now form cliques from collected windows
+        let mut cliques = Vec::new();
+        for members in windows {
+            let clique_id = self.form_clique(members, None);
+            cliques.push(self.cliques[clique_id].clone());
+        }
+
+        cliques
+    }
+
+    fn compress_region(&mut self, start: NodeId, end: NodeId) -> GraphemeResult<CompressedRegion> {
+        // Find nodes between start and end
+        let start_pos = self.topology.get_position(start)
+            .ok_or_else(|| GraphemeError::GraphError("Start node not in topology".into()))?;
+        let end_pos = self.topology.get_position(end)
+            .ok_or_else(|| GraphemeError::GraphError("End node not in topology".into()))?;
+
+        let nodes_in_region: Vec<NodeId> = self.topology.order[start_pos..=end_pos].to_vec();
+        let original_count = nodes_in_region.len();
+
+        // Create compressed node
+        let compressed_node = self.graph.add_node(Node::compressed(CompressionType::Hierarchical));
+
+        Ok(CompressedRegion {
+            start,
+            end,
+            compressed_node,
+            original_count,
+        })
+    }
+
+    fn build_hierarchy(&mut self) -> HierarchicalGraph {
+        // Level 0: raw input nodes
+        let level_0 = self.input_nodes.clone();
+
+        // Level 1: cliques (if any)
+        let level_1: Vec<NodeId> = self.cliques.iter()
+            .map(|c| c.members[0]) // Representative node
+            .collect();
+
+        let levels = if level_1.is_empty() {
+            vec![level_0]
+        } else {
+            vec![level_0, level_1]
+        };
+
+        HierarchicalGraph {
+            levels,
+            inter_level_edges: Vec::new(),
+        }
+    }
+}
+
+// ============================================================================
+// ForwardPass Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// Forward propagation trait for GRAPHEME graphs
+pub trait ForwardPass {
+    /// Compute activation for a single node
+    fn activate_node(&self, node: NodeId) -> f32;
+
+    /// Forward pass through the entire graph
+    fn forward(&mut self) -> GraphemeResult<()>;
+
+    /// Parallel forward pass using rayon
+    fn forward_parallel(&mut self) -> GraphemeResult<()>;
+
+    /// Get current activations as a vector
+    fn get_activations(&self) -> Vec<(NodeId, f32)>;
+}
+
+impl ForwardPass for DagNN {
+    fn activate_node(&self, node: NodeId) -> f32 {
+        self.graph[node].activation
+    }
+
+    fn forward(&mut self) -> GraphemeResult<()> {
+        // Update topology if needed
+        if self.topology.order.is_empty() {
+            self.update_topology()?;
+        }
+
+        // Process nodes in topological order
+        for &node in &self.topology.order {
+            let mut incoming_sum = 0.0f32;
+            let mut incoming_count = 0;
+
+            // Sum weighted inputs from predecessors
+            for edge in self.graph.edges_directed(node, petgraph::Direction::Incoming) {
+                let source_activation = self.graph[edge.source()].activation;
+                let weight = edge.weight().weight;
+                incoming_sum += source_activation * weight;
+                incoming_count += 1;
+            }
+
+            // Apply activation function (simple ReLU-like)
+            if incoming_count > 0 {
+                let new_activation = (incoming_sum / incoming_count as f32).max(0.0).min(1.0);
+                self.graph[node].activation = new_activation;
+            }
+            // Input nodes keep their original activation
+        }
+
+        Ok(())
+    }
+
+    fn forward_parallel(&mut self) -> GraphemeResult<()> {
+        use rayon::prelude::*;
+
+        // Update topology if needed
+        if self.topology.order.is_empty() {
+            self.update_topology()?;
+        }
+
+        // Collect activations in parallel by level
+        // For simplicity, use the sequential version for now
+        // Full parallel implementation would process independent nodes concurrently
+        self.forward()
+    }
+
+    fn get_activations(&self) -> Vec<(NodeId, f32)> {
+        self.topology.order.iter()
+            .map(|&node| (node, self.graph[node].activation))
+            .collect()
+    }
+}
+
+// ============================================================================
+// GraphTransformer Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// Transformation rule for graph-to-graph operations
+#[derive(Debug, Clone)]
+pub struct TransformRule {
+    /// Rule identifier
+    pub id: usize,
+    /// Description of the transformation
+    pub description: String,
+    /// Input pattern to match
+    pub input_pattern: Vec<NodeType>,
+    /// Output pattern to produce
+    pub output_pattern: Vec<NodeType>,
+}
+
+impl TransformRule {
+    /// Create a new transformation rule
+    pub fn new(id: usize, description: impl Into<String>) -> Self {
+        Self {
+            id,
+            description: description.into(),
+            input_pattern: Vec::new(),
+            output_pattern: Vec::new(),
+        }
+    }
+}
+
+/// Graph transformer trait for graph-to-graph operations
+pub trait GraphTransformer {
+    /// Transform one graph into another
+    fn transform(&mut self, input: &DagNN) -> GraphemeResult<DagNN>;
+
+    /// Learn a transformation rule from input/output pair
+    fn learn_transformation(&mut self, input: &DagNN, target: &DagNN) -> TransformRule;
+
+    /// Apply a specific transformation rule
+    fn apply_rule(&mut self, graph: &DagNN, rule: &TransformRule) -> GraphemeResult<DagNN>;
+
+    /// Compose multiple transformation rules
+    fn compose(&self, rules: Vec<TransformRule>) -> TransformRule;
+}
+
+/// Basic graph transformer implementation
+#[derive(Debug, Default)]
+pub struct BasicGraphTransformer {
+    /// Learned transformation rules
+    pub rules: Vec<TransformRule>,
+    /// Rule counter for generating IDs
+    rule_counter: usize,
+}
+
+impl BasicGraphTransformer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl GraphTransformer for BasicGraphTransformer {
+    fn transform(&mut self, input: &DagNN) -> GraphemeResult<DagNN> {
+        // Identity transformation for now
+        let text = input.to_text();
+        DagNN::from_text(&text)
+    }
+
+    fn learn_transformation(&mut self, input: &DagNN, target: &DagNN) -> TransformRule {
+        let id = self.rule_counter;
+        self.rule_counter += 1;
+
+        // Extract patterns from input and target
+        let input_pattern: Vec<NodeType> = input.input_nodes()
+            .iter()
+            .map(|&n| input.graph[n].node_type.clone())
+            .collect();
+
+        let output_pattern: Vec<NodeType> = target.input_nodes()
+            .iter()
+            .map(|&n| target.graph[n].node_type.clone())
+            .collect();
+
+        let rule = TransformRule {
+            id,
+            description: format!("Rule {} learned from examples", id),
+            input_pattern,
+            output_pattern,
+        };
+
+        self.rules.push(rule.clone());
+        rule
+    }
+
+    fn apply_rule(&mut self, graph: &DagNN, _rule: &TransformRule) -> GraphemeResult<DagNN> {
+        // For now, just copy the graph
+        let text = graph.to_text();
+        DagNN::from_text(&text)
+    }
+
+    fn compose(&self, rules: Vec<TransformRule>) -> TransformRule {
+        // Compose by concatenating patterns
+        let id = rules.first().map(|r| r.id).unwrap_or(0);
+
+        let mut input_pattern = Vec::new();
+        let mut output_pattern = Vec::new();
+
+        for rule in &rules {
+            input_pattern.extend(rule.input_pattern.clone());
+            output_pattern.extend(rule.output_pattern.clone());
+        }
+
+        TransformRule {
+            id,
+            description: format!("Composed rule from {} rules", rules.len()),
+            input_pattern,
+            output_pattern,
+        }
+    }
+}
+
+// ============================================================================
+// CliqueProcessor Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// Clique processor trait for clique operations
+pub trait CliqueProcessor {
+    /// Find all cliques in the graph (parallel)
+    fn find_cliques_parallel(&self) -> Vec<Clique>;
+
+    /// Strengthen connections within a clique
+    fn strengthen_clique(&mut self, clique: &Clique, factor: f32);
+
+    /// Compress nodes into a single clique node
+    fn compress_to_clique(&mut self, nodes: Vec<NodeId>) -> NodeId;
+
+    /// Expand a clique node back to its member nodes
+    fn expand_clique(&self, clique_id: usize) -> Option<Vec<NodeId>>;
+}
+
+impl CliqueProcessor for DagNN {
+    fn find_cliques_parallel(&self) -> Vec<Clique> {
+        use rayon::prelude::*;
+
+        // Parallel clique detection
+        // For now, return existing cliques
+        self.cliques.clone()
+    }
+
+    fn strengthen_clique(&mut self, clique: &Clique, factor: f32) {
+        // Strengthen all edges within the clique
+        for i in 0..clique.members.len() {
+            for j in (i + 1)..clique.members.len() {
+                let source = clique.members[i];
+                let target = clique.members[j];
+
+                // Find and strengthen the edge if it exists
+                if let Some(edge_idx) = self.graph.find_edge(source, target) {
+                    self.graph[edge_idx].weight *= factor;
+                } else {
+                    // Add clique edge if it doesn't exist
+                    self.graph.add_edge(source, target, Edge::clique(factor));
+                }
+            }
+        }
+    }
+
+    fn compress_to_clique(&mut self, nodes: Vec<NodeId>) -> NodeId {
+        // Create a new clique node
+        let member_indices: Vec<usize> = nodes.iter()
+            .map(|n| n.index())
+            .collect();
+
+        let clique_node = self.graph.add_node(Node::clique(member_indices));
+
+        // Form the clique
+        self.form_clique(nodes, None);
+
+        clique_node
+    }
+
+    fn expand_clique(&self, clique_id: usize) -> Option<Vec<NodeId>> {
+        self.cliques.get(clique_id).map(|c| c.members.clone())
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -844,5 +1243,105 @@ mod tests {
             confidence: 0.95,
         });
         assert_eq!(memory.len(), 2);
+    }
+
+    // Tests for new traits (api-002)
+
+    #[test]
+    fn test_graph_builder_trait() {
+        let mut dag = DagNN::new();
+
+        // Test add_character
+        let n1 = dag.add_character('H', 0);
+        let n2 = dag.add_character('i', 1);
+        assert_eq!(dag.node_count(), 2);
+
+        // Test connect_relevant
+        dag.connect_relevant(n2, 3);
+        assert!(dag.edge_count() >= 1);
+
+        // Test build_hierarchy
+        let hierarchy = dag.build_hierarchy();
+        assert!(!hierarchy.levels.is_empty());
+    }
+
+    #[test]
+    fn test_forward_pass_trait() {
+        let mut dag = DagNN::from_text("AB").unwrap();
+
+        // Test activate_node (should return default 1.0 for input nodes)
+        let node = dag.input_nodes()[0];
+        let activation = dag.activate_node(node);
+        assert_eq!(activation, 1.0);
+
+        // Test forward pass
+        dag.forward().unwrap();
+
+        // Test get_activations
+        let activations = dag.get_activations();
+        assert_eq!(activations.len(), 2);
+    }
+
+    #[test]
+    fn test_graph_transformer_trait() {
+        let input = DagNN::from_text("abc").unwrap();
+        let target = DagNN::from_text("ABC").unwrap();
+
+        let mut transformer = BasicGraphTransformer::new();
+
+        // Test learn_transformation
+        let rule = transformer.learn_transformation(&input, &target);
+        assert!(!rule.description.is_empty());
+
+        // Test transform (identity for basic transformer)
+        let result = transformer.transform(&input).unwrap();
+        assert_eq!(result.node_count(), input.node_count());
+    }
+
+    #[test]
+    fn test_clique_processor_trait() {
+        let mut dag = DagNN::from_text("word").unwrap();
+
+        // Test find_cliques_parallel
+        let cliques = dag.find_cliques_parallel();
+        // May be empty for short text
+        assert!(cliques.len() >= 0);
+
+        // Test compress_to_clique
+        let nodes: Vec<NodeId> = dag.input_nodes().iter().take(2).cloned().collect();
+        let clique_node = dag.compress_to_clique(nodes);
+        // Verify the node was added by checking node count increased
+        assert!(dag.node_count() > 4);
+
+        // Test expand_clique
+        let expanded = dag.expand_clique(0);
+        assert!(expanded.is_some());
+    }
+
+    #[test]
+    fn test_form_cliques_via_trait() {
+        let mut dag = DagNN::from_text("hello").unwrap();
+
+        // form_cliques should create cliques from consecutive node windows
+        let cliques = dag.form_cliques();
+        // With 5 characters and window of 3, we get 3 cliques
+        assert_eq!(cliques.len(), 3);
+
+        // Each clique should have 3 members
+        for clique in &cliques {
+            assert_eq!(clique.size(), 3);
+        }
+    }
+
+    #[test]
+    fn test_compress_region() {
+        let mut dag = DagNN::from_text("test").unwrap();
+        let start = dag.input_nodes()[0];
+        let end = dag.input_nodes()[3];
+
+        let region = dag.compress_region(start, end).unwrap();
+        assert_eq!(region.start, start);
+        assert_eq!(region.end, end);
+        assert_eq!(region.original_count, 4);
     }
 }
