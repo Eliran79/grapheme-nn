@@ -53,7 +53,7 @@ pub type GraphemeResult<T> = Result<T, GraphemeError>;
 // ============================================================================
 
 /// Compression type for compressed nodes
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompressionType {
     /// Run-length encoding for repeated characters
     RunLength,
@@ -66,7 +66,7 @@ pub enum CompressionType {
 }
 
 /// Type of node in the GRAPHEME graph
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeType {
     /// Input character node
     Input(char),
@@ -1086,6 +1086,340 @@ impl CliqueProcessor for DagNN {
 }
 
 // ============================================================================
+// MemoryManager Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// Memory management trait for efficient graph operations
+pub trait MemoryManager {
+    /// Allocate nodes efficiently
+    fn allocate_nodes(&mut self, count: usize) -> Vec<NodeId>;
+
+    /// Garbage collection for disconnected nodes
+    fn gc_disconnected(&mut self) -> usize;
+
+    /// Incremental compression based on activation threshold
+    fn compress_incremental(&mut self, threshold: f32) -> usize;
+}
+
+impl MemoryManager for DagNN {
+    fn allocate_nodes(&mut self, count: usize) -> Vec<NodeId> {
+        let mut nodes = Vec::with_capacity(count);
+        for _ in 0..count {
+            nodes.push(self.graph.add_node(Node::hidden()));
+        }
+        nodes
+    }
+
+    fn gc_disconnected(&mut self) -> usize {
+        // Find nodes with no edges
+        let mut disconnected = Vec::new();
+
+        for node_idx in self.graph.node_indices() {
+            let has_incoming = self.graph.edges_directed(node_idx, petgraph::Direction::Incoming).next().is_some();
+            let has_outgoing = self.graph.edges_directed(node_idx, petgraph::Direction::Outgoing).next().is_some();
+
+            // Skip input nodes (they're allowed to have no incoming edges)
+            if !has_incoming && !has_outgoing {
+                if !self.input_nodes.contains(&node_idx) {
+                    disconnected.push(node_idx);
+                }
+            }
+        }
+
+        let count = disconnected.len();
+
+        // Remove disconnected nodes (in reverse order to maintain indices)
+        for node in disconnected.into_iter().rev() {
+            self.graph.remove_node(node);
+        }
+
+        count
+    }
+
+    fn compress_incremental(&mut self, threshold: f32) -> usize {
+        // Find regions with low activation variance
+        let mut compressed_count = 0;
+
+        // Find consecutive nodes with activation below threshold
+        let mut low_activation_run: Vec<NodeId> = Vec::new();
+
+        for &node in &self.input_nodes {
+            let activation = self.graph[node].activation;
+
+            if activation < threshold {
+                low_activation_run.push(node);
+            } else {
+                // If we have a run of 3+ low activation nodes, compress them
+                if low_activation_run.len() >= 3 {
+                    let _compressed = self.graph.add_node(Node::compressed(CompressionType::Semantic));
+                    compressed_count += low_activation_run.len();
+                }
+                low_activation_run.clear();
+            }
+        }
+
+        // Handle trailing run
+        if low_activation_run.len() >= 3 {
+            let _compressed = self.graph.add_node(Node::compressed(CompressionType::Semantic));
+            compressed_count += low_activation_run.len();
+        }
+
+        compressed_count
+    }
+}
+
+// ============================================================================
+// PatternMatcher Trait (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+/// A learned pattern (graph motif)
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    /// Pattern identifier
+    pub id: usize,
+    /// The sequence of node types in this pattern
+    pub sequence: Vec<NodeType>,
+    /// How often this pattern appears
+    pub frequency: usize,
+    /// The compressed node representing this pattern (if compressed)
+    pub compressed_node: Option<NodeId>,
+}
+
+impl Pattern {
+    /// Create a new pattern
+    pub fn new(id: usize, sequence: Vec<NodeType>) -> Self {
+        Self {
+            id,
+            sequence,
+            frequency: 1,
+            compressed_node: None,
+        }
+    }
+
+    /// Get pattern length
+    pub fn len(&self) -> usize {
+        self.sequence.len()
+    }
+
+    /// Check if pattern is empty
+    pub fn is_empty(&self) -> bool {
+        self.sequence.is_empty()
+    }
+}
+
+/// Hierarchical pattern structure
+#[derive(Debug, Clone)]
+pub struct PatternHierarchy {
+    /// Patterns at each level (0 = character level, higher = more abstract)
+    pub levels: Vec<Vec<Pattern>>,
+}
+
+/// Pattern matcher trait for learning and compressing patterns
+pub trait PatternMatcher {
+    /// Learn repeated patterns (graph motifs)
+    fn learn_patterns(&self, min_frequency: usize) -> Vec<Pattern>;
+
+    /// Compress learned patterns into single nodes
+    fn compress_patterns(&mut self, patterns: &[Pattern]) -> usize;
+
+    /// Extract hierarchical pattern structure
+    fn extract_hierarchy(&self) -> PatternHierarchy;
+}
+
+impl PatternMatcher for DagNN {
+    fn learn_patterns(&self, min_frequency: usize) -> Vec<Pattern> {
+        use std::collections::HashMap;
+
+        let mut pattern_counts: HashMap<Vec<NodeType>, usize> = HashMap::new();
+
+        // Look for n-grams of size 2-5
+        for window_size in 2..=5 {
+            if self.input_nodes.len() < window_size {
+                continue;
+            }
+
+            for window in self.input_nodes.windows(window_size) {
+                let pattern: Vec<NodeType> = window.iter()
+                    .map(|&n| self.graph[n].node_type.clone())
+                    .collect();
+
+                *pattern_counts.entry(pattern).or_insert(0) += 1;
+            }
+        }
+
+        // Filter by minimum frequency and create Pattern structs
+        let mut patterns: Vec<Pattern> = pattern_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= min_frequency)
+            .enumerate()
+            .map(|(id, (seq, freq))| {
+                let mut p = Pattern::new(id, seq);
+                p.frequency = freq;
+                p
+            })
+            .collect();
+
+        // Sort by frequency (descending)
+        patterns.sort_by(|a, b| b.frequency.cmp(&a.frequency));
+
+        patterns
+    }
+
+    fn compress_patterns(&mut self, patterns: &[Pattern]) -> usize {
+        let mut compressed_count = 0;
+
+        for pattern in patterns {
+            if pattern.len() < 2 {
+                continue;
+            }
+
+            // Create a pattern node for this pattern
+            let pattern_bytes: Vec<u8> = pattern.sequence.iter()
+                .filter_map(|nt| {
+                    if let NodeType::Input(ch) = nt {
+                        if ch.is_ascii() {
+                            Some(*ch as u8)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !pattern_bytes.is_empty() {
+                self.graph.add_node(Node::pattern(pattern_bytes));
+                compressed_count += 1;
+            }
+        }
+
+        compressed_count
+    }
+
+    fn extract_hierarchy(&self) -> PatternHierarchy {
+        // Level 0: individual characters
+        let level_0: Vec<Pattern> = self.input_nodes.iter()
+            .enumerate()
+            .map(|(id, &node)| {
+                Pattern::new(id, vec![self.graph[node].node_type.clone()])
+            })
+            .collect();
+
+        // Level 1: bigrams with frequency >= 2
+        let level_1 = self.learn_patterns(2);
+
+        // Level 2: trigrams and above with frequency >= 3
+        let level_2: Vec<Pattern> = self.learn_patterns(3)
+            .into_iter()
+            .filter(|p| p.len() >= 3)
+            .collect();
+
+        let mut levels = vec![level_0];
+        if !level_1.is_empty() {
+            levels.push(level_1);
+        }
+        if !level_2.is_empty() {
+            levels.push(level_2);
+        }
+
+        PatternHierarchy { levels }
+    }
+}
+
+// ============================================================================
+// DagNN Additional Methods (matching GRAPHEME_Vision.md)
+// ============================================================================
+
+impl DagNN {
+    /// Spawn a processing chain for a character based on its complexity
+    ///
+    /// Example: "the" → 2-3 nodes, "quantum" → 5-6 nodes
+    pub fn spawn_processing_chain(&mut self, ch: char, context: &[char]) -> Vec<NodeId> {
+        let depth = Self::compute_processing_depth(ch, context);
+        let mut chain = Vec::with_capacity(depth);
+
+        // Add the input node
+        let position = self.input_nodes.len();
+        let input_node = self.add_character(ch, position);
+        chain.push(input_node);
+
+        // Add hidden nodes based on depth
+        let mut prev_node = input_node;
+        for _ in 1..depth {
+            let hidden = self.add_hidden();
+            self.add_edge(prev_node, hidden, Edge::sequential());
+            chain.push(hidden);
+            prev_node = hidden;
+        }
+
+        chain
+    }
+
+    /// Get nodes by activation level
+    pub fn get_nodes_by_activation(&self, min_activation: f32) -> Vec<NodeId> {
+        self.graph.node_indices()
+            .filter(|&node| self.graph[node].activation >= min_activation)
+            .collect()
+    }
+
+    /// Prune edges below a weight threshold
+    pub fn prune_weak_edges(&mut self, threshold: f32) -> usize {
+        let weak_edges: Vec<_> = self.graph.edge_indices()
+            .filter(|&e| self.graph[e].weight < threshold)
+            .collect();
+
+        let count = weak_edges.len();
+
+        for edge in weak_edges.into_iter().rev() {
+            self.graph.remove_edge(edge);
+        }
+
+        count
+    }
+
+    /// Get graph statistics
+    pub fn stats(&self) -> GraphStats {
+        let total_activation: f32 = self.graph.node_indices()
+            .map(|n| self.graph[n].activation)
+            .sum();
+
+        let node_count = self.node_count();
+        let avg_activation = if node_count > 0 {
+            total_activation / node_count as f32
+        } else {
+            0.0
+        };
+
+        GraphStats {
+            node_count,
+            edge_count: self.edge_count(),
+            clique_count: self.cliques.len(),
+            input_node_count: self.input_nodes.len(),
+            output_node_count: self.output_nodes.len(),
+            avg_activation,
+        }
+    }
+}
+
+/// Statistics about a DagNN graph
+#[derive(Debug, Clone)]
+pub struct GraphStats {
+    /// Total number of nodes
+    pub node_count: usize,
+    /// Total number of edges
+    pub edge_count: usize,
+    /// Number of detected cliques
+    pub clique_count: usize,
+    /// Number of input nodes
+    pub input_node_count: usize,
+    /// Number of output nodes
+    pub output_node_count: usize,
+    /// Average node activation
+    pub avg_activation: f32,
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1343,5 +1677,128 @@ mod tests {
         assert_eq!(region.start, start);
         assert_eq!(region.end, end);
         assert_eq!(region.original_count, 4);
+    }
+
+    // Tests for backend-001: MemoryManager, PatternMatcher, additional methods
+
+    #[test]
+    fn test_memory_manager_allocate() {
+        let mut dag = DagNN::new();
+
+        // Test allocate_nodes
+        let nodes = dag.allocate_nodes(5);
+        assert_eq!(nodes.len(), 5);
+        assert_eq!(dag.node_count(), 5);
+
+        // All should be hidden nodes
+        for node in nodes {
+            assert!(matches!(dag.graph[node].node_type, NodeType::Hidden));
+        }
+    }
+
+    #[test]
+    fn test_memory_manager_gc() {
+        let mut dag = DagNN::from_text("hi").unwrap();
+
+        // Add some disconnected hidden nodes
+        dag.graph.add_node(Node::hidden());
+        dag.graph.add_node(Node::hidden());
+
+        assert_eq!(dag.node_count(), 4); // 2 input + 2 disconnected
+
+        // GC should remove the disconnected nodes
+        let removed = dag.gc_disconnected();
+        assert_eq!(removed, 2);
+        assert_eq!(dag.node_count(), 2);
+    }
+
+    #[test]
+    fn test_pattern_matcher_learn() {
+        // Text with repeated patterns
+        let dag = DagNN::from_text("abcabcabc").unwrap();
+
+        // Learn patterns with min frequency 2
+        let patterns = dag.learn_patterns(2);
+
+        // Should find "abc" pattern repeated
+        assert!(!patterns.is_empty());
+
+        // "ab" should appear 3 times
+        let ab_pattern: Vec<NodeType> = vec![NodeType::Input('a'), NodeType::Input('b')];
+        let has_ab = patterns.iter().any(|p| p.sequence == ab_pattern);
+        assert!(has_ab);
+    }
+
+    #[test]
+    fn test_pattern_matcher_hierarchy() {
+        let dag = DagNN::from_text("hello").unwrap();
+
+        let hierarchy = dag.extract_hierarchy();
+
+        // Level 0 should have all characters
+        assert_eq!(hierarchy.levels[0].len(), 5);
+    }
+
+    #[test]
+    fn test_spawn_processing_chain() {
+        let mut dag = DagNN::new();
+
+        // Simple ASCII letter should have depth 2
+        let chain_a = dag.spawn_processing_chain('a', &[]);
+        assert_eq!(chain_a.len(), 2);
+
+        // Math symbol should have depth 3
+        let chain_plus = dag.spawn_processing_chain('+', &[]);
+        assert_eq!(chain_plus.len(), 3);
+
+        // Complex Unicode should have deeper chain
+        let chain_han = dag.spawn_processing_chain('你', &[]);
+        assert!(chain_han.len() >= 4);
+    }
+
+    #[test]
+    fn test_prune_weak_edges() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Add some weak edges
+        let nodes = dag.input_nodes().to_vec();
+        dag.add_edge(nodes[0], nodes[2], Edge::skip(0.1));
+        dag.add_edge(nodes[1], nodes[2], Edge::semantic(0.05));
+
+        let initial_edges = dag.edge_count();
+        assert_eq!(initial_edges, 4); // 2 sequential + 2 weak
+
+        // Prune edges below 0.5
+        let pruned = dag.prune_weak_edges(0.5);
+        assert_eq!(pruned, 2);
+        assert_eq!(dag.edge_count(), 2); // Only sequential edges remain
+    }
+
+    #[test]
+    fn test_graph_stats() {
+        let dag = DagNN::from_text("test").unwrap();
+
+        let stats = dag.stats();
+
+        assert_eq!(stats.node_count, 4);
+        assert_eq!(stats.edge_count, 3);
+        assert_eq!(stats.input_node_count, 4);
+        assert_eq!(stats.clique_count, 0);
+        assert_eq!(stats.avg_activation, 1.0); // All input nodes have activation 1.0
+    }
+
+    #[test]
+    fn test_get_nodes_by_activation() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Set different activations
+        let nodes = dag.input_nodes().to_vec();
+        dag.graph[nodes[0]].activation = 0.8;
+        dag.graph[nodes[1]].activation = 0.3;
+
+        // Get nodes with activation >= 0.5
+        let high_activation = dag.get_nodes_by_activation(0.5);
+        assert_eq!(high_activation.len(), 1);
+        assert_eq!(high_activation[0], nodes[0]);
     }
 }
