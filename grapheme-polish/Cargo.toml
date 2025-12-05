@@ -1,0 +1,21 @@
+[package]
+name = "grapheme-polish"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Layer 2: Polish notation intermediate representation with bidirectional text-graph conversion"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+grapheme-engine = { path = "../grapheme-engine" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "polish_bench"
+harness = false

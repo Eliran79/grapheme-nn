@@ -1,0 +1,25 @@
+[package]
+name = "grapheme-train"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Training infrastructure for GRAPHEME neural network"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+grapheme-engine = { path = "../grapheme-engine" }
+grapheme-polish = { path = "../grapheme-polish" }
+grapheme-math = { path = "../grapheme-math" }
+grapheme-core = { path = "../grapheme-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "train_bench"
+harness = false
