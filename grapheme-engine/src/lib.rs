@@ -97,7 +97,7 @@ pub enum Expr {
 }
 
 /// The math engine for symbolic and numeric computation
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MathEngine {
     /// Symbol table for variable bindings
     symbols: std::collections::HashMap<String, Value>,
