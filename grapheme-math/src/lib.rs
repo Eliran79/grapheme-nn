@@ -496,7 +496,7 @@ impl MathTransformer {
                 let right_folded = self.fold_constants(right, engine);
 
                 // If both operands are constants, evaluate
-                if let (Expr::Value(Value::Integer(l)), Expr::Value(Value::Integer(r))) =
+                if let (Expr::Value(Value::Integer(_)), Expr::Value(Value::Integer(_))) =
                     (&left_folded, &right_folded)
                 {
                     let result_expr = Expr::BinOp {

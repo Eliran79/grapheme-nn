@@ -881,8 +881,6 @@ impl ForwardPass for DagNN {
     }
 
     fn forward_parallel(&mut self) -> GraphemeResult<()> {
-        use rayon::prelude::*;
-
         // Update topology if needed
         if self.topology.order.is_empty() {
             self.update_topology()?;
@@ -1041,8 +1039,6 @@ pub trait CliqueProcessor {
 
 impl CliqueProcessor for DagNN {
     fn find_cliques_parallel(&self) -> Vec<Clique> {
-        use rayon::prelude::*;
-
         // Parallel clique detection
         // For now, return existing cliques
         self.cliques.clone()
