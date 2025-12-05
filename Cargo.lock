@@ -288,6 +288,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-parallel"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "rayon",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-polish"
 version = "0.1.0"
 dependencies = [
