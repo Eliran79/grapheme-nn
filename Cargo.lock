@@ -241,6 +241,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-multimodal"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-polish"
 version = "0.1.0"
 dependencies = [

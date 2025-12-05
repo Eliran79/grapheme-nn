@@ -9,6 +9,7 @@ members = [
     "grapheme-memory",
     "grapheme-reason",
     "grapheme-world",
+    "grapheme-multimodal",
 ]
 
 [workspace.package]
