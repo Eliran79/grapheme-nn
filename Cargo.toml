@@ -12,6 +12,7 @@ members = [
     "grapheme-multimodal",
     "grapheme-meta",
     "grapheme-agent",
+    "grapheme-ground",
 ]
 
 [workspace.package]

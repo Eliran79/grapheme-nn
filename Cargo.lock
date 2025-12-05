@@ -229,6 +229,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-ground"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "grapheme-core",
+ "grapheme-multimodal",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-math"
 version = "0.1.0"
 dependencies = [
