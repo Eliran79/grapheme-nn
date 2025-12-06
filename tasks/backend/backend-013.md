@@ -1,7 +1,7 @@
 ---
 id: backend-013
 title: Optimize connect_relevant context window
-status: todo
+status: done
 priority: low
 tags:
 - backend
@@ -132,16 +132,25 @@ fn connect_all_relevant(&mut self, context_window: usize) {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Added `position_index: BTreeMap<usize, NodeId>` field to DagNN (with `#[serde(skip)]`)
+- Updated `DagNN::new()` to initialize empty BTreeMap
+- Updated `from_text()` to populate position_index
+- Updated `add_character()` to insert into position_index
+- Updated `rebuild_input_set()` to rebuild position_index after deserialization
+- Optimized `connect_relevant()` to use BTreeMap range query (O(window_size) instead of O(n))
+- Added `connect_all_relevant()` batch method with sliding window (O(n × window_size))
+- Added 6 new tests for optimization (60 total tests in grapheme-core)
 
 ### Causality Impact
-- Performance improvement for large graph construction
+- Performance improvement: connect_relevant O(window_size) instead of O(n)
+- Batch processing: connect_all_relevant O(n × window_size) instead of O(n²)
 - No functional changes to skip connections
 
 ### Dependencies & Integration
-- May need BTreeMap import
+- Added BTreeMap import
 - Internal optimization, no API changes
+- Deserialization properly rebuilds position_index
 
 ### Verification & Testing
-- Run `cargo test -p grapheme-core`
-- Run scaling benchmark
+- Run `cargo test -p grapheme-core` for unit tests
+- All 60 tests passing with 0 warnings

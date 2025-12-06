@@ -18,7 +18,7 @@ use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
 // ============================================================================
@@ -423,6 +423,12 @@ pub struct DagNN {
     pub memory: GraphMemory,
     /// Input nodes in order
     input_nodes: Vec<NodeId>,
+    /// Input nodes as set for O(1) lookup (backend-012 optimization)
+    #[serde(skip)]
+    input_nodes_set: HashSet<NodeId>,
+    /// Position-indexed lookup for O(1) neighbor finding (backend-013 optimization)
+    #[serde(skip)]
+    position_index: BTreeMap<usize, NodeId>,
     /// Output nodes
     output_nodes: Vec<NodeId>,
 }
@@ -442,6 +448,8 @@ impl DagNN {
             cliques: Vec::new(),
             memory: GraphMemory::new(1000),
             input_nodes: Vec::new(),
+            input_nodes_set: HashSet::new(),
+            position_index: BTreeMap::new(),
             output_nodes: Vec::new(),
         }
     }
@@ -455,6 +463,8 @@ impl DagNN {
         for (position, ch) in text.chars().enumerate() {
             let node = dag.graph.add_node(Node::input(ch, position));
             dag.input_nodes.push(node);
+            dag.input_nodes_set.insert(node);
+            dag.position_index.insert(position, node);
 
             // Connect to previous character
             if let Some(prev) = prev_node {
@@ -474,6 +484,8 @@ impl DagNN {
     pub fn add_character(&mut self, ch: char, position: usize) -> NodeId {
         let node = self.graph.add_node(Node::input(ch, position));
         self.input_nodes.push(node);
+        self.input_nodes_set.insert(node);
+        self.position_index.insert(position, node);
 
         // Connect to previous if exists
         if self.input_nodes.len() > 1 {
@@ -585,6 +597,42 @@ impl DagNN {
             }
             // Default
             _ => 2,
+        }
+    }
+
+    /// Connect all nodes within context window in a single pass (O(n × window_size))
+    ///
+    /// This is more efficient than calling connect_relevant() for each node.
+    /// Uses a sliding window approach for O(n × window_size) total complexity.
+    pub fn connect_all_relevant(&mut self, context_window: usize) {
+        // Collect nodes sorted by position
+        let mut nodes_by_pos: Vec<(usize, NodeId)> = self.input_nodes
+            .iter()
+            .filter_map(|&n| self.graph[n].position.map(|p| (p, n)))
+            .collect();
+        nodes_by_pos.sort_by_key(|&(p, _)| p);
+
+        // Sliding window approach
+        for i in 0..nodes_by_pos.len() {
+            let (pos_i, node_i) = nodes_by_pos[i];
+
+            // Look at nodes ahead within window
+            for j in (i + 1)..nodes_by_pos.len() {
+                let (pos_j, node_j) = nodes_by_pos[j];
+                let distance = pos_j - pos_i;
+
+                // Early break if beyond window
+                if distance > context_window {
+                    break;
+                }
+
+                // Skip distance of 1 (already have sequential edges)
+                if distance > 1 {
+                    let weight = 1.0 / (distance as f32);
+                    self.graph.add_edge(node_i, node_j, Edge::skip(weight));
+                    self.graph.add_edge(node_j, node_i, Edge::skip(weight));
+                }
+            }
         }
     }
 }
@@ -776,25 +824,32 @@ impl GraphBuilder for DagNN {
     }
 
     fn connect_relevant(&mut self, node: NodeId, context_window: usize) {
-        // Connect to nodes within the context window
+        // Connect to nodes within the context window using O(window_size) lookup
         let node_pos = self.graph[node].position.unwrap_or(0);
+        let start = node_pos.saturating_sub(context_window);
+        let end = node_pos + context_window;
 
-        for &other in &self.input_nodes {
+        // Use BTreeMap range query for O(window_size) iteration
+        let neighbors: Vec<(usize, NodeId)> = self.position_index
+            .range(start..=end)
+            .map(|(&pos, &n)| (pos, n))
+            .collect();
+
+        for (other_pos, other) in neighbors {
             if other == node {
                 continue;
             }
-            if let Some(other_pos) = self.graph[other].position {
-                let distance = if node_pos > other_pos {
-                    node_pos - other_pos
-                } else {
-                    other_pos - node_pos
-                };
 
-                if distance <= context_window && distance > 1 {
-                    // Add skip connection with weight based on distance
-                    let weight = 1.0 / (distance as f32);
-                    self.graph.add_edge(other, node, Edge::skip(weight));
-                }
+            let distance = if node_pos > other_pos {
+                node_pos - other_pos
+            } else {
+                other_pos - node_pos
+            };
+
+            if distance <= context_window && distance > 1 {
+                // Add skip connection with weight based on distance
+                let weight = 1.0 / (distance as f32);
+                self.graph.add_edge(other, node, Edge::skip(weight));
             }
         }
     }
@@ -1169,8 +1224,9 @@ impl MemoryManager for DagNN {
             let has_outgoing = self.graph.edges_directed(node_idx, petgraph::Direction::Outgoing).next().is_some();
 
             // Skip input nodes (they're allowed to have no incoming edges)
+            // Using HashSet for O(1) lookup instead of Vec::contains() O(n)
             if !has_incoming && !has_outgoing {
-                if !self.input_nodes.contains(&node_idx) {
+                if !self.input_nodes_set.contains(&node_idx) {
                     disconnected.push(node_idx);
                 }
             }
@@ -1728,6 +1784,203 @@ pub struct CliqueStats {
 }
 
 // ============================================================================
+// K-Clique Percolation / Community Detection (backend-008)
+// ============================================================================
+
+/// A community of nodes discovered via k-Clique Percolation
+///
+/// Communities represent overlapping concept clusters where members
+/// share densely connected relationships through k-cliques.
+#[derive(Debug, Clone)]
+pub struct Community {
+    /// Unique identifier for this community
+    pub id: usize,
+    /// All nodes that belong to this community
+    pub nodes: Vec<NodeId>,
+    /// The k-cliques that form this community
+    pub cliques: Vec<Vec<NodeId>>,
+    /// Community strength (average clique connectivity)
+    pub strength: f32,
+}
+
+impl Community {
+    /// Create a new community
+    pub fn new(id: usize, nodes: Vec<NodeId>, cliques: Vec<Vec<NodeId>>) -> Self {
+        Self {
+            id,
+            nodes,
+            cliques,
+            strength: 1.0,
+        }
+    }
+
+    /// Get the number of nodes in the community
+    pub fn size(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Get the number of cliques in the community
+    pub fn clique_count(&self) -> usize {
+        self.cliques.len()
+    }
+
+    /// Check if a node belongs to this community
+    pub fn contains(&self, node: NodeId) -> bool {
+        self.nodes.contains(&node)
+    }
+}
+
+impl DagNN {
+    /// Find concept communities using k-Clique Percolation Method (CPM)
+    ///
+    /// Two k-cliques are adjacent if they share k-1 nodes. A community
+    /// is a maximal set of k-cliques where any two cliques are connected
+    /// through a path of adjacent k-cliques.
+    ///
+    /// # Arguments
+    /// * `k` - The clique size (must be 3 <= k <= MAX_CLIQUE_K)
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Community>)` - List of discovered communities
+    /// * `Err(CliqueError)` - If k is out of bounds or graph is too large
+    ///
+    /// # Complexity
+    /// O(m · d^(k-2)) where d = max degree, for sparse graphs
+    pub fn find_concept_communities(&self, k: usize) -> CliqueResult<Vec<Community>> {
+        // Defense in depth: validate k (also validated in find_cliques)
+        if k > MAX_CLIQUE_K {
+            return Err(CliqueError::KTooLarge {
+                requested: k,
+                max: MAX_CLIQUE_K,
+            });
+        }
+        if k < 3 {
+            return Err(CliqueError::KTooSmall(k));
+        }
+
+        // 1. Find all k-cliques
+        let cliques = self.find_cliques(k)?;
+
+        if cliques.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. Build clique adjacency (cliques that share k-1 nodes)
+        let adjacency = Self::build_clique_adjacency(&cliques, k);
+
+        // 3. Find connected components in clique graph
+        let components = Self::find_clique_components(&adjacency, cliques.len());
+
+        // 4. Merge cliques into communities
+        let communities = Self::merge_into_communities(&cliques, &components);
+
+        Ok(communities)
+    }
+
+    /// Build adjacency list for cliques (share k-1 nodes = adjacent)
+    fn build_clique_adjacency(cliques: &[Vec<NodeId>], k: usize) -> Vec<Vec<usize>> {
+        let n = cliques.len();
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if Self::cliques_share_k_minus_1(&cliques[i], &cliques[j], k) {
+                    adjacency[i].push(j);
+                    adjacency[j].push(i);
+                }
+            }
+        }
+
+        adjacency
+    }
+
+    /// Check if two cliques share exactly k-1 nodes
+    fn cliques_share_k_minus_1(c1: &[NodeId], c2: &[NodeId], k: usize) -> bool {
+        let mut shared = 0;
+        for node in c1 {
+            if c2.contains(node) {
+                shared += 1;
+            }
+        }
+        shared == k - 1
+    }
+
+    /// Find connected components in the clique adjacency graph using BFS
+    fn find_clique_components(adjacency: &[Vec<usize>], num_cliques: usize) -> Vec<Vec<usize>> {
+        let mut visited = vec![false; num_cliques];
+        let mut components = Vec::new();
+
+        for start in 0..num_cliques {
+            if visited[start] {
+                continue;
+            }
+
+            // BFS from this clique
+            let mut component = Vec::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(start);
+            visited[start] = true;
+
+            while let Some(current) = queue.pop_front() {
+                component.push(current);
+
+                for &neighbor in &adjacency[current] {
+                    if !visited[neighbor] {
+                        visited[neighbor] = true;
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+
+            components.push(component);
+        }
+
+        components
+    }
+
+    /// Merge cliques in each component into a community
+    fn merge_into_communities(
+        cliques: &[Vec<NodeId>],
+        components: &[Vec<usize>],
+    ) -> Vec<Community> {
+        let mut communities = Vec::new();
+
+        for (id, component) in components.iter().enumerate() {
+            // Collect all nodes in this component
+            let mut node_set: HashSet<NodeId> = HashSet::new();
+            let mut component_cliques = Vec::new();
+
+            for &clique_idx in component {
+                for &node in &cliques[clique_idx] {
+                    node_set.insert(node);
+                }
+                component_cliques.push(cliques[clique_idx].clone());
+            }
+
+            let nodes: Vec<NodeId> = node_set.into_iter().collect();
+
+            // Calculate strength based on clique density
+            let strength = if nodes.is_empty() {
+                0.0
+            } else {
+                component_cliques.len() as f32 / nodes.len() as f32
+            };
+
+            let mut community = Community::new(id, nodes, component_cliques);
+            community.strength = strength;
+            communities.push(community);
+        }
+
+        communities
+    }
+
+    /// Find communities with default k=3 (triangles)
+    pub fn find_triangle_communities(&self) -> CliqueResult<Vec<Community>> {
+        self.find_concept_communities(3)
+    }
+}
+
+// ============================================================================
 // Persistence (backend-022)
 // ============================================================================
 
@@ -1811,8 +2064,21 @@ impl DagNN {
 
     /// Load DagNN from JSON format
     pub fn load_json(json: &str) -> PersistenceResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+        let mut dag: Self = serde_json::from_str(json)
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))?;
+        dag.rebuild_input_set();
+        Ok(dag)
+    }
+
+    /// Rebuild input_nodes_set and position_index from input_nodes (used after deserialization)
+    fn rebuild_input_set(&mut self) {
+        self.input_nodes_set = self.input_nodes.iter().copied().collect();
+        self.position_index.clear();
+        for &node in &self.input_nodes {
+            if let Some(pos) = self.graph[node].position {
+                self.position_index.insert(pos, node);
+            }
+        }
     }
 
     /// Save DagNN to a file (JSON format)
@@ -2431,5 +2697,252 @@ mod tests {
         let loaded = GraphemeGraph::load_json(&json).unwrap();
 
         assert_eq!(original.to_text(), loaded.to_text());
+    }
+
+    // ========================================================================
+    // HashSet Optimization Tests (backend-012)
+    // ========================================================================
+
+    #[test]
+    fn test_input_nodes_set_after_deserialization() {
+        // Create a DagNN, add hidden nodes, then save/load
+        let mut original = DagNN::from_text("test").unwrap();
+
+        // Add disconnected hidden nodes
+        original.graph.add_node(Node::hidden());
+        original.graph.add_node(Node::hidden());
+        assert_eq!(original.node_count(), 6); // 4 input + 2 hidden
+
+        // Save and load
+        let json = original.save_json().unwrap();
+        let mut loaded = DagNN::load_json(&json).unwrap();
+
+        // GC should work correctly after loading (uses input_nodes_set)
+        let removed = loaded.gc_disconnected();
+        assert_eq!(removed, 2); // Should remove 2 disconnected hidden nodes
+        assert_eq!(loaded.node_count(), 4); // Only input nodes remain
+    }
+
+    #[test]
+    fn test_input_nodes_set_matches_vec() {
+        let dag = DagNN::from_text("hello").unwrap();
+
+        // The set should contain all input nodes
+        for node in dag.input_nodes() {
+            assert!(dag.input_nodes_set.contains(node));
+        }
+
+        // The set should have same length as vec
+        assert_eq!(dag.input_nodes_set.len(), dag.input_nodes.len());
+    }
+
+    // ========================================================================
+    // K-Clique Percolation / Community Tests (backend-008)
+    // ========================================================================
+
+    #[test]
+    fn test_community_basic() {
+        let nodes = vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)];
+        let cliques = vec![nodes.clone()];
+        let community = Community::new(0, nodes.clone(), cliques);
+
+        assert_eq!(community.id, 0);
+        assert_eq!(community.size(), 3);
+        assert_eq!(community.clique_count(), 1);
+        assert!(community.contains(NodeIndex::new(0)));
+        assert!(!community.contains(NodeIndex::new(5)));
+    }
+
+    #[test]
+    fn test_find_concept_communities_empty() {
+        let dag = DagNN::new();
+        let communities = dag.find_concept_communities(3).unwrap();
+        assert!(communities.is_empty());
+    }
+
+    #[test]
+    fn test_find_concept_communities_no_cliques() {
+        // A linear chain has no triangles
+        let dag = DagNN::from_text("abc").unwrap();
+        let communities = dag.find_concept_communities(3).unwrap();
+        assert!(communities.is_empty());
+    }
+
+    #[test]
+    fn test_find_concept_communities_k_bounds() {
+        let dag = DagNN::from_text("test").unwrap();
+
+        // k too small
+        let result = dag.find_concept_communities(2);
+        assert!(matches!(result, Err(CliqueError::KTooSmall(_))));
+
+        // k too large
+        let result = dag.find_concept_communities(10);
+        assert!(matches!(result, Err(CliqueError::KTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_find_triangle_communities() {
+        let dag = DagNN::from_text("ab").unwrap();
+        // Should not panic, just return empty
+        let communities = dag.find_triangle_communities().unwrap();
+        assert!(communities.is_empty());
+    }
+
+    #[test]
+    fn test_cliques_share_k_minus_1() {
+        let c1 = vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)];
+        let c2 = vec![NodeIndex::new(1), NodeIndex::new(2), NodeIndex::new(3)];
+        let c3 = vec![NodeIndex::new(4), NodeIndex::new(5), NodeIndex::new(6)];
+
+        // c1 and c2 share 2 nodes (k-1 for k=3)
+        assert!(DagNN::cliques_share_k_minus_1(&c1, &c2, 3));
+
+        // c1 and c3 share 0 nodes
+        assert!(!DagNN::cliques_share_k_minus_1(&c1, &c3, 3));
+    }
+
+    #[test]
+    fn test_build_clique_adjacency() {
+        let cliques = vec![
+            vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)],
+            vec![NodeIndex::new(1), NodeIndex::new(2), NodeIndex::new(3)],
+            vec![NodeIndex::new(4), NodeIndex::new(5), NodeIndex::new(6)],
+        ];
+
+        let adjacency = DagNN::build_clique_adjacency(&cliques, 3);
+
+        // Clique 0 and 1 are adjacent (share nodes 1, 2)
+        assert!(adjacency[0].contains(&1));
+        assert!(adjacency[1].contains(&0));
+
+        // Clique 2 is isolated
+        assert!(adjacency[2].is_empty());
+    }
+
+    #[test]
+    fn test_find_clique_components() {
+        // Two components: {0, 1} and {2}
+        let adjacency = vec![
+            vec![1],    // 0 -> 1
+            vec![0],    // 1 -> 0
+            vec![],     // 2 (isolated)
+        ];
+
+        let components = DagNN::find_clique_components(&adjacency, 3);
+
+        assert_eq!(components.len(), 2);
+
+        // Find which component contains 0 and 1
+        let comp_01: Vec<usize> = components.iter()
+            .find(|c| c.contains(&0))
+            .cloned()
+            .unwrap();
+        assert!(comp_01.contains(&0));
+        assert!(comp_01.contains(&1));
+        assert!(!comp_01.contains(&2));
+
+        // The other component should have just 2
+        let comp_2: Vec<usize> = components.iter()
+            .find(|c| c.contains(&2))
+            .cloned()
+            .unwrap();
+        assert_eq!(comp_2.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_into_communities() {
+        let cliques = vec![
+            vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)],
+            vec![NodeIndex::new(1), NodeIndex::new(2), NodeIndex::new(3)],
+        ];
+        let components = vec![vec![0, 1]]; // Both cliques in one component
+
+        let communities = DagNN::merge_into_communities(&cliques, &components);
+
+        assert_eq!(communities.len(), 1);
+        let community = &communities[0];
+        assert_eq!(community.clique_count(), 2);
+        // Nodes 0, 1, 2, 3 should all be present
+        assert_eq!(community.size(), 4);
+    }
+
+    // ========================================================================
+    // Connect Relevant Optimization Tests (backend-013)
+    // ========================================================================
+
+    #[test]
+    fn test_position_index_populated() {
+        let dag = DagNN::from_text("hello").unwrap();
+
+        // Position index should have 5 entries
+        assert_eq!(dag.position_index.len(), 5);
+
+        // Check positions are correct
+        for (pos, &node) in &dag.position_index {
+            assert_eq!(dag.graph[node].position, Some(*pos));
+        }
+    }
+
+    #[test]
+    fn test_position_index_after_deserialization() {
+        let original = DagNN::from_text("test").unwrap();
+        let json = original.save_json().unwrap();
+        let loaded = DagNN::load_json(&json).unwrap();
+
+        // Position index should be rebuilt
+        assert_eq!(loaded.position_index.len(), 4);
+        for (pos, &node) in &loaded.position_index {
+            assert_eq!(loaded.graph[node].position, Some(*pos));
+        }
+    }
+
+    #[test]
+    fn test_connect_relevant_uses_position_index() {
+        let mut dag = DagNN::from_text("abcde").unwrap();
+        let initial_edges = dag.edge_count();
+
+        // Connect node at position 2 with window of 3
+        let node = dag.position_index.get(&2).copied().unwrap();
+        dag.connect_relevant(node, 3);
+
+        // Should add skip edges (not distance 1)
+        assert!(dag.edge_count() > initial_edges);
+    }
+
+    #[test]
+    fn test_connect_all_relevant() {
+        let mut dag = DagNN::from_text("abcdefg").unwrap();
+        let initial_edges = dag.edge_count();
+        assert_eq!(initial_edges, 6); // 6 sequential edges
+
+        // Connect all with window of 2
+        dag.connect_all_relevant(2);
+
+        // With window 2, each node connects to nodes at distance 2
+        // That's n-2 skip edges (bidirectional) = (n-2)*2 edges
+        // Actually with bidirectional, we add 2 edges per pair at distance 2
+        assert!(dag.edge_count() > initial_edges);
+    }
+
+    #[test]
+    fn test_connect_all_relevant_window_1() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let initial_edges = dag.edge_count();
+
+        // Window of 1 should add no skip edges (only distance > 1 creates edges)
+        dag.connect_all_relevant(1);
+
+        // No new edges added
+        assert_eq!(dag.edge_count(), initial_edges);
+    }
+
+    #[test]
+    fn test_connect_all_relevant_empty_graph() {
+        let mut dag = DagNN::new();
+
+        // Should not panic on empty graph
+        dag.connect_all_relevant(5);
+        assert_eq!(dag.edge_count(), 0);
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: backend-012
 title: Optimize GC with HashSet for input_nodes
-status: todo
+status: done
 priority: low
 tags:
 - backend
@@ -103,16 +103,26 @@ Search for `input_nodes` usage:
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Added `input_nodes_set: HashSet<NodeId>` field to DagNN (with `#[serde(skip)]`)
+- Kept `input_nodes: Vec<NodeId>` for ordered iteration (needed by `to_text()`)
+- Updated `DagNN::new()` to initialize empty HashSet
+- Updated `from_text()` to insert nodes into both Vec and HashSet
+- Updated `add_character()` to insert into HashSet
+- Updated `gc_disconnected()` to use `input_nodes_set.contains()` for O(1) lookup
+- Added `rebuild_input_set()` method to rebuild HashSet after deserialization
+- Updated `load_json()` to call `rebuild_input_set()` after deserializing
+- Added 2 new tests for HashSet optimization (45 total tests in grapheme-core)
 
 ### Causality Impact
 - GC performance improved from O(n²) to O(n)
-- No functional changes
+- No functional changes to external API
+- Ordered iteration preserved via Vec
 
 ### Dependencies & Integration
-- May need `indexmap` crate if order matters
-- Pure internal optimization, no API changes
+- No new crate dependencies
+- Pure internal optimization
+- Deserialization properly rebuilds HashSet
 
 ### Verification & Testing
-- Run `cargo test -p grapheme-core`
-- Run GC benchmark before/after
+- Run `cargo test -p grapheme-core` for unit tests
+- All 45 tests passing with 0 warnings

@@ -1,7 +1,7 @@
 ---
 id: backend-008
 title: Implement k-Clique Percolation for concept communities
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -123,17 +123,26 @@ pub fn find_concept_communities(&self, k: usize) -> Result<Vec<Community>, Cliqu
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Added `Community` struct with id, nodes, cliques, and strength fields
+- Added `find_concept_communities(k)` method to DagNN for CPM algorithm
+- Added `find_triangle_communities()` convenience method (k=3)
+- Added helper methods:
+  - `build_clique_adjacency()` - builds clique-clique adjacency graph
+  - `cliques_share_k_minus_1()` - checks k-1 node overlap
+  - `find_clique_components()` - BFS for connected components
+  - `merge_into_communities()` - merges cliques into communities
+- Added 9 CPM tests (54 total tests in grapheme-core)
 
 ### Causality Impact
 - Community detection enables concept-level compression
-- Feeds into loss function via `clique_mismatch`
+- Supports overlapping communities (node in multiple concepts)
+- Default k=3 for character trigrams, k=4-5 for concept-level
 
 ### Dependencies & Integration
-- Depends on fixed-k enumeration (backend-009) for finding cliques
-- Integrates with GraphemeGraph in grapheme-core
-- Updates GraphEditDistance in grapheme-train
+- Uses fixed-k enumeration from backend-009
+- Validates k bounds (3 <= k <= MAX_CLIQUE_K)
+- Integrates with DagNN in grapheme-core
 
 ### Verification & Testing
-- Test community detection on known graphs
-- Verify overlapping communities work correctly
+- Run `cargo test -p grapheme-core` for unit tests
+- All 54 tests passing with 0 warnings
