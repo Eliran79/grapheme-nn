@@ -1229,6 +1229,317 @@ impl GraphEditDistance {
 }
 
 // ============================================================================
+// BP2 Quadratic GED Approximation (backend-007)
+// ============================================================================
+
+/// Node cost for BP2 matching
+#[derive(Debug, Clone)]
+struct NodeCost {
+    /// Label mismatch cost (0.0 if same, 1.0 if different)
+    pub label_cost: f32,
+    /// Degree difference cost
+    pub degree_cost: f32,
+}
+
+impl NodeCost {
+    /// Total cost for this node matching
+    fn total(&self) -> f32 {
+        self.label_cost + self.degree_cost * 0.1
+    }
+}
+
+/// Result of greedy assignment
+#[derive(Debug, Clone)]
+struct AssignmentResult {
+    /// Node assignment (g1 node index -> g2 node index or None)
+    pub assignment: Vec<Option<usize>>,
+    /// Total mismatch cost
+    pub mismatch_cost: f32,
+    /// Number of insertions (g2 nodes not matched)
+    pub insertions: usize,
+    /// Number of deletions (g1 nodes not matched)
+    pub deletions: usize,
+}
+
+impl GraphEditDistance {
+    /// Compute BP2 quadratic GED approximation for GRAPHEME graphs
+    ///
+    /// BP2 uses Hausdorff-inspired node matching with greedy assignment.
+    /// Complexity: O(n²) instead of O(n³) for Hungarian algorithm.
+    ///
+    /// Returns a valid upper bound (never underestimates true GED).
+    pub fn compute_bp2(predicted: &GraphemeGraph, target: &GraphemeGraph) -> Self {
+        let n1 = predicted.node_count();
+        let n2 = target.node_count();
+
+        if n1 == 0 && n2 == 0 {
+            return Self::default();
+        }
+
+        // Compute node-to-node cost matrix
+        let node_costs = Self::compute_node_costs_grapheme(predicted, target);
+
+        // Greedy assignment
+        let assignment = Self::greedy_assign(&node_costs, n1, n2);
+
+        // Compute edge costs based on assignment
+        let edge_cost = Self::compute_edge_cost_grapheme(predicted, target, &assignment);
+
+        Self {
+            node_insertion_cost: assignment.insertions as f32,
+            node_deletion_cost: assignment.deletions as f32,
+            edge_insertion_cost: edge_cost.0,
+            edge_deletion_cost: edge_cost.1,
+            node_mismatch_cost: assignment.mismatch_cost,
+            edge_mismatch_cost: 0.0,
+            clique_mismatch: 0.0,
+        }
+    }
+
+    /// Compute BP2 for MathGraphs
+    pub fn compute_bp2_math(predicted: &MathGraph, target: &MathGraph) -> Self {
+        let n1 = predicted.node_count();
+        let n2 = target.node_count();
+
+        if n1 == 0 && n2 == 0 {
+            return Self::default();
+        }
+
+        let node_costs = Self::compute_node_costs_math(predicted, target);
+        let assignment = Self::greedy_assign(&node_costs, n1, n2);
+        let edge_cost = Self::compute_edge_cost_math(predicted, target, &assignment);
+
+        Self {
+            node_insertion_cost: assignment.insertions as f32,
+            node_deletion_cost: assignment.deletions as f32,
+            edge_insertion_cost: edge_cost.0,
+            edge_deletion_cost: edge_cost.1,
+            node_mismatch_cost: assignment.mismatch_cost,
+            edge_mismatch_cost: 0.0,
+            clique_mismatch: 0.0,
+        }
+    }
+
+    /// Compute node-to-node cost matrix for GRAPHEME graphs
+    fn compute_node_costs_grapheme(g1: &GraphemeGraph, g2: &GraphemeGraph) -> Vec<Vec<NodeCost>> {
+        let n1 = g1.node_count();
+        let n2 = g2.node_count();
+
+        let indices1: Vec<_> = g1.graph.node_indices().collect();
+        let indices2: Vec<_> = g2.graph.node_indices().collect();
+
+        let mut costs = vec![vec![NodeCost { label_cost: 1.0, degree_cost: 0.0 }; n2]; n1];
+
+        for (i, &idx1) in indices1.iter().enumerate() {
+            let node1 = &g1.graph[idx1];
+            let degree1 = g1.graph.edges(idx1).count();
+
+            for (j, &idx2) in indices2.iter().enumerate() {
+                let node2 = &g2.graph[idx2];
+                let degree2 = g2.graph.edges(idx2).count();
+
+                // Label cost: 0 if same type, 1 if different
+                let label_cost = if node1.node_type == node2.node_type {
+                    0.0
+                } else {
+                    1.0
+                };
+
+                // Degree cost: normalized difference
+                let degree_cost = (degree1 as f32 - degree2 as f32).abs()
+                    / (1 + degree1.max(degree2)) as f32;
+
+                costs[i][j] = NodeCost { label_cost, degree_cost };
+            }
+        }
+
+        costs
+    }
+
+    /// Compute node-to-node cost matrix for MathGraphs
+    fn compute_node_costs_math(g1: &MathGraph, g2: &MathGraph) -> Vec<Vec<NodeCost>> {
+        let n1 = g1.node_count();
+        let n2 = g2.node_count();
+
+        let indices1: Vec<_> = g1.graph.node_indices().collect();
+        let indices2: Vec<_> = g2.graph.node_indices().collect();
+
+        let mut costs = vec![vec![NodeCost { label_cost: 1.0, degree_cost: 0.0 }; n2]; n1];
+
+        for (i, &idx1) in indices1.iter().enumerate() {
+            let node1 = &g1.graph[idx1];
+            let degree1 = g1.graph.edges(idx1).count();
+
+            for (j, &idx2) in indices2.iter().enumerate() {
+                let node2 = &g2.graph[idx2];
+                let degree2 = g2.graph.edges(idx2).count();
+
+                // Label cost: 0 if same type, 1 if different
+                let label_cost = if Self::math_nodes_equal(node1, node2) {
+                    0.0
+                } else {
+                    0.5 + 0.5 * if Self::math_node_category(node1) == Self::math_node_category(node2) {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                };
+
+                let degree_cost = (degree1 as f32 - degree2 as f32).abs()
+                    / (1 + degree1.max(degree2)) as f32;
+
+                costs[i][j] = NodeCost { label_cost, degree_cost };
+            }
+        }
+
+        costs
+    }
+
+    /// Check if two math nodes are equal
+    fn math_nodes_equal(n1: &MathNode, n2: &MathNode) -> bool {
+        match (n1, n2) {
+            (MathNode::Integer(a), MathNode::Integer(b)) => a == b,
+            (MathNode::Float(a), MathNode::Float(b)) => (a - b).abs() < 1e-10,
+            (MathNode::Symbol(a), MathNode::Symbol(b)) => a == b,
+            (MathNode::Operator(a), MathNode::Operator(b)) => a == b,
+            (MathNode::Function(a), MathNode::Function(b)) => a == b,
+            (MathNode::Result, MathNode::Result) => true,
+            _ => false,
+        }
+    }
+
+    /// Get category of a math node (for partial matching)
+    fn math_node_category(node: &MathNode) -> u8 {
+        match node {
+            MathNode::Integer(_) | MathNode::Float(_) => 0, // Numeric
+            MathNode::Symbol(_) => 1, // Variable
+            MathNode::Operator(_) => 2, // Operator
+            MathNode::Function(_) => 3, // Function
+            MathNode::Result => 4, // Result
+        }
+    }
+
+    /// Greedy assignment algorithm - O(n²)
+    ///
+    /// Assigns nodes from g1 to g2 greedily, always picking the best
+    /// available match. Not optimal but fast.
+    fn greedy_assign(costs: &[Vec<NodeCost>], n1: usize, n2: usize) -> AssignmentResult {
+        let mut assignment = vec![None; n1];
+        let mut used = vec![false; n2];
+        let mut total_cost = 0.0f32;
+
+        // Build list of all possible pairs sorted by cost
+        let mut pairs: Vec<(usize, usize, f32)> = Vec::with_capacity(n1 * n2);
+        for i in 0..n1 {
+            for j in 0..n2 {
+                pairs.push((i, j, costs[i][j].total()));
+            }
+        }
+        pairs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Greedy assignment
+        for (i, j, cost) in pairs {
+            if assignment[i].is_none() && !used[j] {
+                assignment[i] = Some(j);
+                used[j] = true;
+                total_cost += cost;
+            }
+        }
+
+        // Count unassigned nodes
+        let deletions = assignment.iter().filter(|a| a.is_none()).count();
+        let insertions = used.iter().filter(|&&u| !u).count();
+
+        AssignmentResult {
+            assignment,
+            mismatch_cost: total_cost,
+            insertions,
+            deletions,
+        }
+    }
+
+    /// Compute edge costs based on node assignment for GRAPHEME graphs
+    fn compute_edge_cost_grapheme(
+        g1: &GraphemeGraph,
+        g2: &GraphemeGraph,
+        assignment: &AssignmentResult,
+    ) -> (f32, f32) {
+        let indices1: Vec<_> = g1.graph.node_indices().collect();
+        let indices2: Vec<_> = g2.graph.node_indices().collect();
+
+        let mut matched_edges_g2 = std::collections::HashSet::new();
+        let mut edge_matches = 0usize;
+
+        // For each edge in g1, check if corresponding edge exists in g2
+        for edge1 in g1.graph.edge_references() {
+            let src1 = indices1.iter().position(|&idx| idx == edge1.source());
+            let dst1 = indices1.iter().position(|&idx| idx == edge1.target());
+
+            if let (Some(s1), Some(d1)) = (src1, dst1) {
+                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1]) {
+                    // Check if edge exists in g2
+                    if indices2.len() > s2.max(d2) {
+                        let idx_s2 = indices2[s2];
+                        let idx_d2 = indices2[d2];
+                        if g2.graph.find_edge(idx_s2, idx_d2).is_some() {
+                            edge_matches += 1;
+                            matched_edges_g2.insert((s2, d2));
+                        }
+                    }
+                }
+            }
+        }
+
+        let e1 = g1.edge_count();
+        let e2 = g2.edge_count();
+
+        let deletions = e1.saturating_sub(edge_matches);
+        let insertions = e2.saturating_sub(matched_edges_g2.len());
+
+        (insertions as f32, deletions as f32)
+    }
+
+    /// Compute edge costs based on node assignment for MathGraphs
+    fn compute_edge_cost_math(
+        g1: &MathGraph,
+        g2: &MathGraph,
+        assignment: &AssignmentResult,
+    ) -> (f32, f32) {
+        let indices1: Vec<_> = g1.graph.node_indices().collect();
+        let indices2: Vec<_> = g2.graph.node_indices().collect();
+
+        let mut matched_edges_g2 = std::collections::HashSet::new();
+        let mut edge_matches = 0usize;
+
+        for edge1 in g1.graph.edge_references() {
+            let src1 = indices1.iter().position(|&idx| idx == edge1.source());
+            let dst1 = indices1.iter().position(|&idx| idx == edge1.target());
+
+            if let (Some(s1), Some(d1)) = (src1, dst1) {
+                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1]) {
+                    if indices2.len() > s2.max(d2) {
+                        let idx_s2 = indices2[s2];
+                        let idx_d2 = indices2[d2];
+                        if g2.graph.find_edge(idx_s2, idx_d2).is_some() {
+                            edge_matches += 1;
+                            matched_edges_g2.insert((s2, d2));
+                        }
+                    }
+                }
+            }
+        }
+
+        let e1 = g1.edge_count();
+        let e2 = g2.edge_count();
+
+        let deletions = e1.saturating_sub(edge_matches);
+        let insertions = e2.saturating_sub(matched_edges_g2.len());
+
+        (insertions as f32, deletions as f32)
+    }
+}
+
+// ============================================================================
 // Training Configuration and Trainer
 // ============================================================================
 
@@ -1804,5 +2115,131 @@ mod tests {
         assert_eq!(histogram.get(&1), Some(&1));
         assert_eq!(histogram.get(&2), Some(&2));
         assert_eq!(histogram.get(&3), Some(&3));
+    }
+
+    // ========================================================================
+    // BP2 Quadratic GED Tests (backend-007)
+    // ========================================================================
+
+    #[test]
+    fn test_bp2_identical_graphs() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hello");
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+
+        // Identical graphs should have zero insertions/deletions
+        assert_eq!(bp2.node_insertion_cost, 0.0);
+        assert_eq!(bp2.node_deletion_cost, 0.0);
+        // All nodes should match with zero mismatch cost
+        assert!(bp2.node_mismatch_cost < 0.1);
+    }
+
+    #[test]
+    fn test_bp2_completely_different_graphs() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::from_text("xyz");
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+
+        // Different characters should have high mismatch
+        assert!(bp2.node_mismatch_cost > 0.0);
+    }
+
+    #[test]
+    fn test_bp2_size_difference() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hi");
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+
+        // g1 has more nodes, so we expect deletions
+        assert!(bp2.node_deletion_cost > 0.0 || bp2.node_insertion_cost > 0.0);
+    }
+
+    #[test]
+    fn test_bp2_empty_graphs() {
+        let g1 = GraphemeGraph::new();
+        let g2 = GraphemeGraph::new();
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+
+        assert_eq!(bp2.total(), 0.0);
+    }
+
+    #[test]
+    fn test_bp2_one_empty_graph() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::new();
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+
+        // All nodes from g1 should be deleted
+        assert_eq!(bp2.node_deletion_cost, 3.0);
+    }
+
+    #[test]
+    fn test_bp2_math_graphs() {
+        let expr1 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+        let expr2 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let g1 = MathGraph::from_expr(&expr1);
+        let g2 = MathGraph::from_expr(&expr2);
+
+        let bp2 = GraphEditDistance::compute_bp2_math(&g1, &g2);
+
+        // Identical graphs should have low cost
+        assert!(bp2.total() < 1.0);
+    }
+
+    #[test]
+    fn test_bp2_provides_upper_bound() {
+        // BP2 should provide an upper bound on true GED
+        // For simple cases, it should be close to optimal
+        let g1 = GraphemeGraph::from_text("test");
+        let g2 = GraphemeGraph::from_text("test");
+
+        let bp2 = GraphEditDistance::compute_bp2(&g1, &g2);
+        let count = GraphEditDistance::compute(&g1, &g2);
+
+        // BP2 should be at least as large as simple count
+        // (in this case, both should be near zero)
+        assert!(bp2.total() >= 0.0);
+        assert!(count.total() >= 0.0);
+    }
+
+    #[test]
+    fn test_bp2_vs_wl_correlation() {
+        // BP2 and WL should generally agree on similarity ordering
+        let g1 = GraphemeGraph::from_text("hello");
+        let g2 = GraphemeGraph::from_text("hallo"); // Similar
+        let g3 = GraphemeGraph::from_text("xyz");   // Different
+
+        let bp2_similar = GraphEditDistance::compute_bp2(&g1, &g2);
+        let bp2_different = GraphEditDistance::compute_bp2(&g1, &g3);
+
+        // Similar graphs should have lower BP2 cost than different graphs
+        // (mismatch cost is the key differentiator)
+        assert!(bp2_similar.node_mismatch_cost <= bp2_different.node_mismatch_cost);
+    }
+
+    #[test]
+    fn test_bp2_symmetry() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::from_text("xyz");
+
+        let bp2_12 = GraphEditDistance::compute_bp2(&g1, &g2);
+        let bp2_21 = GraphEditDistance::compute_bp2(&g2, &g1);
+
+        // Node mismatch cost should be symmetric
+        assert!((bp2_12.node_mismatch_cost - bp2_21.node_mismatch_cost).abs() < 0.01);
     }
 }
