@@ -1,7 +1,7 @@
 ---
 id: backend-067
 title: Create brain plugin loader and registry
-status: todo
+status: done
 priority: high
 tags:
 - backend

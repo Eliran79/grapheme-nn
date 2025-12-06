@@ -1,7 +1,7 @@
 ---
 id: backend-070
 title: Refactor grapheme-math as DomainBrain plugin
-status: todo
+status: done
 priority: high
 tags:
 - backend

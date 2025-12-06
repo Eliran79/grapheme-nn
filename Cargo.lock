@@ -215,6 +215,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-core"
 version = "0.1.0"
 dependencies = [
