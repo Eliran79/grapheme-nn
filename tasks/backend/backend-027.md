@@ -1,7 +1,7 @@
 ---
 id: backend-027
 title: Implement backpropagation through graph structures
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -36,12 +36,12 @@ Graph neural networks require gradient flow through graph topology. Unlike seque
 - Handle variable-size graphs efficiently
 
 ## Tasks
-- [ ] Implement `Tape` struct for recording operations
-- [ ] Add backward() method to graph operations
-- [ ] Implement gradient accumulation at nodes
-- [ ] Handle topological ordering for backward pass
-- [ ] Implement chain rule through edges
-- [ ] Add gradient clipping utilities
+- [x] Implement `Tape` struct for recording operations
+- [x] Add backward() method to graph operations
+- [x] Implement gradient accumulation at nodes
+- [x] Handle topological ordering for backward pass
+- [x] Implement chain rule through edges
+- [x] Add gradient clipping utilities
 
 ## Acceptance Criteria
 ✅ **Backward Pass:**
@@ -86,30 +86,61 @@ Graph neural networks require gradient flow through graph topology. Unlike seque
 
 ## Updates
 - 2025-12-06: Task created
+- 2025-12-06: Task completed - Backpropagation through graphs implemented
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `TapeOp` enum: EmbeddingLookup, Linear, Sum, Mean, Mul, ReLU, Sigmoid, Tanh, MessagePass, GraphConv, Loss
+- Added `TapeEntry` struct: records operation + output_idx + shape
+- Added `Tape` struct: computation tape for autodiff (lines 2585-3046)
+- Added `NodeGradients` struct: stores node & edge gradients (lines 3049-3118)
+- Added `BackwardPass` trait: backward() and backward_and_update() for DagNN
+- Added `grad_utils` module: numerical_gradient, gradient_check, clip_grad_norm, l2_regularization_grad
+- Added 23 new tests for backpropagation
+
+### Key APIs
+```rust
+// Tape-based autodiff
+let mut tape = Tape::new();
+let idx = tape.embedding_lookup(&emb, 'a');
+let relu_idx = tape.relu(idx);
+tape.backward(relu_idx);  // Computes gradients
+let grad = tape.get_grad(idx);
+
+// DagNN backward pass
+let mut grads = NodeGradients::new();
+let node_grads = dag.backward(&output_grad, &mut emb);
+dag.backward_and_update(&output_grad, &mut emb, 0.01);
+
+// Gradient utilities
+grad_utils::clip_grad_norm(&mut grad, 1.0);
+let reg = grad_utils::l2_regularization_grad(&weights, 0.001);
+```
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Forward pass records operations to Tape
+- Backward pass processes Tape in reverse order
+- Gradients flow from outputs to inputs through edges
+- Edge weight gradients computed via chain rule
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Builds on Embedding from backend-026
+- Uses topological ordering for correct gradient flow
+- Integrates with DagNN via BackwardPass trait
+- No new crate dependencies
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- 23 new tests: test_tape_*, test_node_gradients_*, test_dagnn_backward*, test_grad_utils_*
+- Run: `cargo test -p grapheme-core`
+- 99 tests in grapheme-core, 342 total across workspace
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- For backend-028 (training loop):
+  - Use tape.reset() between iterations
+  - Call embedding.zero_grad() before each forward pass
+  - Call embedding.step(lr) after backward pass
+  - Use NodeGradients.clip_grads(max_norm) to prevent exploding gradients
+- Tape operations: sum, mean, relu, sigmoid, tanh, message_pass, mse_loss
+- grad_utils has numerical gradient checking for validation

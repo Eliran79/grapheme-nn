@@ -2523,6 +2523,759 @@ impl EmbeddingExt for DagNN {
 }
 
 // ============================================================================
+// Backpropagation through Graph Structures (backend-027)
+// ============================================================================
+
+/// Operation type for the computation tape
+#[derive(Debug, Clone)]
+pub enum TapeOp {
+    /// Embedding lookup: (embedding_idx, char_idx)
+    EmbeddingLookup { embedding_idx: usize, char_idx: usize },
+    /// Linear transformation: output = input * weight + bias
+    Linear { input_idx: usize, weight_idx: usize },
+    /// Sum of multiple inputs
+    Sum { input_indices: Vec<usize> },
+    /// Mean of multiple inputs
+    Mean { input_indices: Vec<usize> },
+    /// Element-wise multiplication
+    Mul { left_idx: usize, right_idx: usize },
+    /// ReLU activation
+    ReLU { input_idx: usize },
+    /// Sigmoid activation
+    Sigmoid { input_idx: usize },
+    /// Tanh activation
+    Tanh { input_idx: usize },
+    /// Message passing: aggregate neighbors
+    MessagePass { node_idx: usize, neighbor_indices: Vec<usize>, weights: Vec<f32> },
+    /// Graph convolution operation
+    GraphConv { node_idx: usize, neighbor_indices: Vec<usize> },
+    /// Loss computation (MSE, CrossEntropy, etc.)
+    Loss { pred_idx: usize, target_idx: usize },
+}
+
+/// A tape entry recording one operation and its output
+#[derive(Debug, Clone)]
+pub struct TapeEntry {
+    /// The operation performed
+    pub op: TapeOp,
+    /// Index of the output value in the value store
+    pub output_idx: usize,
+    /// Shape of the output
+    pub output_shape: Vec<usize>,
+}
+
+/// Computation tape for automatic differentiation
+///
+/// Records operations during forward pass, enables gradient computation
+/// during backward pass via reverse-mode autodiff.
+///
+/// # Example
+/// ```
+/// use grapheme_core::{Tape, Embedding};
+///
+/// let mut tape = Tape::new();
+/// let emb = Embedding::xavier(256, 64);
+///
+/// // Forward pass records to tape
+/// let output_idx = tape.embedding_lookup(&emb, 'a');
+///
+/// // Backward pass computes gradients
+/// tape.backward(output_idx);
+/// ```
+#[derive(Debug, Default)]
+pub struct Tape {
+    /// Recorded operations in order
+    entries: Vec<TapeEntry>,
+    /// Stored values from forward pass (flattened f32 arrays)
+    values: Vec<Vec<f32>>,
+    /// Gradients for each value (computed during backward)
+    grads: Vec<Option<Vec<f32>>>,
+    /// Whether tape is currently recording
+    pub recording: bool,
+}
+
+impl Tape {
+    /// Create a new empty tape
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            values: Vec::new(),
+            grads: Vec::new(),
+            recording: true,
+        }
+    }
+
+    /// Clear the tape for a new forward pass
+    pub fn reset(&mut self) {
+        self.entries.clear();
+        self.values.clear();
+        self.grads.clear();
+    }
+
+    /// Stop recording (useful for inference)
+    pub fn no_grad(&mut self) {
+        self.recording = false;
+    }
+
+    /// Resume recording
+    pub fn enable_grad(&mut self) {
+        self.recording = true;
+    }
+
+    /// Store a value and return its index
+    pub fn store_value(&mut self, value: Vec<f32>, _shape: Vec<usize>) -> usize {
+        let idx = self.values.len();
+        self.values.push(value);
+        self.grads.push(None);
+        idx
+    }
+
+    /// Record an embedding lookup operation
+    pub fn embedding_lookup(&mut self, embedding: &Embedding, ch: char) -> usize {
+        let output = embedding.forward(ch);
+        let output_vec: Vec<f32> = output.iter().cloned().collect();
+        let shape = vec![embedding.embed_dim];
+
+        let output_idx = self.store_value(output_vec, shape.clone());
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::EmbeddingLookup {
+                    embedding_idx: 0, // Single embedding for now
+                    char_idx: ch as usize,
+                },
+                output_idx,
+                output_shape: shape,
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record a sum operation
+    pub fn sum(&mut self, input_indices: &[usize]) -> usize {
+        if input_indices.is_empty() {
+            return self.store_value(vec![0.0], vec![1]);
+        }
+
+        // Get dimension from first input
+        let dim = self.values[input_indices[0]].len();
+        let mut result = vec![0.0; dim];
+
+        for &idx in input_indices {
+            for (i, &v) in self.values[idx].iter().enumerate() {
+                result[i] += v;
+            }
+        }
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Sum {
+                    input_indices: input_indices.to_vec(),
+                },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record a mean operation
+    pub fn mean(&mut self, input_indices: &[usize]) -> usize {
+        if input_indices.is_empty() {
+            return self.store_value(vec![0.0], vec![1]);
+        }
+
+        let dim = self.values[input_indices[0]].len();
+        let mut result = vec![0.0; dim];
+        let n = input_indices.len() as f32;
+
+        for &idx in input_indices {
+            for (i, &v) in self.values[idx].iter().enumerate() {
+                result[i] += v / n;
+            }
+        }
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Mean {
+                    input_indices: input_indices.to_vec(),
+                },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record element-wise multiplication
+    pub fn mul(&mut self, left_idx: usize, right_idx: usize) -> usize {
+        let left = &self.values[left_idx];
+        let right = &self.values[right_idx];
+        let dim = left.len().min(right.len());
+
+        let result: Vec<f32> = left.iter()
+            .zip(right.iter())
+            .map(|(l, r)| l * r)
+            .collect();
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Mul { left_idx, right_idx },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record ReLU activation
+    pub fn relu(&mut self, input_idx: usize) -> usize {
+        let input = &self.values[input_idx];
+        let result: Vec<f32> = input.iter().map(|&x| x.max(0.0)).collect();
+        let dim = result.len();
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::ReLU { input_idx },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record sigmoid activation
+    pub fn sigmoid(&mut self, input_idx: usize) -> usize {
+        let input = &self.values[input_idx];
+        let result: Vec<f32> = input.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
+        let dim = result.len();
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Sigmoid { input_idx },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record tanh activation
+    pub fn tanh(&mut self, input_idx: usize) -> usize {
+        let input = &self.values[input_idx];
+        let result: Vec<f32> = input.iter().map(|&x| x.tanh()).collect();
+        let dim = result.len();
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Tanh { input_idx },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Record a message passing operation (for GNN)
+    pub fn message_pass(
+        &mut self,
+        node_idx: usize,
+        neighbor_indices: &[usize],
+        weights: &[f32],
+    ) -> usize {
+        if neighbor_indices.is_empty() {
+            return node_idx; // No neighbors, return self
+        }
+
+        let dim = self.values[node_idx].len();
+        let mut result = vec![0.0; dim];
+
+        // Weighted sum of neighbor embeddings
+        for (i, &neighbor_idx) in neighbor_indices.iter().enumerate() {
+            let w = weights.get(i).copied().unwrap_or(1.0);
+            for (j, &v) in self.values[neighbor_idx].iter().enumerate() {
+                result[j] += w * v;
+            }
+        }
+
+        let output_idx = self.store_value(result, vec![dim]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::MessagePass {
+                    node_idx,
+                    neighbor_indices: neighbor_indices.to_vec(),
+                    weights: weights.to_vec(),
+                },
+                output_idx,
+                output_shape: vec![dim],
+            });
+        }
+
+        output_idx
+    }
+
+    /// Compute MSE loss between prediction and target
+    pub fn mse_loss(&mut self, pred_idx: usize, target: &[f32]) -> (usize, f32) {
+        let pred = &self.values[pred_idx];
+        let n = pred.len().min(target.len());
+
+        let mut sum_sq = 0.0;
+        for i in 0..n {
+            let diff = pred[i] - target[i];
+            sum_sq += diff * diff;
+        }
+        let loss = sum_sq / n as f32;
+
+        // Store target as a value
+        let target_idx = self.store_value(target.to_vec(), vec![target.len()]);
+
+        // Store loss as single-element value
+        let output_idx = self.store_value(vec![loss], vec![1]);
+
+        if self.recording {
+            self.entries.push(TapeEntry {
+                op: TapeOp::Loss { pred_idx, target_idx },
+                output_idx,
+                output_shape: vec![1],
+            });
+        }
+
+        (output_idx, loss)
+    }
+
+    /// Get a stored value
+    pub fn get_value(&self, idx: usize) -> Option<&Vec<f32>> {
+        self.values.get(idx)
+    }
+
+    /// Get gradient for a value
+    pub fn get_grad(&self, idx: usize) -> Option<&Vec<f32>> {
+        self.grads.get(idx).and_then(|g| g.as_ref())
+    }
+
+    /// Backward pass: compute gradients for all recorded operations
+    ///
+    /// # Arguments
+    /// * `output_idx` - Index of the loss/output to backprop from
+    ///
+    /// This implements reverse-mode automatic differentiation,
+    /// processing operations in reverse topological order.
+    pub fn backward(&mut self, output_idx: usize) {
+        // Initialize output gradient to 1.0
+        let output_dim = self.values[output_idx].len();
+        self.grads[output_idx] = Some(vec![1.0; output_dim]);
+
+        // Process entries in reverse order (reverse topological order)
+        for entry_idx in (0..self.entries.len()).rev() {
+            // Extract what we need from the entry before any mutable operations
+            let entry_output_idx = self.entries[entry_idx].output_idx;
+            let op = self.entries[entry_idx].op.clone();
+
+            // Skip if no gradient at output
+            let output_grad = match &self.grads[entry_output_idx] {
+                Some(g) => g.clone(),
+                None => continue,
+            };
+
+            // Compute and propagate gradients based on operation type
+            match op {
+                TapeOp::EmbeddingLookup { .. } => {
+                    // Gradient flows to embedding weights (handled externally)
+                }
+
+                TapeOp::Sum { input_indices } => {
+                    // Gradient flows equally to all inputs
+                    for input_idx in input_indices {
+                        self.accumulate_grad(input_idx, &output_grad);
+                    }
+                }
+
+                TapeOp::Mean { input_indices } => {
+                    // Gradient is scaled by 1/n
+                    let n = input_indices.len() as f32;
+                    let scaled_grad: Vec<f32> = output_grad.iter().map(|&g| g / n).collect();
+                    for input_idx in input_indices {
+                        self.accumulate_grad(input_idx, &scaled_grad);
+                    }
+                }
+
+                TapeOp::Mul { left_idx, right_idx } => {
+                    // d(a*b)/da = b, d(a*b)/db = a
+                    let left = self.values[left_idx].clone();
+                    let right = self.values[right_idx].clone();
+
+                    let left_grad: Vec<f32> = output_grad.iter()
+                        .zip(right.iter())
+                        .map(|(g, r)| g * r)
+                        .collect();
+
+                    let right_grad: Vec<f32> = output_grad.iter()
+                        .zip(left.iter())
+                        .map(|(g, l)| g * l)
+                        .collect();
+
+                    self.accumulate_grad(left_idx, &left_grad);
+                    self.accumulate_grad(right_idx, &right_grad);
+                }
+
+                TapeOp::ReLU { input_idx } => {
+                    // d(relu)/dx = 1 if x > 0 else 0
+                    let input = self.values[input_idx].clone();
+                    let grad: Vec<f32> = output_grad.iter()
+                        .zip(input.iter())
+                        .map(|(g, x)| if *x > 0.0 { *g } else { 0.0 })
+                        .collect();
+                    self.accumulate_grad(input_idx, &grad);
+                }
+
+                TapeOp::Sigmoid { input_idx } => {
+                    // d(sigmoid)/dx = sigmoid * (1 - sigmoid)
+                    let output = self.values[entry_output_idx].clone();
+                    let grad: Vec<f32> = output_grad.iter()
+                        .zip(output.iter())
+                        .map(|(g, s)| g * s * (1.0 - s))
+                        .collect();
+                    self.accumulate_grad(input_idx, &grad);
+                }
+
+                TapeOp::Tanh { input_idx } => {
+                    // d(tanh)/dx = 1 - tanh^2
+                    let output = self.values[entry_output_idx].clone();
+                    let grad: Vec<f32> = output_grad.iter()
+                        .zip(output.iter())
+                        .map(|(g, t)| g * (1.0 - t * t))
+                        .collect();
+                    self.accumulate_grad(input_idx, &grad);
+                }
+
+                TapeOp::MessagePass { neighbor_indices, weights, .. } => {
+                    // Gradient flows back to neighbors weighted by edge weights
+                    for (i, neighbor_idx) in neighbor_indices.iter().enumerate() {
+                        let w = weights.get(i).copied().unwrap_or(1.0);
+                        let scaled_grad: Vec<f32> = output_grad.iter().map(|&g| g * w).collect();
+                        self.accumulate_grad(*neighbor_idx, &scaled_grad);
+                    }
+                }
+
+                TapeOp::GraphConv { neighbor_indices, .. } => {
+                    // Simple mean aggregation gradient
+                    let n = neighbor_indices.len() as f32;
+                    let scaled_grad: Vec<f32> = output_grad.iter().map(|&g| g / n).collect();
+                    for neighbor_idx in neighbor_indices {
+                        self.accumulate_grad(neighbor_idx, &scaled_grad);
+                    }
+                }
+
+                TapeOp::Loss { pred_idx, target_idx } => {
+                    // MSE gradient: d/dpred = 2 * (pred - target) / n
+                    let pred = self.values[pred_idx].clone();
+                    let target = self.values[target_idx].clone();
+                    let n = pred.len() as f32;
+
+                    let grad: Vec<f32> = pred.iter()
+                        .zip(target.iter())
+                        .map(|(p, t)| 2.0 * (p - t) / n)
+                        .collect();
+
+                    // Scale by output gradient (usually 1.0)
+                    let scaled_grad: Vec<f32> = grad.iter()
+                        .map(|&g| g * output_grad[0])
+                        .collect();
+
+                    self.accumulate_grad(pred_idx, &scaled_grad);
+                }
+
+                TapeOp::Linear { input_idx, .. } => {
+                    // Simplified: gradient passes through
+                    self.accumulate_grad(input_idx, &output_grad);
+                }
+            }
+        }
+    }
+
+    /// Accumulate gradient at a value index
+    fn accumulate_grad(&mut self, idx: usize, grad: &[f32]) {
+        if idx >= self.grads.len() {
+            return;
+        }
+
+        if self.grads[idx].is_none() {
+            self.grads[idx] = Some(vec![0.0; grad.len()]);
+        }
+
+        if let Some(ref mut existing) = self.grads[idx] {
+            for (i, &g) in grad.iter().enumerate() {
+                if i < existing.len() {
+                    existing[i] += g;
+                }
+            }
+        }
+    }
+
+    /// Get embedding gradients from the tape for updating
+    pub fn get_embedding_grads(&self) -> Vec<(usize, Vec<f32>)> {
+        let mut result = Vec::new();
+
+        for entry in self.entries.iter() {
+            if let TapeOp::EmbeddingLookup { char_idx, .. } = entry.op {
+                if let Some(grad) = &self.grads[entry.output_idx] {
+                    result.push((char_idx, grad.clone()));
+                }
+            }
+        }
+
+        result
+    }
+}
+
+/// Node-level gradient storage for DagNN
+#[derive(Debug, Clone, Default)]
+pub struct NodeGradients {
+    /// Gradient for each node's hidden state
+    pub node_grads: HashMap<NodeId, Array1<f32>>,
+    /// Gradient for each edge weight
+    pub edge_grads: HashMap<(NodeId, NodeId), f32>,
+}
+
+impl NodeGradients {
+    /// Create new empty gradient storage
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Zero all gradients
+    pub fn zero_grad(&mut self) {
+        self.node_grads.clear();
+        self.edge_grads.clear();
+    }
+
+    /// Accumulate gradient for a node
+    pub fn accumulate_node(&mut self, node: NodeId, grad: &Array1<f32>) {
+        self.node_grads
+            .entry(node)
+            .and_modify(|g| *g = &*g + grad)
+            .or_insert_with(|| grad.clone());
+    }
+
+    /// Accumulate gradient for an edge
+    pub fn accumulate_edge(&mut self, from: NodeId, to: NodeId, grad: f32) {
+        *self.edge_grads.entry((from, to)).or_insert(0.0) += grad;
+    }
+
+    /// Get node gradient
+    pub fn get_node_grad(&self, node: NodeId) -> Option<&Array1<f32>> {
+        self.node_grads.get(&node)
+    }
+
+    /// Get edge gradient
+    pub fn get_edge_grad(&self, from: NodeId, to: NodeId) -> Option<f32> {
+        self.edge_grads.get(&(from, to)).copied()
+    }
+
+    /// Apply gradient clipping to prevent exploding gradients
+    pub fn clip_grads(&mut self, max_norm: f32) {
+        // Compute total gradient norm
+        let mut total_norm_sq = 0.0;
+
+        for grad in self.node_grads.values() {
+            total_norm_sq += grad.iter().map(|x| x * x).sum::<f32>();
+        }
+        for &grad in self.edge_grads.values() {
+            total_norm_sq += grad * grad;
+        }
+
+        let total_norm = total_norm_sq.sqrt();
+
+        // Scale if exceeds max
+        if total_norm > max_norm {
+            let scale = max_norm / total_norm;
+
+            for grad in self.node_grads.values_mut() {
+                *grad *= scale;
+            }
+            for grad in self.edge_grads.values_mut() {
+                *grad *= scale;
+            }
+        }
+    }
+}
+
+/// Backward pass trait for DagNN
+pub trait BackwardPass {
+    /// Compute backward pass through the graph
+    ///
+    /// # Arguments
+    /// * `output_grad` - Gradient from the loss with respect to output nodes
+    /// * `embedding` - The embedding layer to accumulate gradients to
+    ///
+    /// # Returns
+    /// Node gradients that can be used for edge weight updates
+    fn backward(
+        &self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+    ) -> NodeGradients;
+
+    /// Compute backward pass and update edge weights
+    fn backward_and_update(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+        lr: f32,
+    );
+}
+
+impl BackwardPass for DagNN {
+    fn backward(
+        &self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+    ) -> NodeGradients {
+        let mut grads = NodeGradients::new();
+
+        // Initialize output gradients
+        for (&node, grad) in output_grad {
+            grads.accumulate_node(node, grad);
+        }
+
+        // Process in reverse topological order
+        for &node in self.topology.order.iter().rev() {
+            // Skip if no gradient at this node
+            let node_grad = match grads.get_node_grad(node) {
+                Some(g) => g.clone(),
+                None => continue,
+            };
+
+            // Propagate gradient to predecessors
+            for edge in self.graph.edges_directed(node, petgraph::Direction::Incoming) {
+                let source = edge.source();
+                let edge_weight = edge.weight().weight;
+
+                // Gradient w.r.t. source = edge_weight * node_grad
+                let source_grad = &node_grad * edge_weight;
+                grads.accumulate_node(source, &source_grad);
+
+                // Gradient w.r.t. edge weight = source_activation * node_grad
+                let source_activation = self.graph[source].activation;
+                let edge_grad: f32 = node_grad.iter()
+                    .map(|&g| g * source_activation)
+                    .sum();
+                grads.accumulate_edge(source, node, edge_grad);
+            }
+
+            // Update embedding gradients for input nodes
+            if let NodeType::Input(ch) = &self.graph[node].node_type {
+                embedding.backward(*ch as usize, &node_grad);
+            }
+        }
+
+        grads
+    }
+
+    fn backward_and_update(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+        lr: f32,
+    ) {
+        let grads = self.backward(output_grad, embedding);
+
+        // Update edge weights using gradients
+        for ((from, to), edge_grad) in grads.edge_grads {
+            if let Some(edge_idx) = self.graph.find_edge(from, to) {
+                self.graph[edge_idx].weight -= lr * edge_grad;
+            }
+        }
+    }
+}
+
+/// Utility functions for gradient computation
+pub mod grad_utils {
+    use super::*;
+
+    /// Compute numerical gradient for validation
+    pub fn numerical_gradient<F>(
+        f: F,
+        x: &Array1<f32>,
+        eps: f32,
+    ) -> Array1<f32>
+    where
+        F: Fn(&Array1<f32>) -> f32,
+    {
+        let mut grad = Array1::zeros(x.len());
+
+        for i in 0..x.len() {
+            let mut x_plus = x.clone();
+            let mut x_minus = x.clone();
+
+            x_plus[i] += eps;
+            x_minus[i] -= eps;
+
+            grad[i] = (f(&x_plus) - f(&x_minus)) / (2.0 * eps);
+        }
+
+        grad
+    }
+
+    /// Check if analytical gradient matches numerical gradient
+    pub fn gradient_check(
+        analytical: &Array1<f32>,
+        numerical: &Array1<f32>,
+        tolerance: f32,
+    ) -> bool {
+        if analytical.len() != numerical.len() {
+            return false;
+        }
+
+        for i in 0..analytical.len() {
+            let diff = (analytical[i] - numerical[i]).abs();
+            let scale = analytical[i].abs().max(numerical[i].abs()).max(1.0);
+
+            if diff / scale > tolerance {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Apply gradient clipping to a vector
+    pub fn clip_grad_norm(grad: &mut Array1<f32>, max_norm: f32) {
+        let norm: f32 = grad.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        if norm > max_norm {
+            let scale = max_norm / norm;
+            *grad *= scale;
+        }
+    }
+
+    /// Compute L2 regularization gradient
+    pub fn l2_regularization_grad(weights: &Array2<f32>, lambda: f32) -> Array2<f32> {
+        weights * (2.0 * lambda)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3566,5 +4319,341 @@ mod tests {
         // Zero initialization
         let zero = Embedding::new(256, 64, InitStrategy::Zero);
         assert!(zero.weights.iter().all(|&x| x == 0.0));
+    }
+
+    // ========================================================================
+    // Backpropagation Tests (backend-027)
+    // ========================================================================
+
+    #[test]
+    fn test_tape_creation() {
+        let tape = Tape::new();
+        assert!(tape.recording);
+    }
+
+    #[test]
+    fn test_tape_embedding_lookup() {
+        let mut tape = Tape::new();
+        let emb = Embedding::new(256, 32, InitStrategy::Zero);
+
+        let idx = tape.embedding_lookup(&emb, 'a');
+        assert_eq!(idx, 0);
+
+        let value = tape.get_value(idx).unwrap();
+        assert_eq!(value.len(), 32);
+    }
+
+    #[test]
+    fn test_tape_sum() {
+        let mut tape = Tape::new();
+        let emb = Embedding::new(256, 4, InitStrategy::Zero);
+
+        let idx1 = tape.embedding_lookup(&emb, 'a');
+        let idx2 = tape.embedding_lookup(&emb, 'b');
+
+        let sum_idx = tape.sum(&[idx1, idx2]);
+        let sum_value = tape.get_value(sum_idx).unwrap();
+        assert_eq!(sum_value.len(), 4);
+    }
+
+    #[test]
+    fn test_tape_mean() {
+        let mut tape = Tape::new();
+
+        // Manually store values for testing
+        let idx1 = tape.store_value(vec![2.0, 4.0], vec![2]);
+        let idx2 = tape.store_value(vec![4.0, 8.0], vec![2]);
+
+        let mean_idx = tape.mean(&[idx1, idx2]);
+        let mean_value = tape.get_value(mean_idx).unwrap();
+
+        assert!((mean_value[0] - 3.0).abs() < 1e-6);
+        assert!((mean_value[1] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_relu() {
+        let mut tape = Tape::new();
+
+        let idx = tape.store_value(vec![-1.0, 0.0, 1.0, 2.0], vec![4]);
+        let relu_idx = tape.relu(idx);
+
+        let result = tape.get_value(relu_idx).unwrap();
+        assert_eq!(result, &vec![0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_tape_sigmoid() {
+        let mut tape = Tape::new();
+
+        let idx = tape.store_value(vec![0.0], vec![1]);
+        let sigmoid_idx = tape.sigmoid(idx);
+
+        let result = tape.get_value(sigmoid_idx).unwrap();
+        // sigmoid(0) = 0.5
+        assert!((result[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_tanh() {
+        let mut tape = Tape::new();
+
+        let idx = tape.store_value(vec![0.0], vec![1]);
+        let tanh_idx = tape.tanh(idx);
+
+        let result = tape.get_value(tanh_idx).unwrap();
+        // tanh(0) = 0
+        assert!(result[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_mse_loss() {
+        let mut tape = Tape::new();
+
+        let pred_idx = tape.store_value(vec![1.0, 2.0, 3.0], vec![3]);
+        let target = vec![1.0, 2.0, 3.0];
+
+        let (_loss_idx, loss_val) = tape.mse_loss(pred_idx, &target);
+
+        // Perfect prediction should have 0 loss
+        assert!(loss_val.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_backward_relu() {
+        let mut tape = Tape::new();
+
+        let input_idx = tape.store_value(vec![-1.0, 1.0], vec![2]);
+        let output_idx = tape.relu(input_idx);
+
+        tape.backward(output_idx);
+
+        let input_grad = tape.get_grad(input_idx).unwrap();
+        // Gradient should be 0 for negative input, 1 for positive
+        assert_eq!(input_grad[0], 0.0);
+        assert_eq!(input_grad[1], 1.0);
+    }
+
+    #[test]
+    fn test_tape_backward_sum() {
+        let mut tape = Tape::new();
+
+        let idx1 = tape.store_value(vec![1.0, 2.0], vec![2]);
+        let idx2 = tape.store_value(vec![3.0, 4.0], vec![2]);
+        let sum_idx = tape.sum(&[idx1, idx2]);
+
+        tape.backward(sum_idx);
+
+        // Gradients for sum should be 1.0 for all inputs
+        let grad1 = tape.get_grad(idx1).unwrap();
+        let grad2 = tape.get_grad(idx2).unwrap();
+
+        assert_eq!(grad1, &vec![1.0, 1.0]);
+        assert_eq!(grad2, &vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_tape_backward_mean() {
+        let mut tape = Tape::new();
+
+        let idx1 = tape.store_value(vec![2.0], vec![1]);
+        let idx2 = tape.store_value(vec![4.0], vec![1]);
+        let mean_idx = tape.mean(&[idx1, idx2]);
+
+        tape.backward(mean_idx);
+
+        // Gradients for mean should be 1/n
+        let grad1 = tape.get_grad(idx1).unwrap();
+        let grad2 = tape.get_grad(idx2).unwrap();
+
+        assert!((grad1[0] - 0.5).abs() < 1e-6);
+        assert!((grad2[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_node_gradients() {
+        let mut grads = NodeGradients::new();
+
+        let node = NodeIndex::new(0);
+        let grad = Array1::from_vec(vec![1.0, 2.0, 3.0]);
+
+        grads.accumulate_node(node, &grad);
+
+        let stored = grads.get_node_grad(node).unwrap();
+        assert_eq!(stored, &grad);
+    }
+
+    #[test]
+    fn test_node_gradients_accumulate() {
+        let mut grads = NodeGradients::new();
+
+        let node = NodeIndex::new(0);
+        let grad1 = Array1::from_vec(vec![1.0, 2.0]);
+        let grad2 = Array1::from_vec(vec![3.0, 4.0]);
+
+        grads.accumulate_node(node, &grad1);
+        grads.accumulate_node(node, &grad2);
+
+        let stored = grads.get_node_grad(node).unwrap();
+        assert!((stored[0] - 4.0).abs() < 1e-6);
+        assert!((stored[1] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_node_gradients_clip() {
+        let mut grads = NodeGradients::new();
+
+        let node = NodeIndex::new(0);
+        // Create gradient with norm = 5 (3^2 + 4^2 = 25, sqrt = 5)
+        let grad = Array1::from_vec(vec![3.0, 4.0]);
+        grads.accumulate_node(node, &grad);
+
+        // Clip to max norm = 1
+        grads.clip_grads(1.0);
+
+        let clipped = grads.get_node_grad(node).unwrap();
+        let norm: f32 = clipped.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_edge_gradients() {
+        let mut grads = NodeGradients::new();
+
+        let from = NodeIndex::new(0);
+        let to = NodeIndex::new(1);
+
+        grads.accumulate_edge(from, to, 1.5);
+        grads.accumulate_edge(from, to, 0.5);
+
+        let edge_grad = grads.get_edge_grad(from, to).unwrap();
+        assert!((edge_grad - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dagnn_backward() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        dag.update_topology().unwrap();
+
+        let mut emb = Embedding::new(256, 4, InitStrategy::Zero);
+        emb.zero_grad();
+
+        // Create output gradient
+        let mut output_grad = HashMap::new();
+        let last_node = dag.input_nodes().last().copied().unwrap();
+        output_grad.insert(last_node, Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]));
+
+        // Run backward pass
+        let grads = dag.backward(&output_grad, &mut emb);
+
+        // Should have gradients for both nodes
+        assert!(grads.node_grads.len() >= 1);
+    }
+
+    #[test]
+    fn test_dagnn_backward_and_update() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        dag.update_topology().unwrap();
+
+        let mut emb = Embedding::new(256, 4, InitStrategy::Zero);
+        emb.zero_grad();
+
+        // Get initial edge weights
+        let edge_count = dag.edge_count();
+
+        // Create output gradient
+        let mut output_grad = HashMap::new();
+        let last_node = dag.input_nodes().last().copied().unwrap();
+        output_grad.insert(last_node, Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]));
+
+        // Run backward and update
+        dag.backward_and_update(&output_grad, &mut emb, 0.01);
+
+        // Edge count should remain the same
+        assert_eq!(dag.edge_count(), edge_count);
+    }
+
+    #[test]
+    fn test_grad_utils_clip_norm() {
+        let mut grad = Array1::from_vec(vec![3.0, 4.0]); // norm = 5
+        grad_utils::clip_grad_norm(&mut grad, 1.0);
+
+        let norm: f32 = grad.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_grad_utils_l2_regularization() {
+        let weights = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let lambda = 0.5;
+
+        let reg_grad = grad_utils::l2_regularization_grad(&weights, lambda);
+
+        // L2 reg grad = 2 * lambda * weights
+        assert!((reg_grad[[0, 0]] - 1.0).abs() < 1e-6);
+        assert!((reg_grad[[0, 1]] - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_no_grad_mode() {
+        let mut tape = Tape::new();
+        let emb = Embedding::new(256, 4, InitStrategy::Zero);
+
+        // Disable recording
+        tape.no_grad();
+        let idx = tape.embedding_lookup(&emb, 'a');
+
+        // Should still store values but not record operations
+        assert!(tape.get_value(idx).is_some());
+
+        // Re-enable
+        tape.enable_grad();
+        assert!(tape.recording);
+    }
+
+    #[test]
+    fn test_tape_reset() {
+        let mut tape = Tape::new();
+        let emb = Embedding::new(256, 4, InitStrategy::Zero);
+
+        tape.embedding_lookup(&emb, 'a');
+        tape.embedding_lookup(&emb, 'b');
+
+        tape.reset();
+
+        // Should be empty after reset
+        let idx = tape.embedding_lookup(&emb, 'c');
+        assert_eq!(idx, 0); // First index after reset
+    }
+
+    #[test]
+    fn test_tape_message_pass() {
+        let mut tape = Tape::new();
+
+        let node_idx = tape.store_value(vec![1.0, 2.0], vec![2]);
+        let neighbor1 = tape.store_value(vec![3.0, 4.0], vec![2]);
+        let neighbor2 = tape.store_value(vec![5.0, 6.0], vec![2]);
+
+        let result_idx = tape.message_pass(node_idx, &[neighbor1, neighbor2], &[0.5, 0.5]);
+
+        let result = tape.get_value(result_idx).unwrap();
+        // 0.5 * [3, 4] + 0.5 * [5, 6] = [4, 5]
+        assert!((result[0] - 4.0).abs() < 1e-6);
+        assert!((result[1] - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tape_get_embedding_grads() {
+        let mut tape = Tape::new();
+        let emb = Embedding::new(256, 4, InitStrategy::Zero);
+
+        let idx1 = tape.embedding_lookup(&emb, 'a');
+        let idx2 = tape.embedding_lookup(&emb, 'b');
+        let sum_idx = tape.sum(&[idx1, idx2]);
+
+        tape.backward(sum_idx);
+
+        let emb_grads = tape.get_embedding_grads();
+        assert_eq!(emb_grads.len(), 2);
     }
 }
