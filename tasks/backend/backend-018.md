@@ -1,19 +1,20 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
-status: todo
-priority: high
+id: backend-018
+title: Implement Deductive Reasoning
+status: done
+priority: medium
 tags:
 - backend
-dependencies: []
+dependencies:
+- api-004
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-05T22:07:25.374539627Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Implement Deductive Reasoning
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +28,29 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
-
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
-
-```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
-```
-
-Malformed or incomplete graphs cause immediate panic during inference.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Criteria 1:**
+- Specific, testable criteria
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality
@@ -90,31 +79,36 @@ Malformed or incomplete graphs cause immediate panic during inference.
 - Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
-- 2025-12-06: Task created
+- 2025-12-05: Task created
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `Deduction` trait with real pattern matching using GraphFingerprint
+- `SimpleDeduction` now uses fingerprint similarity (threshold 0.7) for pattern matching
+- Added `LogicRules` with Implication, Equivalence, Constraint types
+- Added `ReasoningStep` and `ReasoningTrace` for proof visualization
+- Implements depth-bounded search with ComplexityBounds
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- deduce() forward chains from premises using rules
+- prove() backward chains to derive goal from premises
+- entails() checks logical entailment
+- StepType captures reasoning type (ModusPonens, Substitution, Assumption, etc.)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-reason crate
+- Depends on grapheme-core for Graph and TransformRule
+- Uses grapheme-memory for SemanticGraph (background knowledge)
+- ComplexityBounds prevents NP-hard explosion
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-reason` for unit tests
+- 12 tests passing with 0 warnings
+- Tests: test_simple_deduction, test_logic_rules, test_reasoning_step, test_reasoning_trace_success
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Pattern matching uses GraphFingerprint similarity (0.7 threshold)
+- Further improvements possible with WL kernel for more accurate matching
+- Depth-bounded to prevent infinite loops

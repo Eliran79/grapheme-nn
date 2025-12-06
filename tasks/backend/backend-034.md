@@ -1,19 +1,20 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-034
+title: Add learnable world model with transition dynamics
 status: todo
 priority: high
 tags:
 - backend
-dependencies: []
+dependencies:
+- backend-031
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T09:49:32.507729803Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Add learnable world model with transition dynamics
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +28,29 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
-
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
-
-```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
-```
-
-Malformed or incomplete graphs cause immediate panic during inference.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Criteria 1:**
+- Specific, testable criteria
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality

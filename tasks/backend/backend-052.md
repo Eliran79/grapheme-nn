@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-052
+title: Implement symbolic example validation in dataset generation
 status: todo
-priority: high
+priority: medium
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:38.359733681Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Implement symbolic example validation in dataset generation
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,44 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**MEDIUM: Symbolic examples bypass validation entirely.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The validation logic at grapheme-train/src/lib.rs lines 2203-2205 skips validation for symbolic examples:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Problematic code (lines 2203-2205):
+ExprType::Symbolic => {
+    // Symbolic - just count as valid for now
+    valid_count += 1;
+}
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+Malformed symbolic expressions are counted as valid without any structural check.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Implement proper validation for symbolic examples
+- Check symbol structure and arity
+- Validate symbolic expression well-formedness
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Define validation rules for symbolic expressions
+- [ ] Check that symbols are properly formed (valid names, arities)
+- [ ] Validate nesting depth and structure
+- [ ] Add unit tests for symbolic validation edge cases
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Proper Validation:**
+- Symbolic examples undergo structural validation
+- Malformed symbolic expressions are rejected
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Parity with Numeric:**
+- Symbolic validation matches rigor of numeric validation
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs lines 2203-2205
+- Pattern: Comment says "just count as valid for now"
+- Solution: Implement `validate_symbolic()` similar to numeric validation
+- Consider: Symbol table validation, arity checking
 
 ## Testing
 - [ ] Write unit tests for new functionality

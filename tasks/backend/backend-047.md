@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-047
+title: Guard against empty slices in data generation choose calls
 status: todo
 priority: high
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:03.256411154Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Guard against empty slices in data generation choose calls
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,42 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**HIGH: Dataset generation will crash when random selection from empty slices.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+Multiple locations in grapheme-train/src/lib.rs use `.choose(&mut rng).unwrap()` which panics on empty slices:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Problematic patterns (lines 389, 412, 413, 438, 441):
+terms.choose(&mut rng).unwrap()
+operands.choose(&mut rng).unwrap()
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+When certain math expression types have no available terms, generation panics.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Replace `.unwrap()` with graceful empty slice handling
+- Return `Option` or use fallback values
+- Add validation before random selection
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Add `if slice.is_empty()` guards before `.choose()` calls at lines 389, 412, 413, 438, 441
+- [ ] Return `None` or use fallback for empty slices
+- [ ] Propagate errors up to caller with proper Result types
+- [ ] Add unit test for edge case with empty input slices
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **No Panic on Empty:**
+- Dataset generation handles empty slices gracefully
+- Returns error or skips instead of panicking
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Proper Propagation:**
+- Callers are notified of generation failures
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs lines 389, 412, 413, 438, 441
+- Pattern: `.choose(&mut rng).unwrap()`
+- Solution: Check `.is_empty()` first, or use `.choose().ok_or(Error)?`
+- Affects: `generate_expression()` and related functions
 
 ## Testing
 - [ ] Write unit tests for new functionality

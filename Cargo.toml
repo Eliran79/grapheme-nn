@@ -6,6 +6,14 @@ members = [
     "grapheme-math",
     "grapheme-core",
     "grapheme-train",
+    "grapheme-memory",
+    "grapheme-reason",
+    "grapheme-world",
+    "grapheme-multimodal",
+    "grapheme-meta",
+    "grapheme-agent",
+    "grapheme-ground",
+    "grapheme-parallel",
 ]
 
 [workspace.package]
@@ -31,6 +39,8 @@ rayon = "1.10"
 
 # Numeric
 num-traits = "0.2"
+ndarray = "0.15"
+rand = "0.8"
 
 # Testing
 criterion = "0.5"

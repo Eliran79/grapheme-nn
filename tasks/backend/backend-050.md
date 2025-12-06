@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-050
+title: Fix silent string parsing failures in dataset validation
 status: todo
-priority: high
+priority: medium
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:30.385614501Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Fix silent string parsing failures in dataset validation
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,42 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**MEDIUM: Parsing failures are silently swallowed during dataset validation.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+Multiple locations in grapheme-train/src/lib.rs silently ignore parsing failures:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Silent failures at lines 2475, 2482, 2484, 2495, 2509, 2515, 2532, 2571, 2578:
+if let Ok(parsed) = expr.parse() { ... }  // Failure silently ignored
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+Invalid dataset entries go unnoticed, potentially causing training on malformed data.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Log parsing failures with context
+- Track parsing success/failure statistics
+- Provide summary report of dataset quality
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Add logging for parsing failures in validation functions
+- [ ] Track and report parsing failure counts
+- [ ] Include failed expression in log for debugging
+- [ ] Add summary statistics after validation
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Visibility:**
+- All parsing failures are logged with expression context
+- Summary shows failure count and percentage
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Debugging:**
+- Failed expressions can be identified and fixed
+- Clear indication of problematic data patterns
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs lines 2475, 2482, 2484, 2495, 2509, 2515, 2532, 2571, 2578
+- Pattern: `if let Ok(x) = expr.parse() { ... }` (silent else)
+- Solution: Add `else { warn!("Failed to parse: {}", expr); failures += 1; }`
+- Consider: Threshold for maximum acceptable failure rate
 
 ## Testing
 - [ ] Write unit tests for new functionality

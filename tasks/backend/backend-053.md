@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-053
+title: Fix greedy_coloring empty collection handling
 status: todo
-priority: high
+priority: medium
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:42.032842215Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Fix greedy_coloring empty collection handling
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,41 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**MEDIUM: greedy_coloring assumes non-empty graph without validation.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The `greedy_coloring()` function at grapheme-core/src/lib.rs line 2019 doesn't handle empty graphs:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Problematic pattern (around line 2019):
+let start_node = nodes.iter().next().unwrap();  // Panics on empty
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+Empty or degenerate graphs cause panic during graph coloring.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Handle empty graph case gracefully
+- Return early for trivial cases
+- Add explicit validation
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Add early return for empty graph (return empty coloring)
+- [ ] Validate graph structure before processing
+- [ ] Add unit test for empty graph input
+- [ ] Document behavior for edge cases
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **No Panic on Empty:**
+- Empty graph returns empty coloring HashMap
+- No unwrap on potentially empty iterators
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Defined Behavior:**
+- Edge cases documented and tested
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-core/src/lib.rs line ~2019
+- Pattern: `.iter().next().unwrap()` on potentially empty collection
+- Solution: Check `if nodes.is_empty() { return HashMap::new(); }`
+- Consider: Other empty collection edge cases in graph algorithms
 
 ## Testing
 - [ ] Write unit tests for new functionality

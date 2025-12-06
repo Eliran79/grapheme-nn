@@ -33,6 +33,20 @@ pub enum EngineError {
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
 
+/// Errors that can occur during symbolic integration
+#[derive(Error, Debug)]
+pub enum IntegrationError {
+    #[error("Cannot integrate expression: {0}")]
+    CannotIntegrate(String),
+    #[error("Division by zero in antiderivative")]
+    DivisionByZero,
+    #[error("Integration not supported for this expression type")]
+    NotSupported,
+}
+
+/// Result type for integration operations
+pub type IntegrationResult<T> = Result<T, IntegrationError>;
+
 /// Mathematical operators supported by the engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MathOp {
@@ -567,7 +581,778 @@ impl SymbolicEngine {
     pub fn evaluate_at(&self, expr: &Expr, var: &str, value: f64) -> Expr {
         self.substitute(expr, var, &Expr::float(value))
     }
+
+    /// Symbolic integration with respect to a variable
+    /// Implements basic integration rules:
+    /// - ∫k dx = kx (constant)
+    /// - ∫x dx = x²/2
+    /// - ∫x^n dx = x^(n+1)/(n+1) for n ≠ -1 (power rule)
+    /// - ∫x^(-1) dx = ln|x| (special case)
+    /// - ∫(f + g) dx = ∫f dx + ∫g dx (sum rule)
+    /// - ∫(f - g) dx = ∫f dx - ∫g dx (difference rule)
+    /// - ∫kf dx = k∫f dx (constant multiple)
+    /// - ∫sin(x) dx = -cos(x)
+    /// - ∫cos(x) dx = sin(x)
+    /// - ∫exp(x) dx = exp(x)
+    /// - ∫1/x dx = ln|x|
+    pub fn integrate(&self, expr: &Expr, var: &str) -> IntegrationResult<Expr> {
+        match expr {
+            // Constant: ∫k dx = kx
+            Expr::Value(Value::Integer(n)) => {
+                Ok(Expr::mul(Expr::int(*n), Expr::symbol(var)))
+            }
+            Expr::Value(Value::Float(f)) => {
+                Ok(Expr::mul(Expr::float(*f), Expr::symbol(var)))
+            }
+            Expr::Value(Value::Rational(n, d)) => {
+                Ok(Expr::mul(
+                    Expr::Value(Value::Rational(*n, *d)),
+                    Expr::symbol(var),
+                ))
+            }
+
+            // Variable: ∫x dx = x²/2, ∫y dx = yx (y is constant wrt x)
+            Expr::Value(Value::Symbol(s)) => {
+                if s == var {
+                    // ∫x dx = x²/2
+                    Ok(Expr::div(
+                        Expr::pow(Expr::symbol(var), Expr::int(2)),
+                        Expr::int(2),
+                    ))
+                } else {
+                    // ∫y dx = yx (y is constant wrt x)
+                    Ok(Expr::mul(Expr::symbol(s.clone()), Expr::symbol(var)))
+                }
+            }
+
+            // Binary operations
+            Expr::BinOp { op, left, right } => {
+                match op {
+                    // Sum rule: ∫(f + g) dx = ∫f dx + ∫g dx
+                    MathOp::Add => Ok(Expr::add(
+                        self.integrate(left, var)?,
+                        self.integrate(right, var)?,
+                    )),
+
+                    // Difference rule: ∫(f - g) dx = ∫f dx - ∫g dx
+                    MathOp::Sub => Ok(Expr::sub(
+                        self.integrate(left, var)?,
+                        self.integrate(right, var)?,
+                    )),
+
+                    // Constant multiple rule: ∫kf dx = k∫f dx
+                    MathOp::Mul => {
+                        let left_contains = self.contains_var(left, var);
+                        let right_contains = self.contains_var(right, var);
+
+                        match (left_contains, right_contains) {
+                            (false, true) => {
+                                // k * f where k is constant
+                                Ok(Expr::mul(
+                                    (**left).clone(),
+                                    self.integrate(right, var)?,
+                                ))
+                            }
+                            (true, false) => {
+                                // f * k where k is constant
+                                Ok(Expr::mul(
+                                    self.integrate(left, var)?,
+                                    (**right).clone(),
+                                ))
+                            }
+                            (false, false) => {
+                                // Both constants: ∫(k1 * k2) dx = k1 * k2 * x
+                                Ok(Expr::mul(
+                                    Expr::mul((**left).clone(), (**right).clone()),
+                                    Expr::symbol(var),
+                                ))
+                            }
+                            (true, true) => {
+                                // Both contain variable - not generally integrable by simple rules
+                                // Check if it's x * x^n (can be simplified to x^(n+1))
+                                if self.is_var(left, var) {
+                                    if let Expr::BinOp {
+                                        op: MathOp::Pow,
+                                        left: base,
+                                        right: exp,
+                                    } = right.as_ref()
+                                    {
+                                        if self.is_var(base, var) && !self.contains_var(exp, var) {
+                                            // x * x^n = x^(n+1)
+                                            let new_exp = Expr::add((**exp).clone(), Expr::int(1));
+                                            return self.integrate(
+                                                &Expr::pow(Expr::symbol(var), new_exp),
+                                                var,
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(IntegrationError::CannotIntegrate(
+                                    "Product of two expressions containing the variable".to_string(),
+                                ))
+                            }
+                        }
+                    }
+
+                    // Division: ∫(f/g) - only handle constant divisor
+                    MathOp::Div => {
+                        let right_contains = self.contains_var(right, var);
+
+                        if !right_contains {
+                            // ∫(f/k) dx = (1/k) * ∫f dx
+                            Ok(Expr::div(
+                                self.integrate(left, var)?,
+                                (**right).clone(),
+                            ))
+                        } else if !self.contains_var(left, var) && self.is_var(right, var) {
+                            // ∫(k/x) dx = k * ln|x|
+                            Ok(Expr::mul(
+                                (**left).clone(),
+                                Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]),
+                            ))
+                        } else if self.is_int(left, 1) && self.is_var(right, var) {
+                            // ∫(1/x) dx = ln|x|
+                            Ok(Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]))
+                        } else {
+                            Err(IntegrationError::CannotIntegrate(
+                                "Division with variable in denominator".to_string(),
+                            ))
+                        }
+                    }
+
+                    // Power rule: ∫x^n dx = x^(n+1)/(n+1) for n ≠ -1
+                    MathOp::Pow => {
+                        let is_base_var = self.is_var(left, var);
+                        let exp_contains_var = self.contains_var(right, var);
+
+                        if is_base_var && !exp_contains_var {
+                            // ∫x^n dx
+                            if let Some(n) = self.get_int_value(right) {
+                                if n == -1 {
+                                    // Special case: ∫x^(-1) dx = ln|x|
+                                    Ok(Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]))
+                                } else {
+                                    // Power rule: ∫x^n dx = x^(n+1)/(n+1)
+                                    let new_exp = n + 1;
+                                    Ok(Expr::div(
+                                        Expr::pow(Expr::symbol(var), Expr::int(new_exp)),
+                                        Expr::int(new_exp),
+                                    ))
+                                }
+                            } else {
+                                // Non-integer exponent: still apply power rule
+                                let new_exp = Expr::add((**right).clone(), Expr::int(1));
+                                Ok(Expr::div(
+                                    Expr::pow(Expr::symbol(var), new_exp.clone()),
+                                    new_exp,
+                                ))
+                            }
+                        } else if !is_base_var && !exp_contains_var && !self.contains_var(left, var) {
+                            // Constant: ∫k dx = kx
+                            Ok(Expr::mul(expr.clone(), Expr::symbol(var)))
+                        } else {
+                            Err(IntegrationError::CannotIntegrate(
+                                "Power with variable in exponent".to_string(),
+                            ))
+                        }
+                    }
+
+                    MathOp::Mod => Err(IntegrationError::NotSupported),
+                    MathOp::Neg => Err(IntegrationError::NotSupported),
+                }
+            }
+
+            // Unary negation: ∫(-f) dx = -∫f dx
+            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+                Ok(Expr::neg(self.integrate(operand, var)?))
+            }
+            Expr::UnaryOp { .. } => Err(IntegrationError::NotSupported),
+
+            // Functions
+            Expr::Function { func, args } => {
+                if args.is_empty() {
+                    return Err(IntegrationError::CannotIntegrate(
+                        "Function with no arguments".to_string(),
+                    ));
+                }
+
+                let arg = &args[0];
+
+                // Check if argument is just the variable
+                if self.is_var(arg, var) {
+                    match func {
+                        // ∫sin(x) dx = -cos(x)
+                        MathFn::Sin => Ok(Expr::neg(Expr::func(MathFn::Cos, vec![Expr::symbol(var)]))),
+
+                        // ∫cos(x) dx = sin(x)
+                        MathFn::Cos => Ok(Expr::func(MathFn::Sin, vec![Expr::symbol(var)])),
+
+                        // ∫exp(x) dx = exp(x)
+                        MathFn::Exp => Ok(Expr::func(MathFn::Exp, vec![Expr::symbol(var)])),
+
+                        // ∫tan(x) dx = -ln|cos(x)|
+                        MathFn::Tan => Ok(Expr::neg(Expr::func(
+                            MathFn::Ln,
+                            vec![Expr::func(MathFn::Abs, vec![Expr::func(MathFn::Cos, vec![Expr::symbol(var)])])],
+                        ))),
+
+                        // ∫1/x dx = ln|x| (handled via Ln function of x)
+                        MathFn::Ln | MathFn::Log | MathFn::Sqrt | MathFn::Abs | MathFn::Floor | MathFn::Ceil => {
+                            Err(IntegrationError::CannotIntegrate(
+                                format!("Integration of {:?} not supported", func),
+                            ))
+                        }
+
+                        MathFn::Derive | MathFn::Integrate => {
+                            Err(IntegrationError::CannotIntegrate(
+                                "Meta-operations cannot be integrated directly".to_string(),
+                            ))
+                        }
+                    }
+                } else if !self.contains_var(arg, var) {
+                    // Function of constant: ∫f(c) dx = f(c) * x
+                    Ok(Expr::mul(expr.clone(), Expr::symbol(var)))
+                } else {
+                    Err(IntegrationError::CannotIntegrate(
+                        "Chain rule integration not supported".to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Check if expression is the specified variable
+    fn is_var(&self, expr: &Expr, var: &str) -> bool {
+        matches!(expr, Expr::Value(Value::Symbol(s)) if s == var)
+    }
+
+    /// Check if expression contains the specified variable
+    fn contains_var(&self, expr: &Expr, var: &str) -> bool {
+        match expr {
+            Expr::Value(Value::Symbol(s)) => s == var,
+            Expr::Value(_) => false,
+            Expr::BinOp { left, right, .. } => {
+                self.contains_var(left, var) || self.contains_var(right, var)
+            }
+            Expr::UnaryOp { operand, .. } => self.contains_var(operand, var),
+            Expr::Function { args, .. } => args.iter().any(|a| self.contains_var(a, var)),
+        }
+    }
+
+    /// Try to get integer value from expression
+    fn get_int_value(&self, expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Value(Value::Integer(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Check if expression is a specific integer
+    fn is_int(&self, expr: &Expr, n: i64) -> bool {
+        matches!(expr, Expr::Value(Value::Integer(i)) if *i == n)
+    }
+
+    /// Simplify an expression (basic algebraic simplification)
+    ///
+    /// Handles:
+    /// - x + 0 = x, x * 1 = x, x * 0 = 0
+    /// - x - x = 0, x / x = 1
+    /// - Constant folding: 2 + 3 = 5
+    fn simplify(&self, expr: &Expr) -> Expr {
+        match expr {
+            Expr::BinOp { op, left, right } => {
+                let left_s = self.simplify(left);
+                let right_s = self.simplify(right);
+
+                // Try constant folding
+                if let (Some(l), Some(r)) = (self.evaluate_numeric(&left_s), self.evaluate_numeric(&right_s)) {
+                    let result = match op {
+                        MathOp::Add => Some(l + r),
+                        MathOp::Sub => Some(l - r),
+                        MathOp::Mul => Some(l * r),
+                        MathOp::Div if r != 0.0 => Some(l / r),
+                        MathOp::Pow => Some(l.powf(r)),
+                        _ => None,
+                    };
+                    if let Some(v) = result {
+                        if v == v.floor() && v.abs() < i64::MAX as f64 {
+                            return Expr::int(v as i64);
+                        } else {
+                            return Expr::float(v);
+                        }
+                    }
+                }
+
+                // Algebraic simplifications
+                match op {
+                    MathOp::Add => {
+                        // x + 0 = x
+                        if self.is_zero(&right_s) {
+                            return left_s;
+                        }
+                        if self.is_zero(&left_s) {
+                            return right_s;
+                        }
+                    }
+                    MathOp::Sub => {
+                        // x - 0 = x
+                        if self.is_zero(&right_s) {
+                            return left_s;
+                        }
+                        // 0 - x = -x
+                        if self.is_zero(&left_s) {
+                            return Expr::neg(right_s);
+                        }
+                        // x - x = 0
+                        if left_s == right_s {
+                            return Expr::int(0);
+                        }
+                    }
+                    MathOp::Mul => {
+                        // x * 0 = 0
+                        if self.is_zero(&left_s) || self.is_zero(&right_s) {
+                            return Expr::int(0);
+                        }
+                        // x * 1 = x
+                        if self.is_int(&right_s, 1) {
+                            return left_s;
+                        }
+                        if self.is_int(&left_s, 1) {
+                            return right_s;
+                        }
+                    }
+                    MathOp::Div => {
+                        // x / 1 = x
+                        if self.is_int(&right_s, 1) {
+                            return left_s;
+                        }
+                        // 0 / x = 0 (x != 0)
+                        if self.is_zero(&left_s) && !self.is_zero(&right_s) {
+                            return Expr::int(0);
+                        }
+                    }
+                    MathOp::Pow => {
+                        // x^0 = 1
+                        if self.is_zero(&right_s) {
+                            return Expr::int(1);
+                        }
+                        // x^1 = x
+                        if self.is_int(&right_s, 1) {
+                            return left_s;
+                        }
+                    }
+                    _ => {}
+                }
+
+                Expr::BinOp {
+                    op: *op,
+                    left: Box::new(left_s),
+                    right: Box::new(right_s),
+                }
+            }
+            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+                let operand_s = self.simplify(operand);
+                // -(-x) = x
+                if let Expr::UnaryOp { op: MathOp::Neg, operand: inner } = operand_s {
+                    return *inner;
+                }
+                // -0 = 0
+                if self.is_zero(&operand_s) {
+                    return Expr::int(0);
+                }
+                // -n for integer n
+                if let Some(n) = self.get_int_value(&operand_s) {
+                    return Expr::int(-n);
+                }
+                Expr::UnaryOp {
+                    op: MathOp::Neg,
+                    operand: Box::new(operand_s),
+                }
+            }
+            Expr::Function { func, args } => {
+                let args_s: Vec<Expr> = args.iter().map(|a| self.simplify(a)).collect();
+                Expr::Function {
+                    func: *func,
+                    args: args_s,
+                }
+            }
+            _ => expr.clone(),
+        }
+    }
+
+    // ========================================================================
+    // Equation Solving (backend-011)
+    // ========================================================================
+
+    /// Solve an equation for a variable
+    ///
+    /// Supports:
+    /// - Linear equations: ax + b = c
+    /// - Quadratic equations: ax² + bx + c = 0
+    /// - Simple rational: a/x = b
+    pub fn solve(&self, equation: &Equation, var: &str) -> SolveResult<Solution> {
+        // Move everything to one side: lhs - rhs = 0
+        let combined = Expr::sub(equation.lhs.clone(), equation.rhs.clone());
+        let simplified = self.simplify(&combined);
+
+        // Determine polynomial degree
+        let degree = self.polynomial_degree(&simplified, var);
+
+        match degree {
+            0 => {
+                // No variable: check if equation is identity or contradiction
+                if self.is_zero(&simplified) {
+                    Ok(Solution::Infinite)
+                } else {
+                    Ok(Solution::NoSolution)
+                }
+            }
+            1 => self.solve_linear(&simplified, var),
+            2 => self.solve_quadratic(&simplified, var),
+            _ => Err(SolveError::DegreeTooHigh(degree)),
+        }
+    }
+
+    /// Determine the polynomial degree with respect to a variable
+    fn polynomial_degree(&self, expr: &Expr, var: &str) -> usize {
+        match expr {
+            Expr::Value(Value::Symbol(s)) if s == var => 1,
+            Expr::Value(_) => 0,
+            Expr::BinOp { op: MathOp::Add | MathOp::Sub, left, right } => {
+                let left_deg = self.polynomial_degree(left, var);
+                let right_deg = self.polynomial_degree(right, var);
+                left_deg.max(right_deg)
+            }
+            Expr::BinOp { op: MathOp::Mul, left, right } => {
+                let left_deg = self.polynomial_degree(left, var);
+                let right_deg = self.polynomial_degree(right, var);
+                left_deg + right_deg
+            }
+            Expr::BinOp { op: MathOp::Pow, left, right } => {
+                if self.is_var(left, var) {
+                    if let Some(n) = self.get_int_value(right) {
+                        n as usize
+                    } else {
+                        usize::MAX // Non-integer exponent
+                    }
+                } else {
+                    0
+                }
+            }
+            Expr::BinOp { op: MathOp::Div, left, right } => {
+                if self.contains_var(right, var) {
+                    usize::MAX // Variable in denominator
+                } else {
+                    self.polynomial_degree(left, var)
+                }
+            }
+            Expr::UnaryOp { op: MathOp::Neg, operand } => self.polynomial_degree(operand, var),
+            _ => 0,
+        }
+    }
+
+    /// Check if expression evaluates to zero
+    fn is_zero(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Value(Value::Integer(0)))
+            || matches!(expr, Expr::Value(Value::Float(f)) if *f == 0.0)
+    }
+
+    /// Solve linear equation: ax + b = 0 => x = -b/a
+    fn solve_linear(&self, expr: &Expr, var: &str) -> SolveResult<Solution> {
+        // Extract coefficient of x (a) and constant term (b)
+        let (coeff, constant) = self.extract_linear_coefficients(expr, var);
+
+        // Check if coefficient is zero
+        if self.is_zero(&coeff) {
+            return if self.is_zero(&constant) {
+                Ok(Solution::Infinite)
+            } else {
+                Ok(Solution::NoSolution)
+            };
+        }
+
+        // x = -b/a
+        let neg_constant = Expr::neg(constant);
+        let solution = self.simplify(&Expr::div(neg_constant, coeff));
+
+        Ok(Solution::Single(solution))
+    }
+
+    /// Extract coefficients from linear expression: ax + b
+    fn extract_linear_coefficients(&self, expr: &Expr, var: &str) -> (Expr, Expr) {
+        match expr {
+            Expr::Value(Value::Symbol(s)) if s == var => (Expr::int(1), Expr::int(0)),
+            Expr::Value(_) => (Expr::int(0), expr.clone()),
+            Expr::BinOp { op: MathOp::Add, left, right } => {
+                let (lc, lt) = self.extract_linear_coefficients(left, var);
+                let (rc, rt) = self.extract_linear_coefficients(right, var);
+                (self.simplify(&Expr::add(lc, rc)), self.simplify(&Expr::add(lt, rt)))
+            }
+            Expr::BinOp { op: MathOp::Sub, left, right } => {
+                let (lc, lt) = self.extract_linear_coefficients(left, var);
+                let (rc, rt) = self.extract_linear_coefficients(right, var);
+                (self.simplify(&Expr::sub(lc, rc)), self.simplify(&Expr::sub(lt, rt)))
+            }
+            Expr::BinOp { op: MathOp::Mul, left, right } => {
+                if self.is_var(left, var) && !self.contains_var(right, var) {
+                    (right.as_ref().clone(), Expr::int(0))
+                } else if self.is_var(right, var) && !self.contains_var(left, var) {
+                    (left.as_ref().clone(), Expr::int(0))
+                } else if !self.contains_var(left, var) && !self.contains_var(right, var) {
+                    (Expr::int(0), expr.clone())
+                } else {
+                    // Complex case - treat as coefficient 0
+                    (Expr::int(0), expr.clone())
+                }
+            }
+            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+                let (c, t) = self.extract_linear_coefficients(operand, var);
+                (self.simplify(&Expr::neg(c)), self.simplify(&Expr::neg(t)))
+            }
+            _ => (Expr::int(0), expr.clone()),
+        }
+    }
+
+    /// Solve quadratic equation: ax² + bx + c = 0
+    fn solve_quadratic(&self, expr: &Expr, var: &str) -> SolveResult<Solution> {
+        // Extract coefficients a, b, c
+        let (a, b, c) = self.extract_quadratic_coefficients(expr, var);
+
+        // Check if a is zero (not really quadratic)
+        if self.is_zero(&a) {
+            // Reduce to linear: bx + c = 0
+            let linear_expr = Expr::add(Expr::mul(b, Expr::symbol(var)), c);
+            return self.solve_linear(&linear_expr, var);
+        }
+
+        // Compute discriminant: b² - 4ac
+        let b_squared = Expr::pow(b.clone(), Expr::int(2));
+        let four_ac = Expr::mul(Expr::int(4), Expr::mul(a.clone(), c));
+        let discriminant = self.simplify(&Expr::sub(b_squared, four_ac));
+
+        // Try to evaluate discriminant numerically
+        if let Some(d) = self.evaluate_numeric(&discriminant) {
+            if d < 0.0 {
+                return Ok(Solution::NoSolution);
+            }
+
+            // sqrt(discriminant)
+            let sqrt_d = Expr::Function {
+                func: MathFn::Sqrt,
+                args: vec![discriminant],
+            };
+
+            // 2a
+            let two_a = Expr::mul(Expr::int(2), a);
+
+            // x1 = (-b + sqrt(d)) / 2a
+            let neg_b = Expr::neg(b.clone());
+            let x1 = self.simplify(&Expr::div(Expr::add(neg_b.clone(), sqrt_d.clone()), two_a.clone()));
+
+            // x2 = (-b - sqrt(d)) / 2a
+            let x2 = self.simplify(&Expr::div(Expr::sub(neg_b, sqrt_d), two_a));
+
+            if d == 0.0 {
+                Ok(Solution::Single(x1))
+            } else {
+                Ok(Solution::Multiple(vec![x1, x2]))
+            }
+        } else {
+            Err(SolveError::SymbolicDiscriminant)
+        }
+    }
+
+    /// Extract coefficients from quadratic expression: ax² + bx + c
+    fn extract_quadratic_coefficients(&self, expr: &Expr, var: &str) -> (Expr, Expr, Expr) {
+        // Simplified extraction - handles basic cases
+        match expr {
+            Expr::BinOp { op: MathOp::Add | MathOp::Sub, left, right } => {
+                let (la, lb, lc) = self.extract_quadratic_coefficients(left, var);
+                let (ra, rb, rc) = self.extract_quadratic_coefficients(right, var);
+                if matches!(expr, Expr::BinOp { op: MathOp::Add, .. }) {
+                    (
+                        self.simplify(&Expr::add(la, ra)),
+                        self.simplify(&Expr::add(lb, rb)),
+                        self.simplify(&Expr::add(lc, rc)),
+                    )
+                } else {
+                    (
+                        self.simplify(&Expr::sub(la, ra)),
+                        self.simplify(&Expr::sub(lb, rb)),
+                        self.simplify(&Expr::sub(lc, rc)),
+                    )
+                }
+            }
+            Expr::BinOp { op: MathOp::Mul, left, right } => {
+                // Check for x² or coefficient * x² or coefficient * x
+                if self.is_var(left, var) && self.is_var(right, var) {
+                    // x * x = x²
+                    (Expr::int(1), Expr::int(0), Expr::int(0))
+                } else if self.is_var(left, var) && !self.contains_var(right, var) {
+                    // c * x
+                    (Expr::int(0), right.as_ref().clone(), Expr::int(0))
+                } else if !self.contains_var(left, var) && self.is_var(right, var) {
+                    // c * x
+                    (Expr::int(0), left.as_ref().clone(), Expr::int(0))
+                } else if !self.contains_var(left, var) && !self.contains_var(right, var) {
+                    // constant
+                    (Expr::int(0), Expr::int(0), expr.clone())
+                } else {
+                    // Check if one side is x² pattern
+                    let (la, lb, lc) = self.extract_quadratic_coefficients(left, var);
+                    if !self.is_zero(&la) && !self.contains_var(right, var) {
+                        // coeff * x²
+                        (Expr::mul(right.as_ref().clone(), la), Expr::mul(right.as_ref().clone(), lb), Expr::mul(right.as_ref().clone(), lc))
+                    } else {
+                        (Expr::int(0), Expr::int(0), expr.clone())
+                    }
+                }
+            }
+            Expr::BinOp { op: MathOp::Pow, left, right } => {
+                if self.is_var(left, var) && self.is_int(right, 2) {
+                    // x²
+                    (Expr::int(1), Expr::int(0), Expr::int(0))
+                } else if self.is_var(left, var) && self.is_int(right, 1) {
+                    // x
+                    (Expr::int(0), Expr::int(1), Expr::int(0))
+                } else {
+                    (Expr::int(0), Expr::int(0), expr.clone())
+                }
+            }
+            Expr::Value(Value::Symbol(s)) if s == var => {
+                // x
+                (Expr::int(0), Expr::int(1), Expr::int(0))
+            }
+            Expr::Value(_) => {
+                // constant
+                (Expr::int(0), Expr::int(0), expr.clone())
+            }
+            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+                let (a, b, c) = self.extract_quadratic_coefficients(operand, var);
+                (
+                    self.simplify(&Expr::neg(a)),
+                    self.simplify(&Expr::neg(b)),
+                    self.simplify(&Expr::neg(c)),
+                )
+            }
+            _ => (Expr::int(0), Expr::int(0), expr.clone()),
+        }
+    }
+
+    /// Try to evaluate expression numerically
+    fn evaluate_numeric(&self, expr: &Expr) -> Option<f64> {
+        match expr {
+            Expr::Value(Value::Integer(n)) => Some(*n as f64),
+            Expr::Value(Value::Float(f)) => Some(*f),
+            Expr::Value(Value::Rational(n, d)) if *d != 0 => Some(*n as f64 / *d as f64),
+            Expr::Value(Value::Symbol(_)) => None,
+            Expr::BinOp { op, left, right } => {
+                let l = self.evaluate_numeric(left)?;
+                let r = self.evaluate_numeric(right)?;
+                match op {
+                    MathOp::Add => Some(l + r),
+                    MathOp::Sub => Some(l - r),
+                    MathOp::Mul => Some(l * r),
+                    MathOp::Div if r != 0.0 => Some(l / r),
+                    MathOp::Pow => Some(l.powf(r)),
+                    _ => None,
+                }
+            }
+            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+                self.evaluate_numeric(operand).map(|v| -v)
+            }
+            Expr::Function { func, args } => {
+                if args.len() != 1 {
+                    return None;
+                }
+                let arg = self.evaluate_numeric(&args[0])?;
+                match func {
+                    MathFn::Sqrt if arg >= 0.0 => Some(arg.sqrt()),
+                    MathFn::Sin => Some(arg.sin()),
+                    MathFn::Cos => Some(arg.cos()),
+                    MathFn::Exp => Some(arg.exp()),
+                    MathFn::Ln if arg > 0.0 => Some(arg.ln()),
+                    MathFn::Abs => Some(arg.abs()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
+
+// ============================================================================
+// Equation Types (backend-011)
+// ============================================================================
+
+/// Represents an equation: lhs = rhs
+#[derive(Debug, Clone, PartialEq)]
+pub struct Equation {
+    /// Left-hand side of the equation
+    pub lhs: Expr,
+    /// Right-hand side of the equation
+    pub rhs: Expr,
+}
+
+impl Equation {
+    /// Create a new equation
+    pub fn new(lhs: Expr, rhs: Expr) -> Self {
+        Self { lhs, rhs }
+    }
+
+    /// Create equation from expression equal to zero
+    pub fn equals_zero(expr: Expr) -> Self {
+        Self {
+            lhs: expr,
+            rhs: Expr::int(0),
+        }
+    }
+}
+
+/// Solution to an equation
+#[derive(Debug, Clone, PartialEq)]
+pub enum Solution {
+    /// Single solution: x = value
+    Single(Expr),
+    /// Multiple solutions (e.g., quadratic with two roots)
+    Multiple(Vec<Expr>),
+    /// No real solution
+    NoSolution,
+    /// Infinitely many solutions (identity)
+    Infinite,
+}
+
+impl Solution {
+    /// Check if there is at least one solution
+    pub fn has_solution(&self) -> bool {
+        !matches!(self, Solution::NoSolution)
+    }
+
+    /// Get solutions as a vector (empty if no solution)
+    pub fn solutions(&self) -> Vec<&Expr> {
+        match self {
+            Solution::Single(e) => vec![e],
+            Solution::Multiple(es) => es.iter().collect(),
+            Solution::NoSolution | Solution::Infinite => vec![],
+        }
+    }
+}
+
+/// Errors that can occur during equation solving
+#[derive(Error, Debug)]
+pub enum SolveError {
+    #[error("Polynomial degree {0} is too high (max: 2)")]
+    DegreeTooHigh(usize),
+    #[error("Cannot solve: symbolic discriminant")]
+    SymbolicDiscriminant,
+    #[error("Cannot solve: expression too complex")]
+    TooComplex,
+    #[error("Variable not found in equation")]
+    VariableNotFound,
+}
+
+/// Result type for solve operations
+pub type SolveResult<T> = Result<T, SolveError>;
 
 // ============================================================================
 // Formal Algebraic Rules
@@ -1566,5 +2351,442 @@ mod tests {
         let ln_e = Expr::func(MathFn::Ln, vec![Expr::float(std::f64::consts::E)]);
         let result = engine.evaluate(&ln_e).unwrap();
         assert!((result - 1.0).abs() < 1e-10);
+    }
+
+    // =====================================================
+    // Integration Tests (backend-010)
+    // =====================================================
+
+    #[test]
+    fn test_integrate_constant() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫5 dx = 5x
+        let integral = symbolic.integrate(&Expr::int(5), "x").unwrap();
+        assert_eq!(integral, Expr::mul(Expr::int(5), Expr::symbol("x")));
+    }
+
+    #[test]
+    fn test_integrate_variable() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫x dx = x²/2
+        let integral = symbolic.integrate(&Expr::symbol("x"), "x").unwrap();
+        assert_eq!(
+            integral,
+            Expr::div(
+                Expr::pow(Expr::symbol("x"), Expr::int(2)),
+                Expr::int(2)
+            )
+        );
+    }
+
+    #[test]
+    fn test_integrate_other_variable() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫y dx = yx (y is constant wrt x)
+        let integral = symbolic.integrate(&Expr::symbol("y"), "x").unwrap();
+        assert_eq!(integral, Expr::mul(Expr::symbol("y"), Expr::symbol("x")));
+    }
+
+    #[test]
+    fn test_integrate_power_rule() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫x² dx = x³/3
+        let expr = Expr::pow(Expr::symbol("x"), Expr::int(2));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+        assert_eq!(
+            integral,
+            Expr::div(
+                Expr::pow(Expr::symbol("x"), Expr::int(3)),
+                Expr::int(3)
+            )
+        );
+
+        // ∫x³ dx = x⁴/4
+        let expr = Expr::pow(Expr::symbol("x"), Expr::int(3));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+        assert_eq!(
+            integral,
+            Expr::div(
+                Expr::pow(Expr::symbol("x"), Expr::int(4)),
+                Expr::int(4)
+            )
+        );
+    }
+
+    #[test]
+    fn test_integrate_power_rule_negative() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫x^(-1) dx = ln|x|
+        let expr = Expr::pow(Expr::symbol("x"), Expr::int(-1));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+        assert_eq!(
+            integral,
+            Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])])
+        );
+
+        // ∫x^(-2) dx = x^(-1)/(-1)
+        let expr = Expr::pow(Expr::symbol("x"), Expr::int(-2));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+        assert_eq!(
+            integral,
+            Expr::div(
+                Expr::pow(Expr::symbol("x"), Expr::int(-1)),
+                Expr::int(-1)
+            )
+        );
+    }
+
+    #[test]
+    fn test_integrate_sum_rule() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(x + 1) dx = x²/2 + x
+        let expr = Expr::add(Expr::symbol("x"), Expr::int(1));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be (x²/2) + (1*x)
+        assert!(matches!(integral, Expr::BinOp { op: MathOp::Add, .. }));
+    }
+
+    #[test]
+    fn test_integrate_difference_rule() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(x - 1) dx = x²/2 - x
+        let expr = Expr::sub(Expr::symbol("x"), Expr::int(1));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be (x²/2) - (1*x)
+        assert!(matches!(integral, Expr::BinOp { op: MathOp::Sub, .. }));
+    }
+
+    #[test]
+    fn test_integrate_constant_multiple() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫3x dx = 3 * (x²/2)
+        let expr = Expr::mul(Expr::int(3), Expr::symbol("x"));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be 3 * (x²/2)
+        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+    }
+
+    #[test]
+    fn test_integrate_sin() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫sin(x) dx = -cos(x)
+        let expr = Expr::func(MathFn::Sin, vec![Expr::symbol("x")]);
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be -cos(x)
+        assert_eq!(
+            integral,
+            Expr::neg(Expr::func(MathFn::Cos, vec![Expr::symbol("x")]))
+        );
+    }
+
+    #[test]
+    fn test_integrate_cos() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫cos(x) dx = sin(x)
+        let expr = Expr::func(MathFn::Cos, vec![Expr::symbol("x")]);
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        assert_eq!(
+            integral,
+            Expr::func(MathFn::Sin, vec![Expr::symbol("x")])
+        );
+    }
+
+    #[test]
+    fn test_integrate_exp() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫exp(x) dx = exp(x)
+        let expr = Expr::func(MathFn::Exp, vec![Expr::symbol("x")]);
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        assert_eq!(
+            integral,
+            Expr::func(MathFn::Exp, vec![Expr::symbol("x")])
+        );
+    }
+
+    #[test]
+    fn test_integrate_one_over_x() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(1/x) dx = 1 * ln|x| (or simplified: ln|x|)
+        let expr = Expr::div(Expr::int(1), Expr::symbol("x"));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be 1 * ln|x| or just ln|x|
+        // The implementation produces 1 * ln|x| which is mathematically equivalent
+        let ln_abs_x = Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])]);
+        let expected = Expr::mul(Expr::int(1), ln_abs_x.clone());
+        assert!(integral == expected || integral == ln_abs_x);
+    }
+
+    #[test]
+    fn test_integrate_k_over_x() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(5/x) dx = 5 * ln|x|
+        let expr = Expr::div(Expr::int(5), Expr::symbol("x"));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+    }
+
+    #[test]
+    fn test_integrate_polynomial() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(x² + 2x + 1) dx should succeed with sum rule
+        let expr = Expr::add(
+            Expr::add(
+                Expr::pow(Expr::symbol("x"), Expr::int(2)),
+                Expr::mul(Expr::int(2), Expr::symbol("x")),
+            ),
+            Expr::int(1),
+        );
+        let integral = symbolic.integrate(&expr, "x");
+
+        assert!(integral.is_ok());
+    }
+
+    #[test]
+    fn test_integrate_negation() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(-x) dx = -(x²/2)
+        let expr = Expr::neg(Expr::symbol("x"));
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        assert!(matches!(integral, Expr::UnaryOp { op: MathOp::Neg, .. }));
+    }
+
+    #[test]
+    fn test_integrate_cannot_integrate() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫(x * x) dx - product of two expressions containing variable
+        // This should fail for simple product (not recognized as x^2)
+        let expr = Expr::mul(Expr::symbol("x"), Expr::symbol("x"));
+        let result = symbolic.integrate(&expr, "x");
+
+        // This is a product of two expressions containing variable
+        // Our simple integrator doesn't handle this
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_integrate_tan() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫tan(x) dx = -ln|cos(x)|
+        let expr = Expr::func(MathFn::Tan, vec![Expr::symbol("x")]);
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        // Should be -ln|cos(x)|
+        assert!(matches!(integral, Expr::UnaryOp { op: MathOp::Neg, .. }));
+    }
+
+    #[test]
+    fn test_integrate_function_of_constant() {
+        let symbolic = SymbolicEngine::new();
+
+        // ∫sin(2) dx = sin(2) * x
+        let expr = Expr::func(MathFn::Sin, vec![Expr::int(2)]);
+        let integral = symbolic.integrate(&expr, "x").unwrap();
+
+        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+    }
+
+    // ========================================================================
+    // Equation Solving Tests (backend-011)
+    // ========================================================================
+
+    #[test]
+    fn test_equation_new() {
+        let eq = Equation::new(Expr::symbol("x"), Expr::int(5));
+        assert!(matches!(eq.lhs, Expr::Value(Value::Symbol(_))));
+        assert!(matches!(eq.rhs, Expr::Value(Value::Integer(5))));
+    }
+
+    #[test]
+    fn test_equation_equals_zero() {
+        let eq = Equation::equals_zero(Expr::symbol("x"));
+        assert!(matches!(eq.rhs, Expr::Value(Value::Integer(0))));
+    }
+
+    #[test]
+    fn test_solve_linear_simple() {
+        let symbolic = SymbolicEngine::new();
+
+        // x + 5 = 10 => x = 5
+        let eq = Equation::new(
+            Expr::add(Expr::symbol("x"), Expr::int(5)),
+            Expr::int(10),
+        );
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        // Should be Single(5)
+        assert!(matches!(solution, Solution::Single(_)));
+    }
+
+    #[test]
+    fn test_solve_linear_coefficient() {
+        let symbolic = SymbolicEngine::new();
+
+        // 2x - 3 = 7 => 2x = 10 => x = 5
+        let eq = Equation::new(
+            Expr::sub(Expr::mul(Expr::int(2), Expr::symbol("x")), Expr::int(3)),
+            Expr::int(7),
+        );
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        assert!(matches!(solution, Solution::Single(_)));
+    }
+
+    #[test]
+    fn test_solve_identity() {
+        let symbolic = SymbolicEngine::new();
+
+        // x = x => infinite solutions
+        let eq = Equation::new(Expr::symbol("x"), Expr::symbol("x"));
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        assert!(matches!(solution, Solution::Infinite));
+    }
+
+    #[test]
+    fn test_solve_contradiction() {
+        let symbolic = SymbolicEngine::new();
+
+        // 0 = 5 => no solution
+        let eq = Equation::new(Expr::int(0), Expr::int(5));
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        assert!(matches!(solution, Solution::NoSolution));
+    }
+
+    #[test]
+    fn test_solve_quadratic_two_roots() {
+        let symbolic = SymbolicEngine::new();
+
+        // x² - 4 = 0 => x = ±2
+        let eq = Equation::equals_zero(
+            Expr::sub(Expr::pow(Expr::symbol("x"), Expr::int(2)), Expr::int(4)),
+        );
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        assert!(matches!(solution, Solution::Multiple(ref v) if v.len() == 2));
+    }
+
+    #[test]
+    fn test_solve_quadratic_one_root() {
+        let symbolic = SymbolicEngine::new();
+
+        // x² + 2x + 1 = 0 => (x+1)² = 0 => x = -1 (repeated)
+        let expr = Expr::add(
+            Expr::add(
+                Expr::pow(Expr::symbol("x"), Expr::int(2)),
+                Expr::mul(Expr::int(2), Expr::symbol("x")),
+            ),
+            Expr::int(1),
+        );
+        let eq = Equation::equals_zero(expr);
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        // Should be single solution (discriminant = 0)
+        assert!(matches!(solution, Solution::Single(_)));
+    }
+
+    #[test]
+    fn test_solve_quadratic_no_real_roots() {
+        let symbolic = SymbolicEngine::new();
+
+        // x² + 1 = 0 => no real solution
+        let eq = Equation::equals_zero(
+            Expr::add(Expr::pow(Expr::symbol("x"), Expr::int(2)), Expr::int(1)),
+        );
+        let solution = symbolic.solve(&eq, "x").unwrap();
+
+        assert!(matches!(solution, Solution::NoSolution));
+    }
+
+    #[test]
+    fn test_polynomial_degree() {
+        let symbolic = SymbolicEngine::new();
+
+        // constant: degree 0
+        assert_eq!(symbolic.polynomial_degree(&Expr::int(5), "x"), 0);
+
+        // x: degree 1
+        assert_eq!(symbolic.polynomial_degree(&Expr::symbol("x"), "x"), 1);
+
+        // x²: degree 2
+        assert_eq!(
+            symbolic.polynomial_degree(&Expr::pow(Expr::symbol("x"), Expr::int(2)), "x"),
+            2
+        );
+
+        // x + 5: degree 1
+        assert_eq!(
+            symbolic.polynomial_degree(&Expr::add(Expr::symbol("x"), Expr::int(5)), "x"),
+            1
+        );
+    }
+
+    #[test]
+    fn test_evaluate_numeric() {
+        let symbolic = SymbolicEngine::new();
+
+        // Integer
+        assert_eq!(symbolic.evaluate_numeric(&Expr::int(5)), Some(5.0));
+
+        // Float
+        assert_eq!(symbolic.evaluate_numeric(&Expr::float(3.14)), Some(3.14));
+
+        // Addition
+        assert_eq!(
+            symbolic.evaluate_numeric(&Expr::add(Expr::int(2), Expr::int(3))),
+            Some(5.0)
+        );
+
+        // Symbol (not evaluable)
+        assert_eq!(symbolic.evaluate_numeric(&Expr::symbol("x")), None);
+    }
+
+    #[test]
+    fn test_solution_has_solution() {
+        assert!(Solution::Single(Expr::int(5)).has_solution());
+        assert!(Solution::Multiple(vec![Expr::int(1), Expr::int(2)]).has_solution());
+        assert!(Solution::Infinite.has_solution());
+        assert!(!Solution::NoSolution.has_solution());
+    }
+
+    #[test]
+    fn test_solution_solutions() {
+        let single = Solution::Single(Expr::int(5));
+        assert_eq!(single.solutions().len(), 1);
+
+        let multiple = Solution::Multiple(vec![Expr::int(1), Expr::int(2)]);
+        assert_eq!(multiple.solutions().len(), 2);
+
+        let none = Solution::NoSolution;
+        assert!(none.solutions().is_empty());
+
+        let infinite = Solution::Infinite;
+        assert!(infinite.solutions().is_empty());
     }
 }

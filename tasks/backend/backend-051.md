@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-051
+title: Add logging for dropped examples in data generation
 status: todo
-priority: high
+priority: medium
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:34.327284420Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Add logging for dropped examples in data generation
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,44 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**MEDIUM: Dropped examples during data generation are not reported.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The data generation functions in grapheme-train/src/lib.rs (lines 383-461) silently drop examples that fail validation, making it difficult to assess data quality.
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Examples filtered out without reporting (lines 383-461):
+examples.into_iter()
+    .filter_map(|e| validate(e).ok())  // Dropped silently
+    .collect()
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+Users have no visibility into how many examples are being dropped or why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Log dropped examples with reason
+- Track generation success/failure rate
+- Provide generation summary statistics
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Add counter for dropped examples
+- [ ] Log reason for each dropped example
+- [ ] Print summary at end of generation (total generated, dropped, success rate)
+- [ ] Add optional verbose mode for detailed logging
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Visibility:**
+- Summary shows examples generated vs dropped
+- Success rate percentage reported
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Debugging:**
+- Reasons for dropped examples are logged
+- Patterns in dropped examples identifiable
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs lines 383-461
+- Pattern: `filter_map(|e| validate(e).ok())` silently drops
+- Solution: Use explicit match with logging for Err case
+- Consider: Structured logging with `tracing` crate
 
 ## Testing
 - [ ] Write unit tests for new functionality

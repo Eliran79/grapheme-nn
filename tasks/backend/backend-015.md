@@ -1,19 +1,20 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
-status: todo
+id: backend-015
+title: Implement Episodic Memory
+status: done
 priority: high
 tags:
 - backend
-dependencies: []
+dependencies:
+- api-003
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-05T22:07:14.455236495Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Implement Episodic Memory
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +28,29 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
-
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
-
-```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
-```
-
-Malformed or incomplete graphs cause immediate panic during inference.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Criteria 1:**
+- Specific, testable criteria
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality
@@ -90,31 +79,36 @@ Malformed or incomplete graphs cause immediate panic during inference.
 - Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
-- 2025-12-06: Task created
+- 2025-12-05: Task created
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-memory/src/lib.rs` with complete memory architecture
+- Implemented `EpisodicMemory` trait with store/recall/consolidate methods
+- Implemented `SimpleEpisodicMemory` with temporal and similarity-based recall
+- Added `Episode` struct with context, content, outcome, emotional valence, importance
+- Added `GraphFingerprint` for O(n) approximate similarity
+- Added `RetentionPolicy` for memory consolidation configuration
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Episodes can be recalled by content similarity (WL-inspired fingerprint matching)
+- Temporal recall returns episodes within a time range
+- Tag-based recall for categorical retrieval
+- Consolidation removes low-importance episodes per RetentionPolicy
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Depends on grapheme-core for DagNN (Graph type)
+- Uses petgraph for NodeIndex
+- Integrates with WorkingMemory and SemanticGraph in MemorySystem
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-memory` for unit tests
+- 13 tests passing with 0 warnings
+- Tests: test_episode_creation, test_episodic_memory_store_recall, test_episodic_memory_temporal_recall, test_retention_policy
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Episodic memory uses approximate similarity (not exact isomorphism)
+- GraphFingerprint provides O(n) similarity scoring
+- SimpleEpisodicMemory is in-memory; production would use persistence

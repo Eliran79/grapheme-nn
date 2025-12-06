@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-049
+title: Add NaN validation to loss computation
 status: todo
-priority: high
+priority: medium
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:26.680497790Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Add NaN validation to loss computation
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,42 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**MEDIUM: NaN loss values go undetected during training.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The loss computation at grapheme-train/src/lib.rs:2688 doesn't validate for NaN:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Current code (line 2688):
+let loss = ged.total() as f64;  // No NaN check
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+NaN losses propagate silently through training, corrupting gradients and wasting epochs.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Add NaN detection to loss computation
+- Early terminate or warn when NaN loss detected
+- Provide actionable error message
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Add `loss.is_nan()` check after loss computation
+- [ ] Log warning or return error on NaN loss
+- [ ] Add option to early terminate epoch on NaN
+- [ ] Add unit test for NaN loss handling
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **NaN Detection:**
+- NaN losses are detected immediately after computation
+- Clear warning/error message provided
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Graceful Recovery:**
+- Training can skip or terminate on NaN
+- Previous valid checkpoints preserved
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs line 2688
+- Pattern: `let loss = ged.total() as f64;`
+- Solution: Check `if loss.is_nan() { warn!(...); return Err(...); }`
+- Consider: Early termination option in TrainConfig
 
 ## Testing
 - [ ] Write unit tests for new functionality

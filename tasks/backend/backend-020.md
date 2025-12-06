@@ -1,19 +1,21 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
-status: todo
-priority: high
+id: backend-020
+title: Implement Causal Reasoning
+status: done
+priority: medium
 tags:
 - backend
-dependencies: []
+dependencies:
+- api-004
+- api-005
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-05T22:07:32.419194399Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Implement Causal Reasoning
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +29,29 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
-
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
-
-```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
-```
-
-Malformed or incomplete graphs cause immediate panic during inference.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Criteria 1:**
+- Specific, testable criteria
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality
@@ -90,31 +80,36 @@ Malformed or incomplete graphs cause immediate panic during inference.
 - Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
-- 2025-12-06: Task created
+- 2025-12-05: Task created
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `CausalReasoning` trait in `grapheme-reason/src/lib.rs`
+- `SimpleCausalReasoning` with fingerprint-based node matching and BFS path finding
+- Added `CausalGraph` struct with edge strengths and confounders
+- intervene() applies do-calculus interventions
+- counterfactual() computes alternative timelines
+- infer_causal_graph() learns causal structure from observations
+- causes() tests cause→effect relationships
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- CausalGraph stores edge strengths for probabilistic causation
+- Confounders tracked separately for d-separation
+- set_strength() and get_strength() for causal influence
+- Interventions break incoming causal arrows (do-calculus)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-reason crate
+- Uses ComplexityBounds for constraint satisfaction
+- Integrates with ReasoningEngine as causal component
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-reason` for unit tests
+- Test: test_causal_graph
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- `infer_causal_graph()` computes edge strengths from co-occurrence
+- `causes()` uses BFS path finding to check causal paths
+- Further improvements possible with PC algorithm for structure learning

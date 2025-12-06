@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-054
+title: Optimize excessive cloning in training loop
 status: todo
-priority: high
+priority: low
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:42:49.343995625Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Optimize excessive cloning in training loop
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,43 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**LOW: Excessive cloning in training loop adds unnecessary overhead.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The training loop in grapheme-train/src/lib.rs performs redundant `.clone()` calls on graphs and embeddings:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Pattern observed in training loop:
+let input = example.input_graph.clone();  // Clones full graph
+let target = example.target_graph.clone();  // Clones again
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+For large graphs, this adds significant memory allocation overhead during training.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Reduce unnecessary cloning in hot path
+- Use references where possible
+- Profile memory allocation before/after
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Audit training loop for unnecessary clones
+- [ ] Replace clones with borrows where possible
+- [ ] Use Cow (Clone-on-write) for conditional cloning
+- [ ] Benchmark memory allocation before/after
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Reduced Allocations:**
+- Fewer clone() calls in training hot path
+- Measurable reduction in memory allocations
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **No Regression:**
+- All tests still pass
+- Training produces identical results
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs training loop
+- Pattern: Multiple `.clone()` calls per training example
+- Solution: Pass references, use Cow, or Arc for shared ownership
+- Consider: Profile with `cargo flamegraph` to identify hotspots
 
 ## Testing
 - [ ] Write unit tests for new functionality

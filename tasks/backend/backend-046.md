@@ -1,19 +1,19 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
+id: backend-046
+title: Fix NaN handling in GED pair sorting
 status: todo
 priority: high
 tags:
 - backend
 dependencies: []
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-06T10:41:58.204412217Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Fix NaN handling in GED pair sorting
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +27,41 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
+**CRITICAL: This will cause GED computation to crash with NaN values.**
 
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
+The GED pair sorting at grapheme-train/src/lib.rs:1459 uses `partial_cmp()` with only partial fallback:
 
 ```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
+// Current problematic code (line 1459):
+pairs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
 ```
 
-Malformed or incomplete graphs cause immediate panic during inference.
+This pattern can still misbehave with NaN - it doesn't panic but produces inconsistent ordering that breaks greedy assignment.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Use fully robust float comparison for GED sorting
+- Add NaN filtering before sorting
+- Ensure deterministic behavior with edge cases
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Replace `partial_cmp` with `f32::total_cmp()` for total ordering
+- [ ] Add pre-sort validation to filter/flag NaN pairs
+- [ ] Add unit test with NaN in GED costs
+- [ ] Document expected behavior with NaN inputs
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Robust Sorting:**
+- GED sorting produces deterministic results regardless of NaN presence
+- No panic possible from float comparison
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Correct Assignment:**
+- Greedy assignment works correctly even with degenerate costs
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- File: grapheme-train/src/lib.rs line 1459
+- Pattern: `sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(...))`
+- Solution: Use `f32::total_cmp()` which treats NaN as greater than all values
+- NaN values indicate broken embeddings - should be logged
 
 ## Testing
 - [ ] Write unit tests for new functionality

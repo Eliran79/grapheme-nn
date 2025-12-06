@@ -1,19 +1,20 @@
 ---
-id: backend-048
-title: Add graph structure validation before edge unwrap in grapheme-polish
-status: todo
+id: backend-017
+title: Implement Working Memory
+status: done
 priority: high
 tags:
 - backend
-dependencies: []
+dependencies:
+- api-003
 assignee: developer
-created: 2025-12-06T10:42:07.014659136Z
+created: 2025-12-05T22:07:21.637274577Z
 estimate: ~
 complexity: 3
 area: backend
 ---
 
-# Add graph structure validation before edge unwrap in grapheme-polish
+# Implement Working Memory
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -27,41 +28,29 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-**HIGH: Graph to expression conversion crashes on malformed graphs.**
-
-The `node_to_expr()` function in grapheme-polish/src/lib.rs uses `.unwrap()` on edge lookups:
-
-```rust
-// Problematic patterns (lines 203, 213, 218):
-graph.edges(node).next().unwrap()  // Panics if node has no edges
-```
-
-Malformed or incomplete graphs cause immediate panic during inference.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- Add graph structure validation before edge access
-- Return Result type for graceful error handling
-- Add pre-validation function for graph structure
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Replace `.next().unwrap()` with proper Option handling at lines 203, 213, 218
-- [ ] Return `Result<Expr, PolishError>` from `node_to_expr()`
-- [ ] Add `validate_graph_structure()` helper
-- [ ] Add unit test with malformed graph input
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **No Panic on Malformed Graph:**
-- `node_to_expr()` returns error for invalid graphs
-- Clear error message indicates which node is problematic
+✅ **Criteria 1:**
+- Specific, testable criteria
 
-✅ **Validation Available:**
-- Can pre-validate graphs before conversion
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- File: grapheme-polish/src/lib.rs lines 203, 213, 218
-- Pattern: `.edges(node).next().unwrap()`
-- Solution: Match on `.next()` and return error, or validate edge count upfront
-- Affects: All graph-to-expression conversions
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality
@@ -90,31 +79,35 @@ Malformed or incomplete graphs cause immediate panic during inference.
 - Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
-- 2025-12-06: Task created
+- 2025-12-05: Task created
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `WorkingMemory` trait in `grapheme-memory/src/lib.rs`
+- Implemented `SimpleWorkingMemory` with capacity-limited buffer (~7 items)
+- Added attend() for adding items (returns true if eviction occurred)
+- Added focus() for boosting item priority (moves to end)
+- Added current() for getting most recently attended item
+- LRU eviction policy when capacity exceeded
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- attend() automatically evicts oldest item when at capacity
+- focus() moves item to most recent position
+- clear() empties working memory
+- Capacity is configurable (default 7, matching human working memory)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-memory crate
+- Stores Graph (DagNN) items
+- Integrates with MemorySystem for unified memory access
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-memory` for unit tests
+- Tests: test_working_memory_capacity, test_working_memory_focus
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Default capacity of 7 mimics human working memory limits
+- Uses LRU eviction (remove oldest first)
+- SimpleWorkingMemory is suitable for single-agent scenarios
