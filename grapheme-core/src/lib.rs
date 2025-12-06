@@ -1588,8 +1588,8 @@ impl DagNN {
     /// * `Err(CliqueError)` - If k is out of bounds or graph is too large
     ///
     /// # Complexity
-    /// O(n^k) in the worst case, but much faster for sparse graphs using
-    /// degeneracy ordering optimization.
+    /// Uses Bron-Kerbosch algorithm with O(3^(n/3)) worst case for large graphs,
+    /// and degeneracy ordering for medium graphs. Much faster than O(n^k) brute force.
     pub fn find_cliques(&self, k: usize) -> CliqueResult<Vec<Vec<NodeId>>> {
         // Validate k bounds (NP-hard mitigation)
         if k > MAX_CLIQUE_K {
@@ -1618,11 +1618,175 @@ impl DagNN {
             return Ok(self.find_cliques_simple(k));
         }
 
-        // For larger graphs, use degeneracy ordering
-        Ok(self.find_cliques_degeneracy(k))
+        // For medium graphs (20 < n <= 100), use degeneracy ordering
+        if n <= 100 {
+            return Ok(self.find_cliques_degeneracy(k));
+        }
+
+        // For large graphs, use Bron-Kerbosch and filter by size
+        // This is O(3^(n/3)) instead of O(n^k) - better for large k
+        Ok(self.find_cliques_bron_kerbosch(k))
+    }
+
+    /// Find all k-cliques using Bron-Kerbosch algorithm
+    ///
+    /// Finds all maximal cliques, then extracts k-cliques from them.
+    /// More efficient for large graphs where maximal cliques are small.
+    fn find_cliques_bron_kerbosch(&self, k: usize) -> Vec<Vec<NodeId>> {
+        let maximal_cliques = self.find_maximal_cliques(None);
+
+        let mut k_cliques = Vec::new();
+
+        for clique in maximal_cliques {
+            if clique.len() == k {
+                // Exact size - add directly
+                k_cliques.push(clique);
+            } else if clique.len() > k {
+                // Extract all k-subsets from larger maximal clique
+                for subset in Self::combinations_iter(&clique, k) {
+                    k_cliques.push(subset);
+                }
+            }
+            // Skip if clique.len() < k (no valid k-cliques)
+        }
+
+        // Deduplicate (different maximal cliques may share k-subsets)
+        let mut seen: HashSet<Vec<NodeId>> = HashSet::new();
+        k_cliques.retain(|c| {
+            let mut sorted = c.clone();
+            sorted.sort();
+            seen.insert(sorted)
+        });
+
+        k_cliques
+    }
+
+    /// Find all maximal cliques in the graph
+    ///
+    /// Returns all cliques that cannot be extended by adding more vertices.
+    /// Uses Bron-Kerbosch algorithm with pivoting.
+    ///
+    /// # Arguments
+    /// * `max_results` - Optional limit on number of cliques to find
+    ///
+    /// # Complexity
+    /// O(3^(n/3)) worst case, much better than O(n^k) for large k.
+    pub fn find_all_maximal_cliques(&self, max_results: Option<usize>) -> Vec<Vec<NodeId>> {
+        self.find_maximal_cliques(max_results)
+    }
+
+    /// Bron-Kerbosch algorithm with pivoting for finding maximal cliques
+    ///
+    /// Complexity: O(3^(n/3)) worst case, much better than O(n^k) for large k.
+    /// Uses pivot selection to prune the search space effectively.
+    fn find_maximal_cliques(&self, max_results: Option<usize>) -> Vec<Vec<NodeId>> {
+        let nodes: Vec<NodeId> = self.graph.node_indices().collect();
+        if nodes.is_empty() {
+            return Vec::new();
+        }
+
+        // Build neighbor sets for O(1) lookup during recursion
+        let neighbor_sets: HashMap<NodeId, HashSet<NodeId>> = nodes
+            .iter()
+            .map(|&node| {
+                let neighbors: HashSet<NodeId> = self.neighbors(node).collect();
+                (node, neighbors)
+            })
+            .collect();
+
+        let mut cliques = Vec::new();
+        let p: HashSet<NodeId> = nodes.into_iter().collect();
+        let x: HashSet<NodeId> = HashSet::new();
+        let r: Vec<NodeId> = Vec::new();
+
+        self.bron_kerbosch_pivot(
+            r,
+            p,
+            x,
+            &neighbor_sets,
+            &mut cliques,
+            max_results,
+        );
+
+        cliques
+    }
+
+    /// Recursive Bron-Kerbosch with pivot selection
+    fn bron_kerbosch_pivot(
+        &self,
+        r: Vec<NodeId>,           // Current clique
+        mut p: HashSet<NodeId>,   // Candidates
+        mut x: HashSet<NodeId>,   // Excluded
+        neighbors: &HashMap<NodeId, HashSet<NodeId>>,
+        cliques: &mut Vec<Vec<NodeId>>,
+        max_results: Option<usize>,
+    ) {
+        // Early termination if we have enough results
+        if let Some(max) = max_results {
+            if cliques.len() >= max {
+                return;
+            }
+        }
+
+        if p.is_empty() && x.is_empty() {
+            // R is a maximal clique
+            cliques.push(r);
+            return;
+        }
+
+        if p.is_empty() {
+            return;
+        }
+
+        // Choose pivot: vertex in P ∪ X with maximum neighbors in P
+        let pivot = p
+            .union(&x)
+            .max_by_key(|&v| {
+                neighbors
+                    .get(v)
+                    .map(|n| n.intersection(&p).count())
+                    .unwrap_or(0)
+            })
+            .copied();
+
+        let pivot_neighbors: HashSet<NodeId> = pivot
+            .and_then(|pv| neighbors.get(&pv))
+            .cloned()
+            .unwrap_or_default();
+
+        // Iterate over P \ N(pivot)
+        let candidates: Vec<NodeId> = p.difference(&pivot_neighbors).copied().collect();
+
+        for v in candidates {
+            // Early termination check
+            if let Some(max) = max_results {
+                if cliques.len() >= max {
+                    return;
+                }
+            }
+
+            let v_neighbors = neighbors.get(&v).cloned().unwrap_or_default();
+
+            // New R = R ∪ {v}
+            let mut new_r = r.clone();
+            new_r.push(v);
+
+            // New P = P ∩ N(v)
+            let new_p: HashSet<NodeId> = p.intersection(&v_neighbors).copied().collect();
+
+            // New X = X ∩ N(v)
+            let new_x: HashSet<NodeId> = x.intersection(&v_neighbors).copied().collect();
+
+            self.bron_kerbosch_pivot(new_r, new_p, new_x, neighbors, cliques, max_results);
+
+            // Move v from P to X
+            p.remove(&v);
+            x.insert(v);
+        }
     }
 
     /// Simple O(n^k) clique enumeration for small graphs
+    /// Kept for backward compatibility with very small graphs (n <= 20)
     fn find_cliques_simple(&self, k: usize) -> Vec<Vec<NodeId>> {
         let nodes: Vec<NodeId> = self.graph.node_indices().collect();
         let n = nodes.len();
@@ -1634,7 +1798,7 @@ impl DagNN {
         let mut cliques = Vec::new();
 
         // Generate all k-combinations of nodes
-        for combo in Self::combinations(&nodes, k) {
+        for combo in Self::combinations_iter(&nodes, k) {
             if self.is_clique(&combo) {
                 cliques.push(combo);
             }
@@ -1676,7 +1840,7 @@ impl DagNN {
             }
 
             // Find all (k-1)-cliques among later neighbors
-            for subset in Self::combinations(&later_neighbors, k - 1) {
+            for subset in Self::combinations_iter(&later_neighbors, k - 1) {
                 if self.is_clique(&subset) {
                     let mut clique = vec![v];
                     clique.extend(subset);
@@ -1746,7 +1910,9 @@ impl DagNN {
             )
     }
 
-    /// Generate all k-combinations of a slice
+    /// Generate all k-combinations of a slice (recursive version)
+    /// Kept for test compatibility - tests call DagNN::combinations directly
+    #[allow(dead_code)]
     fn combinations(items: &[NodeId], k: usize) -> Vec<Vec<NodeId>> {
         if k == 0 {
             return vec![vec![]];
@@ -1765,6 +1931,53 @@ impl DagNN {
             for mut combo in Self::combinations(rest, k - 1) {
                 combo.insert(0, item);
                 result.push(combo);
+            }
+        }
+
+        result
+    }
+
+    /// Generate all k-combinations of a slice (iterative version)
+    ///
+    /// Avoids stack overflow for large inputs by using explicit index tracking
+    /// instead of recursion. Same output as `combinations()` but O(1) stack space.
+    fn combinations_iter(items: &[NodeId], k: usize) -> Vec<Vec<NodeId>> {
+        let n = items.len();
+        if k == 0 {
+            return vec![vec![]];
+        }
+        if n < k {
+            return vec![];
+        }
+        if k == 1 {
+            return items.iter().map(|&x| vec![x]).collect();
+        }
+
+        let mut result = Vec::new();
+        let mut indices: Vec<usize> = (0..k).collect();
+
+        loop {
+            // Add current combination
+            result.push(indices.iter().map(|&i| items[i]).collect());
+
+            // Find rightmost index that can be incremented
+            let mut i = k;
+            while i > 0 {
+                i -= 1;
+                if indices[i] < n - k + i {
+                    break;
+                }
+            }
+
+            // If we couldn't find one, we're done
+            if i == 0 && indices[0] >= n - k {
+                break;
+            }
+
+            // Increment and reset subsequent indices
+            indices[i] += 1;
+            for j in (i + 1)..k {
+                indices[j] = indices[j - 1] + 1;
             }
         }
 
@@ -4267,6 +4480,59 @@ mod tests {
         // C(3,4) = 0 combinations
         let combos = DagNN::combinations(&items, 4);
         assert!(combos.is_empty());
+    }
+
+    #[test]
+    fn test_combinations_iter() {
+        let items = vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)];
+
+        // C(3,2) = 3 combinations - should match recursive version
+        let combos_iter = DagNN::combinations_iter(&items, 2);
+        let combos_rec = DagNN::combinations(&items, 2);
+        assert_eq!(combos_iter.len(), combos_rec.len());
+        assert_eq!(combos_iter.len(), 3);
+
+        // C(3,3) = 1 combination
+        let combos_iter = DagNN::combinations_iter(&items, 3);
+        assert_eq!(combos_iter.len(), 1);
+
+        // C(3,4) = 0 combinations
+        let combos_iter = DagNN::combinations_iter(&items, 4);
+        assert!(combos_iter.is_empty());
+
+        // Larger test: C(5,3) = 10
+        let items5 = (0..5).map(|i| NodeIndex::new(i)).collect::<Vec<_>>();
+        let combos = DagNN::combinations_iter(&items5, 3);
+        assert_eq!(combos.len(), 10);
+    }
+
+    #[test]
+    fn test_find_maximal_cliques() {
+        // Create a small graph with known cliques
+        let mut dag = DagNN::new();
+        let n0 = dag.graph.add_node(Node::input('a', 0));
+        let n1 = dag.graph.add_node(Node::input('b', 1));
+        let n2 = dag.graph.add_node(Node::input('c', 2));
+        let n3 = dag.graph.add_node(Node::input('d', 3));
+
+        // Create a triangle (3-clique): n0-n1-n2
+        dag.graph.add_edge(n0, n1, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph.add_edge(n1, n2, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph.add_edge(n0, n2, Edge::new(0.5, EdgeType::Sequential));
+
+        // n3 only connects to n0
+        dag.graph.add_edge(n0, n3, Edge::new(0.5, EdgeType::Sequential));
+
+        dag.input_nodes = vec![n0, n1, n2, n3];
+
+        let maximal = dag.find_all_maximal_cliques(None);
+
+        // Should find: {n0,n1,n2} as a maximal 3-clique and {n0,n3} as maximal 2-clique
+        assert!(!maximal.is_empty());
+
+        // The triangle should be a maximal clique
+        let has_triangle = maximal.iter().any(|c| c.len() == 3);
+        assert!(has_triangle, "Should find the triangle as a maximal clique");
     }
 
     #[test]
