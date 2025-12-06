@@ -993,6 +993,150 @@ impl ForwardPass for DagNN {
 }
 
 // ============================================================================
+// Learnable Trait for Gradient-Based Learning
+// ============================================================================
+
+/// Trait for learnable components with gradient-based optimization
+///
+/// This trait provides a unified interface for all learnable parameters
+/// in the GRAPHEME system, including embeddings, message passing layers,
+/// and graph transformation networks.
+///
+/// # Example
+/// ```ignore
+/// fn train_step<L: Learnable>(learnable: &mut L, lr: f32) {
+///     // Forward pass happens externally
+///     // Gradients are computed and stored
+///     learnable.step(lr);
+///     learnable.zero_grad();
+/// }
+/// ```
+pub trait Learnable {
+    /// Zero out all accumulated gradients
+    fn zero_grad(&mut self);
+
+    /// Update parameters using accumulated gradients
+    ///
+    /// # Arguments
+    /// * `lr` - Learning rate for the update step
+    fn step(&mut self, lr: f32);
+
+    /// Get the total number of learnable parameters
+    fn num_parameters(&self) -> usize;
+
+    /// Check if this component has any gradients accumulated
+    fn has_gradients(&self) -> bool;
+
+    /// Get the L2 norm of all gradients (for debugging/clipping)
+    fn gradient_norm(&self) -> f32;
+}
+
+impl Learnable for Embedding {
+    fn zero_grad(&mut self) {
+        // Delegate to inherent method which creates zeroed gradient
+        if self.requires_grad {
+            self.grad = Some(ndarray::Array2::zeros((self.vocab_size, self.embed_dim)));
+        } else {
+            self.grad = None;
+        }
+    }
+
+    fn step(&mut self, lr: f32) {
+        if let Some(ref grad) = self.grad {
+            self.weights = &self.weights - &(grad * lr);
+        }
+    }
+
+    fn num_parameters(&self) -> usize {
+        self.weights.len()
+    }
+
+    fn has_gradients(&self) -> bool {
+        // Check if gradients exist AND are non-zero
+        self.grad.as_ref().map(|g| g.iter().any(|&x| x != 0.0)).unwrap_or(false)
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        self.grad
+            .as_ref()
+            .map(|g| g.iter().map(|x| x * x).sum::<f32>().sqrt())
+            .unwrap_or(0.0)
+    }
+}
+
+impl Learnable for MessagePassingLayer {
+    fn zero_grad(&mut self) {
+        self.weight_grad = None;
+        self.bias_grad = None;
+    }
+
+    fn step(&mut self, lr: f32) {
+        if let Some(ref grad) = self.weight_grad {
+            self.weight = &self.weight - &(grad * lr);
+        }
+        if let Some(ref grad) = self.bias_grad {
+            self.bias = &self.bias - &(grad * lr);
+        }
+    }
+
+    fn num_parameters(&self) -> usize {
+        self.weight.len() + self.bias.len()
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.weight_grad.is_some() || self.bias_grad.is_some()
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        let weight_norm: f32 = self.weight_grad
+            .as_ref()
+            .map(|g| g.iter().map(|x| x * x).sum::<f32>())
+            .unwrap_or(0.0);
+        let bias_norm: f32 = self.bias_grad
+            .as_ref()
+            .map(|g| g.iter().map(|x| x * x).sum::<f32>())
+            .unwrap_or(0.0);
+        (weight_norm + bias_norm).sqrt()
+    }
+}
+
+impl Learnable for GraphTransformNet {
+    fn zero_grad(&mut self) {
+        self.embedding.zero_grad();
+        self.mp_layers.par_iter_mut().for_each(|layer| {
+            layer.zero_grad();
+        });
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.embedding.step(lr);
+        self.mp_layers.par_iter_mut().for_each(|layer| {
+            layer.step(lr);
+        });
+    }
+
+    fn num_parameters(&self) -> usize {
+        self.embedding.num_parameters()
+            + self.mp_layers.iter().map(|l| l.num_parameters()).sum::<usize>()
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.embedding.has_gradients()
+            || self.mp_layers.iter().any(|l| l.has_gradients())
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        let embed_norm = self.embedding.gradient_norm();
+        let layer_norm: f32 = self.mp_layers
+            .iter()
+            .map(|l| l.gradient_norm().powi(2))
+            .sum::<f32>()
+            .sqrt();
+        (embed_norm.powi(2) + layer_norm.powi(2)).sqrt()
+    }
+}
+
+// ============================================================================
 // GraphTransformer Trait (matching GRAPHEME_Vision.md)
 // ============================================================================
 
@@ -5109,6 +5253,69 @@ mod tests {
 
         emb.unfreeze();
         assert!(emb.requires_grad);
+    }
+
+    #[test]
+    fn test_learnable_trait_embedding() {
+        use crate::Learnable;
+
+        let mut emb = Embedding::xavier(256, 64);
+
+        // Test num_parameters
+        assert_eq!(emb.num_parameters(), 256 * 64);
+
+        // Initially no gradients
+        assert!(!emb.has_gradients());
+        assert_eq!(emb.gradient_norm(), 0.0);
+
+        // Accumulate some gradient
+        let grad = ndarray::Array1::from_elem(64, 1.0);
+        emb.backward(65, &grad);
+
+        // Now has gradients
+        assert!(emb.has_gradients());
+        assert!(emb.gradient_norm() > 0.0);
+
+        // Zero grad should clear
+        emb.zero_grad();
+        assert!(!emb.has_gradients());
+    }
+
+    #[test]
+    fn test_learnable_trait_message_passing() {
+        use crate::Learnable;
+
+        let mut layer = MessagePassingLayer::new(64, 32);
+
+        // Test num_parameters: weight (32x64) + bias (32)
+        assert_eq!(layer.num_parameters(), 32 * 64 + 32);
+
+        // Initially no gradients
+        assert!(!layer.has_gradients());
+
+        // Zero grad should work
+        layer.zero_grad();
+        assert!(!layer.has_gradients());
+    }
+
+    #[test]
+    fn test_learnable_trait_graph_transform_net() {
+        use crate::Learnable;
+
+        let mut net = GraphTransformNet::new(256, 64, 32, 2);
+
+        // Test num_parameters: embedding + 2 layers
+        let embed_params = 256 * 64;
+        let layer1_params = 32 * 64 + 32;  // first layer: hidden_dim x embed_dim + bias
+        let layer2_params = 32 * 32 + 32;  // second layer: hidden_dim x hidden_dim + bias
+        assert_eq!(net.num_parameters(), embed_params + layer1_params + layer2_params);
+
+        // Initially no gradients
+        assert!(!net.has_gradients());
+
+        // Zero grad should work (parallel)
+        net.zero_grad();
+        assert!(!net.has_gradients());
     }
 
     #[test]
