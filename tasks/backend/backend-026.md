@@ -1,7 +1,7 @@
 ---
 id: backend-026
 title: Implement node embedding layer with learnable weights
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -85,30 +85,49 @@ Currently DagNN nodes have fixed activation values. To enable learning, nodes ne
 
 ## Updates
 - 2025-12-06: Task created
+- 2025-12-06: Task completed - Embedding layer implemented
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `Embedding` struct in `grapheme-core/src/lib.rs` (lines 2293-2493)
+- Added `InitStrategy` enum: Xavier, He, Uniform, Zero
+- Added `EmbeddingExt` trait for DagNN integration
+- New types: `Embedding`, `InitStrategy`, `EmbeddingExt`
+- Re-exports `ndarray::Array1` and `ndarray::Array2` via workspace
 
-### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+### Key APIs
+```rust
+// Create embedding layer (256 vocab, 64 dim)
+let emb = Embedding::xavier(256, 64);
+
+// Forward pass
+let vec: Array1<f32> = emb.forward('a');
+let batch: Array2<f32> = emb.forward_batch(&['h', 'i']);
+
+// Backward pass
+emb.backward(idx, &grad_output);
+emb.step(learning_rate);
+
+// With DagNN
+let embeddings = dag.get_node_embeddings(&emb);
+let matrix = dag.get_embedding_matrix(&emb);
+```
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `ndarray = "0.15"` and `rand = "0.8"` to workspace
+- Added to grapheme-core/Cargo.toml
+- Integrates with existing Node/DagNN via EmbeddingExt trait
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- 8 new tests: test_embedding_* in grapheme-core
+- Run: `cargo test -p grapheme-core`
+- 75 tests total, all passing
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Gradients stored in `emb.grad: Option<Array2<f32>>`
+- Call `zero_grad()` before each training step
+- Call `backward(idx, grad)` for each used embedding
+- Call `step(lr)` to apply SGD update
+- For backend-027 (backprop): use this as leaf node in computation graph

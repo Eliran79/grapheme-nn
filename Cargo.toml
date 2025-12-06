@@ -39,6 +39,8 @@ rayon = "1.10"
 
 # Numeric
 num-traits = "0.2"
+ndarray = "0.15"
+rand = "0.8"
 
 # Testing
 criterion = "0.5"

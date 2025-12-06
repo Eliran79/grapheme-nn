@@ -2271,6 +2271,258 @@ impl GraphemeGraph {
 }
 
 // ============================================================================
+// Learnable Embeddings (backend-026)
+// ============================================================================
+
+use ndarray::{Array1, Array2};
+use rand::Rng;
+
+/// Initialization strategy for embedding weights
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InitStrategy {
+    /// Xavier/Glorot initialization: scale = sqrt(2 / (fan_in + fan_out))
+    Xavier,
+    /// He initialization: scale = sqrt(2 / fan_in)
+    He,
+    /// Uniform random in [-scale, scale]
+    Uniform(f32),
+    /// Zero initialization (for gradients)
+    Zero,
+}
+
+/// A learnable embedding layer that maps characters to dense vectors
+///
+/// This is the foundation for neural graph processing - each character
+/// gets a learnable d-dimensional embedding vector.
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    /// Weight matrix: (vocab_size x embed_dim)
+    /// Each row is the embedding for one character
+    pub weights: Array2<f32>,
+    /// Gradient accumulator (same shape as weights)
+    pub grad: Option<Array2<f32>>,
+    /// Whether to compute gradients
+    pub requires_grad: bool,
+    /// Embedding dimension
+    pub embed_dim: usize,
+    /// Vocabulary size (typically 256 for ASCII or larger for Unicode)
+    pub vocab_size: usize,
+}
+
+impl Embedding {
+    /// Create a new embedding layer with specified initialization
+    ///
+    /// # Arguments
+    /// * `vocab_size` - Number of possible input tokens (256 for ASCII)
+    /// * `embed_dim` - Dimension of embedding vectors
+    /// * `init` - Weight initialization strategy
+    pub fn new(vocab_size: usize, embed_dim: usize, init: InitStrategy) -> Self {
+        let weights = Self::init_weights(vocab_size, embed_dim, init);
+        Self {
+            weights,
+            grad: None,
+            requires_grad: true,
+            embed_dim,
+            vocab_size,
+        }
+    }
+
+    /// Create embedding with Xavier initialization (recommended default)
+    pub fn xavier(vocab_size: usize, embed_dim: usize) -> Self {
+        Self::new(vocab_size, embed_dim, InitStrategy::Xavier)
+    }
+
+    /// Create embedding with He initialization
+    pub fn he(vocab_size: usize, embed_dim: usize) -> Self {
+        Self::new(vocab_size, embed_dim, InitStrategy::He)
+    }
+
+    /// Initialize weights according to strategy
+    fn init_weights(vocab_size: usize, embed_dim: usize, init: InitStrategy) -> Array2<f32> {
+        let mut rng = rand::thread_rng();
+
+        match init {
+            InitStrategy::Xavier => {
+                let scale = (2.0 / (vocab_size + embed_dim) as f32).sqrt();
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
+                    rng.gen_range(-scale..scale)
+                })
+            }
+            InitStrategy::He => {
+                let scale = (2.0 / vocab_size as f32).sqrt();
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
+                    rng.gen_range(-scale..scale)
+                })
+            }
+            InitStrategy::Uniform(scale) => {
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
+                    rng.gen_range(-scale..scale)
+                })
+            }
+            InitStrategy::Zero => {
+                Array2::zeros((vocab_size, embed_dim))
+            }
+        }
+    }
+
+    /// Forward pass: look up embedding for a single character
+    ///
+    /// # Arguments
+    /// * `ch` - Character to embed (uses char as u32 index, clamped to vocab_size)
+    ///
+    /// # Returns
+    /// Embedding vector of dimension `embed_dim`
+    pub fn forward(&self, ch: char) -> Array1<f32> {
+        let idx = (ch as usize).min(self.vocab_size - 1);
+        self.weights.row(idx).to_owned()
+    }
+
+    /// Forward pass: look up embeddings for a sequence of characters
+    ///
+    /// # Arguments
+    /// * `chars` - Slice of characters to embed
+    ///
+    /// # Returns
+    /// Matrix of shape (len, embed_dim) where each row is an embedding
+    pub fn forward_batch(&self, chars: &[char]) -> Array2<f32> {
+        let n = chars.len();
+        let mut result = Array2::zeros((n, self.embed_dim));
+        for (i, &ch) in chars.iter().enumerate() {
+            let idx = (ch as usize).min(self.vocab_size - 1);
+            result.row_mut(i).assign(&self.weights.row(idx));
+        }
+        result
+    }
+
+    /// Forward pass for a byte index directly
+    pub fn forward_index(&self, idx: usize) -> Array1<f32> {
+        let idx = idx.min(self.vocab_size - 1);
+        self.weights.row(idx).to_owned()
+    }
+
+    /// Zero out accumulated gradients
+    pub fn zero_grad(&mut self) {
+        if self.requires_grad {
+            self.grad = Some(Array2::zeros((self.vocab_size, self.embed_dim)));
+        }
+    }
+
+    /// Accumulate gradient for a specific index
+    ///
+    /// # Arguments
+    /// * `idx` - Character index that was used in forward pass
+    /// * `grad_output` - Gradient flowing back from the next layer
+    pub fn backward(&mut self, idx: usize, grad_output: &Array1<f32>) {
+        if !self.requires_grad {
+            return;
+        }
+
+        let idx = idx.min(self.vocab_size - 1);
+
+        // Initialize gradient if needed
+        if self.grad.is_none() {
+            self.zero_grad();
+        }
+
+        // Accumulate gradient at the index that was looked up
+        if let Some(ref mut grad) = self.grad {
+            for (j, &g) in grad_output.iter().enumerate() {
+                grad[[idx, j]] += g;
+            }
+        }
+    }
+
+    /// Update weights using accumulated gradients (SGD step)
+    ///
+    /// # Arguments
+    /// * `lr` - Learning rate
+    pub fn step(&mut self, lr: f32) {
+        if let Some(ref grad) = self.grad {
+            self.weights = &self.weights - &(grad * lr);
+        }
+    }
+
+    /// Get the embedding for a node based on its type
+    pub fn embed_node(&self, node: &Node) -> Array1<f32> {
+        match &node.node_type {
+            NodeType::Input(ch) => self.forward(*ch),
+            NodeType::Hidden => {
+                // Hidden nodes get a special embedding (index 0 by convention)
+                self.forward_index(0)
+            }
+            NodeType::Output => {
+                // Output nodes get another special embedding (index 1)
+                self.forward_index(1)
+            }
+            NodeType::Clique(_) => {
+                // Clique nodes - could aggregate member embeddings
+                self.forward_index(2)
+            }
+            NodeType::Pattern(bytes) => {
+                // Pattern nodes - average of byte embeddings
+                if bytes.is_empty() {
+                    return self.forward_index(3);
+                }
+                let mut sum = Array1::zeros(self.embed_dim);
+                for &b in bytes {
+                    sum = sum + self.forward_index(b as usize);
+                }
+                sum / bytes.len() as f32
+            }
+            NodeType::Compressed(_) => {
+                self.forward_index(4)
+            }
+        }
+    }
+
+    /// Get number of parameters in this layer
+    pub fn num_parameters(&self) -> usize {
+        self.vocab_size * self.embed_dim
+    }
+
+    /// Freeze the layer (disable gradient computation)
+    pub fn freeze(&mut self) {
+        self.requires_grad = false;
+        self.grad = None;
+    }
+
+    /// Unfreeze the layer (enable gradient computation)
+    pub fn unfreeze(&mut self) {
+        self.requires_grad = true;
+    }
+}
+
+/// Extension trait to add embedding support to DagNN
+pub trait EmbeddingExt {
+    /// Get embeddings for all nodes in the graph
+    fn get_node_embeddings(&self, embedding: &Embedding) -> Vec<Array1<f32>>;
+
+    /// Get embeddings as a matrix (n_nodes x embed_dim)
+    fn get_embedding_matrix(&self, embedding: &Embedding) -> Array2<f32>;
+}
+
+impl EmbeddingExt for DagNN {
+    fn get_node_embeddings(&self, embedding: &Embedding) -> Vec<Array1<f32>> {
+        self.graph
+            .node_indices()
+            .map(|idx| embedding.embed_node(&self.graph[idx]))
+            .collect()
+    }
+
+    fn get_embedding_matrix(&self, embedding: &Embedding) -> Array2<f32> {
+        let n = self.graph.node_count();
+        let mut matrix = Array2::zeros((n, embedding.embed_dim));
+
+        for (i, idx) in self.graph.node_indices().enumerate() {
+            let emb = embedding.embed_node(&self.graph[idx]);
+            matrix.row_mut(i).assign(&emb);
+        }
+
+        matrix
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3181,5 +3433,138 @@ mod tests {
         assert_eq!(stats.max_clique_size, 0);
         assert_eq!(stats.avg_clique_size, 0.0);
         assert_eq!(stats.clique_count, 0);
+    }
+
+    // ========================================
+    // Embedding Tests (backend-026)
+    // ========================================
+
+    #[test]
+    fn test_embedding_creation() {
+        let emb = Embedding::xavier(256, 64);
+        assert_eq!(emb.vocab_size, 256);
+        assert_eq!(emb.embed_dim, 64);
+        assert_eq!(emb.num_parameters(), 256 * 64);
+        assert!(emb.requires_grad);
+    }
+
+    #[test]
+    fn test_embedding_forward() {
+        let emb = Embedding::xavier(256, 64);
+
+        // Forward pass for a character
+        let vec = emb.forward('a');
+        assert_eq!(vec.len(), 64);
+
+        // Same character should give same embedding
+        let vec2 = emb.forward('a');
+        assert_eq!(vec, vec2);
+
+        // Different characters should (likely) give different embeddings
+        let vec3 = emb.forward('b');
+        assert_ne!(vec, vec3);
+    }
+
+    #[test]
+    fn test_embedding_batch() {
+        let emb = Embedding::xavier(256, 64);
+        let chars: Vec<char> = "hello".chars().collect();
+
+        let matrix = emb.forward_batch(&chars);
+        assert_eq!(matrix.shape(), &[5, 64]);
+
+        // First row should match forward('h')
+        let h_emb = emb.forward('h');
+        assert_eq!(matrix.row(0).to_owned(), h_emb);
+    }
+
+    #[test]
+    fn test_embedding_gradient() {
+        let mut emb = Embedding::new(256, 64, InitStrategy::Zero);
+
+        // Forward pass
+        let idx = 'a' as usize;
+        let _output = emb.forward('a');
+
+        // Backward pass with gradient
+        let grad = ndarray::Array1::ones(64);
+        emb.backward(idx, &grad);
+
+        // Check gradient was accumulated
+        assert!(emb.grad.is_some());
+        let g = emb.grad.as_ref().unwrap();
+        assert_eq!(g[[idx, 0]], 1.0);
+        assert_eq!(g[[idx, 63]], 1.0);
+        // Other indices should be zero
+        assert_eq!(g[['b' as usize, 0]], 0.0);
+    }
+
+    #[test]
+    fn test_embedding_step() {
+        let mut emb = Embedding::new(256, 64, InitStrategy::Uniform(1.0));
+
+        // Store original weight
+        let original = emb.weights[[65, 0]]; // 'A' = 65
+
+        // Forward and backward
+        emb.forward('A');
+        let grad = ndarray::Array1::from_elem(64, 0.5);
+        emb.backward(65, &grad);
+
+        // Take a step
+        emb.step(0.1);
+
+        // Weight should have changed
+        let new_weight = emb.weights[[65, 0]];
+        let expected = original - 0.1 * 0.5;
+        assert!((new_weight - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_embedding_freeze() {
+        let mut emb = Embedding::xavier(256, 64);
+        assert!(emb.requires_grad);
+
+        emb.freeze();
+        assert!(!emb.requires_grad);
+
+        // Backward should be a no-op when frozen
+        let grad = ndarray::Array1::ones(64);
+        emb.backward(0, &grad);
+        assert!(emb.grad.is_none());
+
+        emb.unfreeze();
+        assert!(emb.requires_grad);
+    }
+
+    #[test]
+    fn test_embedding_with_dagnn() {
+        let dag = DagNN::from_text("hi").unwrap();
+        let emb = Embedding::xavier(256, 32);
+
+        // Get embeddings for all nodes
+        let embeddings = dag.get_node_embeddings(&emb);
+        assert_eq!(embeddings.len(), 2); // 'h' and 'i'
+
+        // Get as matrix
+        let matrix = dag.get_embedding_matrix(&emb);
+        assert_eq!(matrix.shape(), &[2, 32]);
+    }
+
+    #[test]
+    fn test_init_strategies() {
+        // Xavier should have smaller values for larger vocab
+        let xavier = Embedding::xavier(1000, 64);
+        let max_val = xavier.weights.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        assert!(max_val < 0.1, "Xavier max = {}", max_val);
+
+        // He initialization
+        let he = Embedding::he(256, 64);
+        let he_max = he.weights.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        assert!(he_max < 0.2, "He max = {}", he_max);
+
+        // Zero initialization
+        let zero = Embedding::new(256, 64, InitStrategy::Zero);
+        assert!(zero.weights.iter().all(|&x| x == 0.0));
     }
 }
