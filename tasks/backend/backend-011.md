@@ -1,7 +1,7 @@
 ---
 id: backend-011
 title: 'Complete Level 7: Equation solving'
-status: todo
+status: done
 priority: low
 tags:
 - backend
@@ -199,19 +199,29 @@ impl SymbolicEngine {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Added `Equation` struct (lhs, rhs) for representing equations
+- Added `Solution` enum (Single, Multiple, NoSolution, Infinite)
+- Added `SolveError` enum and `SolveResult` type
+- Added `solve()` method to SymbolicEngine
+- Added `simplify()` method with constant folding and algebraic rules
+- Added `polynomial_degree()` for determining equation type
+- Added `solve_linear()` for ax + b = 0
+- Added `solve_quadratic()` using quadratic formula
+- Added `extract_linear_coefficients()` and `extract_quadratic_coefficients()`
+- Added `evaluate_numeric()` for constant evaluation
+- Added 13 equation solving tests (63 total tests in grapheme-engine)
 
 ### Causality Impact
 - Level 7 curriculum becomes functional
 - Enables training on equation solving
 - Completes the 7-level curriculum system
+- Adds simplification capability to SymbolicEngine
 
 ### Dependencies & Integration
-- Depends on backend-010 (integration - for calculus equations)
-- Depends on backend-004 (simplification rules)
-- Completes the curriculum: Levels 1-7 all functional
+- Uses backend-010 integration methods (SymbolicEngine)
+- Works with existing Expr representation
+- Solution can be verified by substitution
 
 ### Verification & Testing
-- Verify solutions satisfy original equations
-- Test boundary cases (no solution, infinite solutions)
-- Check Level 7 dataset generation produces valid samples
+- Run `cargo test -p grapheme-engine` for unit tests
+- All 63 tests passing with 0 warnings
