@@ -338,6 +338,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-tests"
+version = "0.1.0"
+dependencies = [
+ "grapheme-core",
+ "grapheme-engine",
+ "grapheme-polish",
+ "rand",
+]
+
+[[package]]
 name = "grapheme-train"
 version = "0.1.0"
 dependencies = [
