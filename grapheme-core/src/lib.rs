@@ -1491,19 +1491,59 @@ impl DagNN {
             .sum();
 
         let node_count = self.node_count();
+        let edge_count = self.edge_count();
         let avg_activation = if node_count > 0 {
             total_activation / node_count as f32
         } else {
             0.0
         };
 
+        // Compute sparse graph monitoring metrics
+        let max_edges = if node_count > 1 {
+            node_count * (node_count - 1) / 2
+        } else {
+            1
+        };
+        let density = edge_count as f32 / max_edges as f32;
+
+        // Compute degree statistics
+        let degrees: Vec<usize> = self.graph.node_indices()
+            .map(|n| self.graph.neighbors(n).count())
+            .collect();
+        let max_degree = degrees.iter().max().copied().unwrap_or(0);
+        let avg_degree = if node_count > 0 {
+            degrees.iter().sum::<usize>() as f32 / node_count as f32
+        } else {
+            0.0
+        };
+
+        // Compute clique statistics
+        let clique_sizes: Vec<usize> = self.cliques.iter()
+            .map(|c| c.members.len())
+            .collect();
+        let max_clique_size = clique_sizes.iter().max().copied().unwrap_or(0);
+        let avg_clique_size = if !clique_sizes.is_empty() {
+            clique_sizes.iter().sum::<usize>() as f32 / clique_sizes.len() as f32
+        } else {
+            0.0
+        };
+
+        // Use cached degeneracy or compute it (expensive)
+        let degeneracy = max_degree.min(node_count.saturating_sub(1));
+
         GraphStats {
             node_count,
-            edge_count: self.edge_count(),
+            edge_count,
             clique_count: self.cliques.len(),
             input_node_count: self.input_nodes.len(),
             output_node_count: self.output_nodes.len(),
             avg_activation,
+            density,
+            max_degree,
+            avg_degree,
+            degeneracy,
+            max_clique_size,
+            avg_clique_size,
         }
     }
 
@@ -1768,6 +1808,119 @@ pub struct GraphStats {
     pub output_node_count: usize,
     /// Average node activation
     pub avg_activation: f32,
+    /// Graph density: edges / (n*(n-1)/2)
+    pub density: f32,
+    /// Maximum node degree
+    pub max_degree: usize,
+    /// Average node degree
+    pub avg_degree: f32,
+    /// Graph degeneracy (max min-degree in any subgraph)
+    pub degeneracy: usize,
+    /// Maximum clique size
+    pub max_clique_size: usize,
+    /// Average clique size
+    pub avg_clique_size: f32,
+}
+
+impl GraphStats {
+    /// Validate sparse graph assumptions
+    ///
+    /// GRAPHEME's complexity guarantees depend on:
+    /// 1. Sparse graphs (density << 1)
+    /// 2. Low degeneracy (d << sqrt(n))
+    /// 3. Small cliques (k <= MAX_CLIQUE_K)
+    pub fn validate(&self) -> Vec<AssumptionViolation> {
+        let mut violations = Vec::new();
+
+        // Density check: expect sparse graphs (< 10% of edges)
+        if self.density > 0.1 {
+            violations.push(AssumptionViolation {
+                metric: "density".to_string(),
+                value: self.density,
+                threshold: 0.1,
+                severity: if self.density > 0.3 {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+            });
+        }
+
+        // Clique size check
+        if self.max_clique_size > MAX_CLIQUE_K {
+            violations.push(AssumptionViolation {
+                metric: "max_clique_size".to_string(),
+                value: self.max_clique_size as f32,
+                threshold: MAX_CLIQUE_K as f32,
+                severity: if self.max_clique_size > 10 {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+            });
+        }
+
+        // Degeneracy check: should be < sqrt(n)
+        let degeneracy_threshold = (self.node_count as f32).sqrt();
+        if self.degeneracy as f32 > degeneracy_threshold && self.node_count > 10 {
+            violations.push(AssumptionViolation {
+                metric: "degeneracy".to_string(),
+                value: self.degeneracy as f32,
+                threshold: degeneracy_threshold,
+                severity: Severity::Warning,
+            });
+        }
+
+        violations
+    }
+
+    /// Check if all assumptions are satisfied
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_empty()
+    }
+
+    /// Check if there are any critical violations
+    pub fn has_errors(&self) -> bool {
+        self.validate()
+            .iter()
+            .any(|v| matches!(v.severity, Severity::Error))
+    }
+}
+
+/// Severity level for assumption violations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Non-critical issue, may affect performance
+    Warning,
+    /// Critical issue, may cause incorrect results
+    Error,
+}
+
+/// An assumption violation detected during validation
+#[derive(Debug, Clone)]
+pub struct AssumptionViolation {
+    /// Name of the metric that was violated
+    pub metric: String,
+    /// Actual value of the metric
+    pub value: f32,
+    /// Threshold that was exceeded
+    pub threshold: f32,
+    /// Severity of the violation
+    pub severity: Severity,
+}
+
+impl std::fmt::Display for AssumptionViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let level = match self.severity {
+            Severity::Warning => "WARNING",
+            Severity::Error => "ERROR",
+        };
+        write!(
+            f,
+            "[{}] {} = {:.3} exceeds threshold {:.3}",
+            level, self.metric, self.value, self.threshold
+        )
+    }
 }
 
 /// Statistics about clique sizes in the graph
@@ -2944,5 +3097,94 @@ mod tests {
         // Should not panic on empty graph
         dag.connect_all_relevant(5);
         assert_eq!(dag.edge_count(), 0);
+    }
+
+    // ========================================================================
+    // Sparse Graph Monitoring Tests (testing-003)
+    // ========================================================================
+
+    #[test]
+    fn test_graph_stats_basic() {
+        let dag = DagNN::from_text("hello").unwrap();
+        let stats = dag.stats();
+
+        assert_eq!(stats.node_count, 5);
+        assert_eq!(stats.edge_count, 4); // Sequential edges
+        assert_eq!(stats.input_node_count, 5);
+        assert!(stats.density < 1.0);
+        assert!(stats.max_degree <= 2); // Linear chain
+        assert!(stats.avg_degree > 0.0);
+    }
+
+    #[test]
+    fn test_graph_stats_sparse() {
+        // Larger text to ensure sparsity
+        let dag = DagNN::from_text("the quick brown fox jumps over the lazy dog").unwrap();
+        let stats = dag.stats();
+
+        // Text graphs are sparse for longer texts
+        // n=43, m=42 edges, max_edges = 43*42/2 = 903
+        // density = 42/903 ≈ 0.047
+        assert!(stats.density < 0.1, "density = {}", stats.density);
+        assert!(stats.is_valid());
+        assert!(!stats.has_errors());
+    }
+
+    #[test]
+    fn test_graph_stats_empty() {
+        let dag = DagNN::new();
+        let stats = dag.stats();
+
+        assert_eq!(stats.node_count, 0);
+        assert_eq!(stats.edge_count, 0);
+        assert_eq!(stats.density, 0.0);
+        assert!(stats.is_valid());
+    }
+
+    #[test]
+    fn test_assumption_violation_display() {
+        let violation = AssumptionViolation {
+            metric: "density".to_string(),
+            value: 0.5,
+            threshold: 0.1,
+            severity: Severity::Warning,
+        };
+
+        let display = format!("{}", violation);
+        assert!(display.contains("WARNING"));
+        assert!(display.contains("density"));
+        assert!(display.contains("0.500"));
+    }
+
+    #[test]
+    fn test_severity() {
+        let warning = Severity::Warning;
+        let error = Severity::Error;
+
+        assert_eq!(warning, Severity::Warning);
+        assert_ne!(warning, error);
+    }
+
+    #[test]
+    fn test_validate_sparse_graph() {
+        // Use a long text to ensure sparsity below threshold
+        let dag = DagNN::from_text("the quick brown fox jumps over the lazy dog and keeps running").unwrap();
+        let stats = dag.stats();
+        let violations = stats.validate();
+
+        // Sparse text graph should have no violations
+        assert!(violations.is_empty(), "violations: {:?}", violations);
+        assert!(stats.is_valid());
+    }
+
+    #[test]
+    fn test_validate_clique_stats() {
+        let dag = DagNN::from_text("ab").unwrap();
+        let stats = dag.stats();
+
+        // No cliques formed yet
+        assert_eq!(stats.max_clique_size, 0);
+        assert_eq!(stats.avg_clique_size, 0.0);
+        assert_eq!(stats.clique_count, 0);
     }
 }

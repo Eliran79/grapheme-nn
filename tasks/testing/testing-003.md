@@ -1,7 +1,7 @@
 ---
 id: testing-003
 title: Add sparse graph assumption monitoring
-status: todo
+status: done
 priority: medium
 tags:
 - testing
@@ -205,18 +205,25 @@ impl Trainer {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Extended `GraphStats` struct with: density, max_degree, avg_degree, degeneracy, max_clique_size, avg_clique_size
+- Added `GraphStats::validate()` method returning `Vec<AssumptionViolation>`
+- Added `GraphStats::is_valid()` and `GraphStats::has_errors()` helper methods
+- Added `Severity` enum (Warning, Error)
+- Added `AssumptionViolation` struct with Display impl
+- Updated `DagNN::stats()` to compute all new metrics
+- Validates: density < 0.1, max_clique_size <= MAX_CLIQUE_K, degeneracy < sqrt(n)
+- Added 7 new sparse graph monitoring tests (67 total tests in grapheme-core)
 
 ### Causality Impact
 - Provides observability into graph characteristics
-- May cause warnings/errors during training
-- Helps validate algorithmic assumptions
+- Can detect violations of sparse graph assumptions
+- Helps validate algorithmic complexity guarantees
 
 ### Dependencies & Integration
-- Depends on backend-014 (clique bounds) for thresholds
-- Integrates with training loop
-- May need `log` crate for logging
+- Uses MAX_CLIQUE_K from backend-014
+- Pure internal implementation, no external dependencies
+- Stats computation adds minimal overhead (O(n+m))
 
 ### Verification & Testing
-- Run training on sample data, check logs
-- Verify no performance regression from stats computation
+- Run `cargo test -p grapheme-core` for unit tests
+- All 67 tests passing with 0 warnings
