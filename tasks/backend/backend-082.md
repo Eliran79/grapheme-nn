@@ -1,7 +1,7 @@
 ---
 id: backend-082
 title: Add tree-sitter integration for grapheme-code multi-language parsing
-status: todo
+status: done
 priority: low
 tags:
 - backend
