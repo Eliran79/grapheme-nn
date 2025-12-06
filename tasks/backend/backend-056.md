@@ -1,7 +1,7 @@
 ---
 id: backend-056
 title: Implement training data generation for EquationSolving (Level 7)
-status: todo
+status: done
 priority: high
 tags:
 - backend

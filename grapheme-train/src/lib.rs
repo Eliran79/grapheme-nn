@@ -16,7 +16,7 @@
 //! - All outputs validated against engine
 
 use grapheme_core::{GraphemeGraph, NodeType};
-use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, SymbolicEngine, Value};
+use grapheme_engine::{Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value};
 use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
 use petgraph::visit::EdgeRef;
@@ -417,8 +417,11 @@ impl DataGenerator {
             CurriculumLevel::Differentiation => {
                 self.generate_differentiation(&mut examples, count);
             }
-            CurriculumLevel::Integration | CurriculumLevel::EquationSolving => {
-                // Placeholder for future levels
+            CurriculumLevel::Integration => {
+                self.generate_integration(&mut examples, count);
+            }
+            CurriculumLevel::EquationSolving => {
+                self.generate_equation_solving(&mut examples, count);
             }
         }
 
@@ -642,6 +645,118 @@ impl DataGenerator {
         }
     }
 
+    /// Generate Level 6: Integration examples
+    fn generate_integration(&mut self, examples: &mut Vec<TrainingExample>, count: usize) {
+        let var = "x";
+
+        for i in 0..count {
+            self.stats.attempted += 1;
+            let expr_type = i % 5;
+
+            let input_expr = match expr_type {
+                0 => {
+                    // Polynomial: x^n -> x^(n+1)/(n+1)
+                    let n = self.rand_int(1, 4);
+                    Expr::pow(Expr::symbol(var), Expr::int(n))
+                }
+                1 => {
+                    // Constant: k -> kx
+                    let k = self.rand_int(1, 10);
+                    Expr::int(k)
+                }
+                2 => {
+                    // sin(x) -> -cos(x)
+                    Expr::func(MathFn::Sin, vec![Expr::symbol(var)])
+                }
+                3 => {
+                    // cos(x) -> sin(x)
+                    Expr::func(MathFn::Cos, vec![Expr::symbol(var)])
+                }
+                _ => {
+                    // exp(x) -> exp(x)
+                    Expr::func(MathFn::Exp, vec![Expr::symbol(var)])
+                }
+            };
+
+            match self.symbolic.integrate(&input_expr, var) {
+                Ok(integral) => {
+                    let id = self.next_id(6);
+                    examples.push(TrainingExample::symbolic(id, input_expr, integral, 6));
+                    self.stats.generated += 1;
+                }
+                Err(_) => {
+                    self.stats.dropped_eval_error += 1;
+                }
+            }
+        }
+    }
+
+    /// Generate Level 7: Equation solving examples
+    fn generate_equation_solving(&mut self, examples: &mut Vec<TrainingExample>, count: usize) {
+        let var = "x";
+
+        for i in 0..count {
+            self.stats.attempted += 1;
+            let eq_type = i % 3;
+
+            let equation = match eq_type {
+                0 => {
+                    // Linear: ax + b = c -> x = (c-b)/a
+                    let a = self.rand_int(1, 10);
+                    let b = self.rand_int(1, 10);
+                    let c = self.rand_int(1, 20);
+                    Equation::new(
+                        Expr::add(Expr::mul(Expr::int(a), Expr::symbol(var)), Expr::int(b)),
+                        Expr::int(c),
+                    )
+                }
+                1 => {
+                    // Simple linear: x + a = b
+                    let a = self.rand_int(1, 10);
+                    let b = self.rand_int(1, 20);
+                    Equation::new(
+                        Expr::add(Expr::symbol(var), Expr::int(a)),
+                        Expr::int(b),
+                    )
+                }
+                _ => {
+                    // Quadratic with integer roots: x^2 - (a+b)x + ab = 0 has roots a and b
+                    let root1 = self.rand_int(1, 5);
+                    let root2 = self.rand_int(1, 5);
+                    let sum = root1 + root2;
+                    let product = root1 * root2;
+                    Equation::new(
+                        Expr::add(
+                            Expr::sub(
+                                Expr::pow(Expr::symbol(var), Expr::int(2)),
+                                Expr::mul(Expr::int(sum), Expr::symbol(var)),
+                            ),
+                            Expr::int(product),
+                        ),
+                        Expr::int(0),
+                    )
+                }
+            };
+
+            match self.symbolic.solve(&equation, var) {
+                Ok(solution) => {
+                    // Convert solution to an expression for training
+                    let solution_expr = match &solution {
+                        Solution::Single(val) => val.clone(),
+                        Solution::Multiple(vals) if !vals.is_empty() => vals[0].clone(),
+                        _ => continue, // Skip infinite or no-solution cases
+                    };
+                    let id = self.next_id(7);
+                    examples.push(TrainingExample::symbolic(id, equation.lhs.clone(), solution_expr, 7));
+                    self.stats.generated += 1;
+                }
+                Err(_) => {
+                    self.stats.dropped_eval_error += 1;
+                }
+            }
+        }
+    }
+
     /// Generate examples according to a LevelSpec
     pub fn generate_from_spec(&mut self, spec: &LevelSpec) -> Vec<TrainingExample> {
         if let Some(level) = CurriculumLevel::from_u8(spec.level) {
@@ -661,6 +776,8 @@ impl DataGenerator {
             CurriculumLevel::SymbolSubstitution,
             CurriculumLevel::BasicFunctions,
             CurriculumLevel::Differentiation,
+            CurriculumLevel::Integration,
+            CurriculumLevel::EquationSolving,
         ] {
             all_examples.extend(self.generate_level(level, examples_per_level));
         }
@@ -2958,14 +3075,42 @@ mod tests {
     }
 
     #[test]
+    fn test_data_generation_level6_integration() {
+        let mut generator = DataGenerator::new(42);
+        let examples = generator.generate_level(CurriculumLevel::Integration, 10);
+
+        assert!(!examples.is_empty());
+        for example in &examples {
+            assert_eq!(example.level, 6);
+            // Should have symbolic result (the integral)
+            assert!(example.expected_symbolic.is_some());
+            assert!(example.expected_result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_data_generation_level7_equation_solving() {
+        let mut generator = DataGenerator::new(42);
+        let examples = generator.generate_level(CurriculumLevel::EquationSolving, 10);
+
+        assert!(!examples.is_empty());
+        for example in &examples {
+            assert_eq!(example.level, 7);
+            // Should have symbolic result (the solution)
+            assert!(example.expected_symbolic.is_some());
+            assert!(example.expected_result.is_none());
+        }
+    }
+
+    #[test]
     fn test_curriculum_generation() {
         let mut generator = DataGenerator::new(42);
         let examples = generator.generate_curriculum(5);
 
-        // Should have examples from multiple levels
+        // Should have examples from all 7 levels
         let levels: std::collections::HashSet<u8> =
             examples.iter().map(|e| e.level).collect();
-        assert!(levels.len() >= 3);
+        assert!(levels.len() >= 5); // At least 5 levels with generated examples
     }
 
     #[test]

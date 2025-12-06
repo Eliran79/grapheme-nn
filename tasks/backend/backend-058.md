@@ -1,7 +1,7 @@
 ---
 id: backend-058
 title: Implement SimpleMultiModal focus/attention mechanism
-status: todo
+status: done
 priority: low
 tags:
 - backend

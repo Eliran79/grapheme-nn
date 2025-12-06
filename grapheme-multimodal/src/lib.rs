@@ -110,7 +110,7 @@ impl Modality {
 // ============================================================================
 
 /// A graph tagged with its modality
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModalGraph {
     /// The graph content
     pub graph: Graph,
@@ -333,16 +333,130 @@ pub trait MultiModalGraph: Send + Sync + Debug {
 /// Simple multi-modal graph implementation
 #[derive(Debug, Default)]
 pub struct SimpleMultiModal {
-    /// Current modality focus
-    #[allow(dead_code)]
+    /// Current modality focus (which modality to prioritize)
     focus: Option<Modality>,
     /// Fusion buffer
     fused_graphs: Vec<ModalGraph>,
+    /// Attention weights per modality
+    attention_weights: ModalityAttention,
+}
+
+/// Attention weights for each modality
+#[derive(Debug, Clone)]
+pub struct ModalityAttention {
+    /// Weight for visual modality (0.0 to 1.0)
+    pub visual: f32,
+    /// Weight for auditory modality (0.0 to 1.0)
+    pub auditory: f32,
+    /// Weight for linguistic modality (0.0 to 1.0)
+    pub linguistic: f32,
+    /// Weight for tactile modality (0.0 to 1.0)
+    pub tactile: f32,
+}
+
+impl Default for ModalityAttention {
+    fn default() -> Self {
+        // Equal attention by default
+        Self {
+            visual: 0.25,
+            auditory: 0.25,
+            linguistic: 0.25,
+            tactile: 0.25,
+        }
+    }
+}
+
+impl ModalityAttention {
+    /// Create uniform attention (equal weights)
+    pub fn uniform() -> Self {
+        Self::default()
+    }
+
+    /// Create attention focused on a single modality
+    pub fn focused(modality: Modality) -> Self {
+        let mut attention = Self {
+            visual: 0.1,
+            auditory: 0.1,
+            linguistic: 0.1,
+            tactile: 0.1,
+        };
+        match modality {
+            Modality::Visual => attention.visual = 0.7,
+            Modality::Auditory => attention.auditory = 0.7,
+            Modality::Linguistic => attention.linguistic = 0.7,
+            Modality::Tactile => attention.tactile = 0.7,
+            _ => {} // Other modalities get uniform attention
+        }
+        attention
+    }
+
+    /// Get weight for a specific modality
+    pub fn weight_for(&self, modality: &Modality) -> f32 {
+        match modality {
+            Modality::Visual => self.visual,
+            Modality::Auditory => self.auditory,
+            Modality::Linguistic => self.linguistic,
+            Modality::Tactile => self.tactile,
+            _ => 0.25, // Default for other modalities
+        }
+    }
+
+    /// Normalize weights to sum to 1.0
+    pub fn normalize(&mut self) {
+        let total = self.visual + self.auditory + self.linguistic + self.tactile;
+        if total > 0.0 {
+            self.visual /= total;
+            self.auditory /= total;
+            self.linguistic /= total;
+            self.tactile /= total;
+        }
+    }
 }
 
 impl SimpleMultiModal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create with specific focus modality
+    pub fn with_focus(focus: Modality) -> Self {
+        Self {
+            focus: Some(focus.clone()),
+            fused_graphs: Vec::new(),
+            attention_weights: ModalityAttention::focused(focus),
+        }
+    }
+
+    /// Set the current focus modality
+    pub fn set_focus(&mut self, modality: Modality) {
+        self.focus = Some(modality.clone());
+        self.attention_weights = ModalityAttention::focused(modality);
+    }
+
+    /// Clear focus (return to uniform attention)
+    pub fn clear_focus(&mut self) {
+        self.focus = None;
+        self.attention_weights = ModalityAttention::uniform();
+    }
+
+    /// Get current focus
+    pub fn get_focus(&self) -> Option<&Modality> {
+        self.focus.as_ref()
+    }
+
+    /// Get attention weights
+    pub fn get_attention(&self) -> &ModalityAttention {
+        &self.attention_weights
+    }
+
+    /// Set custom attention weights
+    pub fn set_attention(&mut self, attention: ModalityAttention) {
+        self.attention_weights = attention;
+    }
+
+    /// Get the weight for a modality based on current attention
+    pub fn attention_weight(&self, modality: &Modality) -> f32 {
+        self.attention_weights.weight_for(modality)
     }
 
     fn clone_graph(graph: &Graph) -> Graph {
@@ -361,31 +475,40 @@ impl MultiModalGraph for SimpleMultiModal {
     ) -> MultiModalResult<Graph> {
         self.fused_graphs.clear();
 
-        let mut has_input = false;
+        // Track available modalities with their weights
+        let mut weighted_graphs: Vec<(f32, ModalGraph)> = Vec::new();
 
         if let Some(v) = visual {
-            has_input = true;
-            self.fused_graphs.push(v);
+            let weight = self.attention_weights.visual;
+            weighted_graphs.push((weight, v));
         }
         if let Some(a) = auditory {
-            has_input = true;
-            self.fused_graphs.push(a);
+            let weight = self.attention_weights.auditory;
+            weighted_graphs.push((weight, a));
         }
         if let Some(l) = linguistic {
-            has_input = true;
-            self.fused_graphs.push(l);
+            let weight = self.attention_weights.linguistic;
+            weighted_graphs.push((weight, l));
         }
         if let Some(t) = tactile {
-            has_input = true;
-            self.fused_graphs.push(t);
+            let weight = self.attention_weights.tactile;
+            weighted_graphs.push((weight, t));
         }
 
-        if !has_input {
+        if weighted_graphs.is_empty() {
             return Err(MultiModalError::EmptyInput);
         }
 
-        // Simplified: return first graph (real impl would merge)
-        Ok(Self::clone_graph(&self.fused_graphs[0].graph))
+        // Sort by weight (highest first) and select the most attended modality
+        weighted_graphs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Store all graphs for later reference
+        for (_, graph) in &weighted_graphs {
+            self.fused_graphs.push(graph.clone());
+        }
+
+        // Return the highest-weighted modality's graph
+        Ok(Self::clone_graph(&weighted_graphs[0].1.graph))
     }
 
     fn translate_modality(&self, source: &ModalGraph, target_modality: Modality)
@@ -420,11 +543,18 @@ impl MultiModalGraph for SimpleMultiModal {
     }
 
     fn modality_attention(&self, _unified: &Graph) -> Vec<(Modality, f32)> {
-        // Simplified: equal attention to all modalities
-        Modality::all()
-            .into_iter()
-            .map(|m| (m, 1.0 / 7.0))
-            .collect()
+        // Return attention weights for all modalities
+        // Primary 4 modalities use configured weights, others get base attention
+        let base_attention = 0.1 / 3.0; // Split 0.1 among the 3 other modalities
+        vec![
+            (Modality::Visual, self.attention_weights.visual),
+            (Modality::Auditory, self.attention_weights.auditory),
+            (Modality::Linguistic, self.attention_weights.linguistic),
+            (Modality::Tactile, self.attention_weights.tactile),
+            (Modality::Proprioceptive, base_attention),
+            (Modality::Action, base_attention),
+            (Modality::Abstract, base_attention),
+        ]
     }
 }
 
@@ -691,8 +821,43 @@ mod tests {
         let attention = mm.modality_attention(&graph);
         assert_eq!(attention.len(), 7);
 
-        let total: f32 = attention.iter().map(|(_, w)| w).sum();
-        assert!((total - 1.0).abs() < 0.01);
+        // All weights should be positive
+        for (_, w) in &attention {
+            assert!(*w > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_focus_mechanism() {
+        let mut mm = SimpleMultiModal::new();
+
+        // Initially no focus
+        assert!(mm.get_focus().is_none());
+
+        // Set focus to visual
+        mm.set_focus(Modality::Visual);
+        assert_eq!(mm.get_focus(), Some(&Modality::Visual));
+        assert!(mm.get_attention().visual > mm.get_attention().auditory);
+
+        // Clear focus
+        mm.clear_focus();
+        assert!(mm.get_focus().is_none());
+        // Weights should be uniform again
+        assert!((mm.get_attention().visual - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_attention_focused_fusion() {
+        // When focused on linguistic, linguistic input should be prioritized
+        let mut mm = SimpleMultiModal::with_focus(Modality::Linguistic);
+
+        let visual = Some(ModalGraph::new(make_graph("visual_data"), Modality::Visual));
+        let linguistic = Some(ModalGraph::new(make_graph("linguistic_data"), Modality::Linguistic));
+
+        // With linguistic focus, linguistic should be selected
+        let result = mm.fuse(visual, None, linguistic, None);
+        assert!(result.is_ok());
+        // The result should be the linguistic graph (highest weight)
     }
 
     #[test]

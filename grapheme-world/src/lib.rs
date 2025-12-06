@@ -202,7 +202,7 @@ impl Dynamics {
 // ============================================================================
 
 /// A snapshot of the world state
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorldState {
     /// Current entities in the world
     pub entities: Graph,
@@ -276,11 +276,15 @@ pub struct WorldModel {
     /// Configuration
     pub config: WorldConfig,
     /// History of past states
-    #[allow(dead_code)]
     history: Vec<WorldState>,
+    /// Maximum history size
+    max_history: usize,
 }
 
 impl WorldModel {
+    /// Default maximum history size
+    const DEFAULT_MAX_HISTORY: usize = 100;
+
     /// Create a new world model
     pub fn new(initial_state: WorldState) -> Self {
         Self {
@@ -289,6 +293,7 @@ impl WorldModel {
             counterfactuals: Vec::new(),
             config: WorldConfig::default(),
             history: Vec::new(),
+            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -300,6 +305,7 @@ impl WorldModel {
             counterfactuals: Vec::new(),
             config,
             history: Vec::new(),
+            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -311,6 +317,53 @@ impl WorldModel {
     /// Get current time
     pub fn current_time(&self) -> usize {
         self.state.time
+    }
+
+    /// Record current state to history before transitioning
+    pub fn record_history(&mut self) {
+        // Clone current state and add to history
+        let snapshot = self.state.clone();
+        self.history.push(snapshot);
+
+        // Trim history if it exceeds maximum size
+        if self.history.len() > self.max_history {
+            self.history.remove(0);
+        }
+    }
+
+    /// Get the history of past states
+    pub fn get_history(&self) -> &[WorldState] {
+        &self.history
+    }
+
+    /// Get history length
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Clear history
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+    }
+
+    /// Get state at a specific time in history
+    pub fn get_state_at(&self, time: usize) -> Option<&WorldState> {
+        self.history.iter().find(|s| s.time == time)
+    }
+
+    /// Set maximum history size
+    pub fn set_max_history(&mut self, max: usize) {
+        self.max_history = max;
+        // Trim if needed
+        while self.history.len() > self.max_history {
+            self.history.remove(0);
+        }
+    }
+
+    /// Update state and record history
+    pub fn transition_to(&mut self, new_state: WorldState) {
+        self.record_history();
+        self.state = new_state;
     }
 }
 
@@ -401,15 +454,24 @@ pub struct SimpleWorldModel {
     state: WorldState,
     dynamics: Dynamics,
     config: WorldConfig,
+    /// History of past states
+    history: Vec<WorldState>,
+    /// Maximum history size
+    max_history: usize,
 }
 
 impl SimpleWorldModel {
+    /// Default maximum history size
+    const DEFAULT_MAX_HISTORY: usize = 100;
+
     /// Create a new simple world model
     pub fn new(initial_state: WorldState) -> Self {
         Self {
             state: initial_state,
             dynamics: Dynamics::new(),
             config: WorldConfig::default(),
+            history: Vec::new(),
+            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -421,6 +483,25 @@ impl SimpleWorldModel {
     fn clone_graph(graph: &Graph) -> Graph {
         let text = graph.to_text();
         DagNN::from_text(&text).unwrap_or_else(|_| DagNN::new())
+    }
+
+    /// Record current state to history
+    fn record_history(&mut self) {
+        let snapshot = self.state.clone();
+        self.history.push(snapshot);
+        if self.history.len() > self.max_history {
+            self.history.remove(0);
+        }
+    }
+
+    /// Get the history of past states
+    pub fn get_history(&self) -> &[WorldState] {
+        &self.history
+    }
+
+    /// Get history length
+    pub fn history_len(&self) -> usize {
+        self.history.len()
     }
 }
 
@@ -458,6 +539,8 @@ impl WorldModeling for SimpleWorldModel {
     }
 
     fn update(&mut self, observation: &Graph) -> WorldResult<()> {
+        // Record current state to history before updating
+        self.record_history();
         // Update entities with observation
         self.state.entities = Self::clone_graph(observation);
         self.state.advance();
@@ -745,6 +828,55 @@ mod tests {
 
         model.update(&observation).unwrap();
         assert_eq!(model.state.time, 1);
+    }
+
+    #[test]
+    fn test_world_model_history_tracking() {
+        let initial = WorldState::new(make_graph("initial"), DagNN::new());
+        let mut model = SimpleWorldModel::new(initial);
+
+        // Initially no history
+        assert_eq!(model.history_len(), 0);
+
+        // Update adds to history
+        let obs1 = make_graph("observation_1");
+        model.update(&obs1).unwrap();
+        assert_eq!(model.history_len(), 1);
+        assert_eq!(model.get_history()[0].time, 0); // Initial state was at time 0
+
+        // Another update
+        let obs2 = make_graph("observation_2");
+        model.update(&obs2).unwrap();
+        assert_eq!(model.history_len(), 2);
+        assert_eq!(model.get_history()[1].time, 1); // Previous state was at time 1
+
+        // Current state should be at time 2
+        assert_eq!(model.state.time, 2);
+    }
+
+    #[test]
+    fn test_world_model_struct_history() {
+        let initial = WorldState::new(make_graph("initial"), DagNN::new());
+        let mut model = WorldModel::new(initial);
+
+        // Initially no history
+        assert_eq!(model.history_len(), 0);
+
+        // Record history manually
+        model.record_history();
+        assert_eq!(model.history_len(), 1);
+
+        // Transition to new state
+        let new_state = WorldState::new(make_graph("new_state"), DagNN::new());
+        model.transition_to(new_state);
+        assert_eq!(model.history_len(), 2);
+
+        // Test get_state_at
+        assert!(model.get_state_at(0).is_some());
+
+        // Clear history
+        model.clear_history();
+        assert_eq!(model.history_len(), 0);
     }
 
     #[test]

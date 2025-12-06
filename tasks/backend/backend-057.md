@@ -1,7 +1,7 @@
 ---
 id: backend-057
 title: Implement WorldModel history tracking
-status: todo
+status: done
 priority: low
 tags:
 - backend

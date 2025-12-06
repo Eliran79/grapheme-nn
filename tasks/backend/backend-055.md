@@ -1,7 +1,7 @@
 ---
 id: backend-055
 title: Implement training data generation for Integration (Level 6)
-status: todo
+status: done
 priority: high
 tags:
 - backend
