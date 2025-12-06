@@ -648,6 +648,32 @@ impl MathBrain {
         let graph = self.process(&problem.expression)?;
         graph.evaluate(&self.engine)
     }
+
+    /// Normalize math text for domain processing
+    /// Standardizes mathematical notation and operators
+    fn normalize_math_text(&self, text: &str) -> String {
+        // Normalize operator spacing
+        let normalized = text
+            .replace(" + ", "+")
+            .replace(" - ", "-")
+            .replace(" * ", "*")
+            .replace(" / ", "/");
+
+        // Normalize power notation
+        let normalized = normalized
+            .replace("**", "^")
+            .replace(" ^ ", "^");
+
+        // Normalize common symbols
+        let normalized = normalized
+            .replace("pi", "π")
+            .replace("PI", "π")
+            .replace("inf", "∞")
+            .replace("infinity", "∞");
+
+        // Trim whitespace
+        normalized.trim().to_string()
+    }
 }
 
 // ============================================================================
@@ -696,14 +722,36 @@ impl DomainBrain for MathBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Transform core graph into math-specific representation
-        // For now, return a clone (actual transformation would analyze node types)
-        Ok(graph.clone())
+        // Convert core DagNN to math domain representation
+        // Normalize mathematical notation
+        let text = graph.to_text();
+
+        // Apply math-specific normalization
+        let normalized = self.normalize_math_text(&text);
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Transform math-specific graph back to core representation
-        Ok(graph.clone())
+        // Convert math domain representation back to generic core format
+        let text = graph.to_text();
+
+        // Remove any math-specific annotations
+        let cleaned = text
+            .lines()
+            .filter(|line| !line.trim().starts_with("@math:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if cleaned != text {
+            DagNN::from_text(&cleaned).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
@@ -786,10 +834,13 @@ impl DomainBrain for MathBrain {
     }
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
-        // Apply a transformation rule
-        // For now, just return the original (actual impl would apply algebraic rules)
         match rule_id {
-            0..=5 => Ok(graph.clone()),
+            0 => self.apply_zero_addition(graph),
+            1 => self.apply_zero_multiplication(graph),
+            2 => self.apply_one_multiplication(graph),
+            3 => self.apply_power_zero(graph),
+            4 => self.apply_power_one(graph),
+            5 => self.apply_constant_folding(graph),
             _ => Err(grapheme_core::DomainError::InvalidInput(
                 format!("Unknown rule ID: {}", rule_id)
             )),
@@ -828,6 +879,105 @@ impl DomainBrain for MathBrain {
         }
 
         examples
+    }
+}
+
+// ============================================================================
+// Transform Helper Methods
+// ============================================================================
+
+impl MathBrain {
+    /// Rule 0: Zero Addition - x + 0 = x
+    fn apply_zero_addition(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Apply x + 0 = x and 0 + x = x
+        let normalized = text
+            .replace(" + 0", "")
+            .replace("+ 0", "")
+            .replace("0 + ", "")
+            .replace("0 +", "");
+
+        if normalized != text && !normalized.is_empty() {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 1: Zero Multiplication - x * 0 = 0
+    fn apply_zero_multiplication(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Check for multiplication by zero patterns
+        if text.contains(" * 0") || text.contains("* 0") ||
+           text.contains("0 * ") || text.contains("0 *") {
+            DagNN::from_text("0").map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 2: One Multiplication - x * 1 = x
+    fn apply_one_multiplication(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Apply x * 1 = x and 1 * x = x
+        let normalized = text
+            .replace(" * 1", "")
+            .replace("* 1", "")
+            .replace("1 * ", "")
+            .replace("1 *", "");
+
+        if normalized != text && !normalized.is_empty() {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 3: Power Zero - x^0 = 1
+    fn apply_power_zero(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Check for power of zero
+        if text.contains("^0") || text.contains("^ 0") {
+            DagNN::from_text("1").map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 4: Power One - x^1 = x
+    fn apply_power_one(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Remove power of one
+        let normalized = text
+            .replace("^1", "")
+            .replace("^ 1", "");
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 5: Constant Folding - evaluate constant subexpressions
+    fn apply_constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Try to evaluate as a simple expression
+        if let Ok(result) = self.parse_and_evaluate(&text) {
+            if result.fract() == 0.0 {
+                DagNN::from_text(&format!("{}", result as i64)).map_err(|e| e.into())
+            } else {
+                DagNN::from_text(&format!("{}", result)).map_err(|e| e.into())
+            }
+        } else {
+            Ok(graph.clone())
+        }
     }
 }
 

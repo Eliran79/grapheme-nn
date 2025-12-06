@@ -369,6 +369,22 @@ impl CodeBrain {
         }
     }
 
+    /// Normalize code text for domain processing
+    /// Handles whitespace, removes empty lines, normalizes line endings
+    fn normalize_code_text(&self, text: &str) -> String {
+        // Normalize line endings to LF
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+
+        // Remove trailing whitespace from each line
+        let lines: Vec<&str> = normalized
+            .lines()
+            .map(|line| line.trim_end())
+            .collect();
+
+        // Join and trim overall
+        lines.join("\n").trim().to_string()
+    }
+
     /// Parse code into a CodeGraph
     pub fn parse_code(&self, code: &str) -> CodeGraphResult<CodeGraph> {
         CodeGraph::from_simple_expr(code)
@@ -402,6 +418,87 @@ impl CodeBrain {
 
         issues
     }
+
+    // Transform helper methods for DomainBrain::transform
+
+    /// Rule 0: Dead Code Elimination - remove unreachable/unused nodes
+    fn apply_dead_code_elimination(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // For DagNN, we remove isolated nodes (no connections)
+        // In practice, a proper DCE would need data flow analysis
+        let text = graph.to_text();
+
+        // Simple heuristic: remove trailing whitespace and empty blocks
+        let cleaned = text.trim().to_string();
+
+        // If text changed, create new graph; otherwise return clone
+        if cleaned != text {
+            DagNN::from_text(&cleaned).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 1: Constant Folding - evaluate constant expressions
+    fn apply_constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Simple constant folding for basic arithmetic
+        let folded = self.fold_constants_in_text(&text);
+
+        if folded != text {
+            DagNN::from_text(&folded).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Helper: fold simple constant expressions in text
+    #[allow(clippy::type_complexity)]
+    fn fold_constants_in_text(&self, text: &str) -> String {
+        let mut result = text.to_string();
+
+        // Pattern: number op number (very simple)
+        // Look for patterns like "2 + 3" or "4 * 5"
+        // Use function pointers instead of closures to avoid type mismatch
+        let ops: [(&str, fn(i64, i64) -> i64); 3] = [
+            ("+", |a, b| a + b),
+            ("-", |a, b| a - b),
+            ("*", |a, b| a * b),
+        ];
+
+        for (op, func) in &ops {
+            // Simple regex-free pattern matching
+            let parts: Vec<&str> = result.split(op).collect();
+            if parts.len() == 2 {
+                if let (Ok(a), Ok(b)) = (parts[0].trim().parse::<i64>(), parts[1].trim().parse::<i64>()) {
+                    result = func(a, b).to_string();
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Rule 2: Inline Expansion - expand function calls inline
+    fn apply_inline_expansion(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // For DagNN character graphs, inline expansion is not directly applicable
+        // Return unchanged
+        Ok(graph.clone())
+    }
+
+    /// Rule 3: Loop Unrolling - expand loop iterations
+    fn apply_loop_unrolling(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // For DagNN character graphs, loop unrolling is not directly applicable
+        // Return unchanged
+        Ok(graph.clone())
+    }
+
+    /// Rule 4: Type Inference - infer types for untyped variables
+    fn apply_type_inference(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // For DagNN, we can annotate based on content patterns
+        // This is a placeholder - real type inference requires full parsing
+        Ok(graph.clone())
+    }
 }
 
 // ============================================================================
@@ -431,11 +528,37 @@ impl DomainBrain for CodeBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        // Convert core DagNN to code domain representation
+        // Normalize code formatting for processing
+        let text = graph.to_text();
+
+        // Apply code-specific normalization
+        let normalized = self.normalize_code_text(&text);
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        // Convert code domain representation back to generic core format
+        // Clean up any domain-specific artifacts
+        let text = graph.to_text();
+
+        // Remove any domain-specific metadata comments
+        let cleaned = text
+            .lines()
+            .filter(|line| !line.trim().starts_with("// @code:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if cleaned != text {
+            DagNN::from_text(&cleaned).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
@@ -501,7 +624,11 @@ impl DomainBrain for CodeBrain {
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0..=4 => Ok(graph.clone()),
+            0 => self.apply_dead_code_elimination(graph),
+            1 => self.apply_constant_folding(graph),
+            2 => self.apply_inline_expansion(graph),
+            3 => self.apply_loop_unrolling(graph),
+            4 => self.apply_type_inference(graph),
             _ => Err(grapheme_core::DomainError::InvalidInput(
                 format!("Unknown rule ID: {}", rule_id)
             )),

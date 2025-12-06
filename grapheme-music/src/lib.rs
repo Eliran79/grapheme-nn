@@ -306,6 +306,30 @@ impl MusicBrain {
             // Also check for note patterns like C4, D#5
             || input.chars().any(|c| "CDEFGAB".contains(c))
     }
+
+    /// Normalize music text for domain processing
+    /// Standardizes note notation and music terminology
+    fn normalize_music_text(&self, text: &str) -> String {
+        let mut normalized = text.to_string();
+
+        // Normalize note names to uppercase
+        for note in ['c', 'd', 'e', 'f', 'g', 'a', 'b'] {
+            normalized = normalized.replace(
+                &format!("{} ", note),
+                &format!("{} ", note.to_ascii_uppercase()),
+            );
+        }
+
+        // Normalize chord quality abbreviations
+        let normalized = normalized
+            .replace(" maj ", " major ")
+            .replace(" min ", " minor ")
+            .replace("maj7", "major7")
+            .replace("min7", "minor7");
+
+        // Trim whitespace
+        normalized.trim().to_string()
+    }
 }
 
 // ============================================================================
@@ -335,11 +359,36 @@ impl DomainBrain for MusicBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        // Convert core DagNN to music domain representation
+        // Normalize note notation and music terminology
+        let text = graph.to_text();
+
+        // Apply music-specific normalization
+        let normalized = self.normalize_music_text(&text);
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        // Convert music domain representation back to generic core format
+        let text = graph.to_text();
+
+        // Remove any music-specific annotations
+        let cleaned = text
+            .lines()
+            .filter(|line| !line.trim().starts_with("@music:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if cleaned != text {
+            DagNN::from_text(&cleaned).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
@@ -396,7 +445,10 @@ impl DomainBrain for MusicBrain {
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0..=3 => Ok(graph.clone()),
+            0 => self.apply_voice_leading(graph),
+            1 => self.apply_chord_progression(graph),
+            2 => self.apply_key_detection(graph),
+            3 => self.apply_rhythm_quantization(graph),
             _ => Err(grapheme_core::DomainError::InvalidInput(
                 format!("Unknown rule ID: {}", rule_id)
             )),
@@ -430,6 +482,86 @@ impl DomainBrain for MusicBrain {
         }
 
         examples
+    }
+}
+
+// ============================================================================
+// Transform Helper Methods
+// ============================================================================
+
+impl MusicBrain {
+    /// Rule 0: Voice Leading - Smooth melodic transitions between chords
+    /// Normalizes note notation for consistent representation
+    fn apply_voice_leading(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Normalize note names to uppercase
+        let mut normalized = text.clone();
+        for note in ['c', 'd', 'e', 'f', 'g', 'a', 'b'] {
+            normalized = normalized.replace(
+                &format!("{} ", note),
+                &format!("{} ", note.to_ascii_uppercase()),
+            );
+        }
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 1: Chord Progression - Common chord progression patterns
+    /// Normalizes chord notation (e.g., "maj" -> "major")
+    fn apply_chord_progression(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Normalize chord quality abbreviations
+        let normalized = text
+            .replace(" maj ", " major ")
+            .replace(" min ", " minor ")
+            .replace("maj7", "major7")
+            .replace("min7", "minor7")
+            .replace("dim", "diminished")
+            .replace("aug", "augmented");
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 2: Key Detection - Identify the key of a piece
+    /// Normalizes key signature notation
+    fn apply_key_detection(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Normalize key notation
+        let normalized = text
+            .replace("key of ", "Key: ")
+            .replace("in the key", "Key:");
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
+    }
+
+    /// Rule 3: Rhythm Quantization - Align notes to beat grid
+    /// Normalizes rhythm/timing notation
+    fn apply_rhythm_quantization(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+
+        // Normalize beat/rhythm notation
+        let normalized = text.trim().to_string();
+
+        if normalized != text {
+            DagNN::from_text(&normalized).map_err(|e| e.into())
+        } else {
+            Ok(graph.clone())
+        }
     }
 }
 

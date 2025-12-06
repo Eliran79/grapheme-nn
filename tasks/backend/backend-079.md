@@ -1,7 +1,7 @@
 ---
 id: backend-079
 title: Fix 55 clippy warnings across workspace
-status: todo
+status: done
 priority: high
 tags:
 - backend

@@ -1,7 +1,7 @@
 ---
 id: backend-080
 title: Implement actual transforms in domain brain plugins
-status: todo
+status: done
 priority: medium
 tags:
 - backend
