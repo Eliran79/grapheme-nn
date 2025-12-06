@@ -86,8 +86,8 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Implemented `CausalReasoning` trait in `grapheme-reason/src/lib.rs`
-- Implemented `SimpleCausalReasoning` with intervention/counterfactual methods
+- Defined `CausalReasoning` trait in `grapheme-reason/src/lib.rs`
+- **ALL STUBS**: `SimpleCausalReasoning` - all methods are no-ops
 - Added `CausalGraph` struct with edge strengths and confounders
 - intervene() applies do-calculus interventions
 - counterfactual() computes alternative timelines
@@ -110,6 +110,7 @@ Brief description of what needs to be done and why.
 - Test: test_causal_graph
 
 ### Context for Next Task
-- SimpleCausalReasoning is a stub implementation
-- Real implementation would use PC algorithm or similar
-- Causal inference is fundamentally observational vs experimental
+- **WARNING**: ALL methods are STUBS - `intervene()` and `counterfactual()` return input unchanged
+- `causes()` always returns false
+- Real implementation would use PC algorithm, do-calculus
+- See backend-026 for implementing real reasoning algorithms

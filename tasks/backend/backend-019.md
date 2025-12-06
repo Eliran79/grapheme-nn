@@ -85,8 +85,8 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Implemented `Analogy` trait in `grapheme-reason/src/lib.rs`
-- Implemented `SimpleAnalogy` with structural mapping
+- Defined `Analogy` trait in `grapheme-reason/src/lib.rs`
+- **PARTIAL STUB**: `SimpleAnalogy` with greedy positional mapping (not structure-based)
 - Added `Mapping` struct for node-to-node correspondences
 - analogize() creates greedy mapping between source and target nodes
 - transfer() applies mapping to transfer knowledge across domains
@@ -108,6 +108,7 @@ Brief description of what needs to be done and why.
 - Test: test_simple_analogy, test_mapping
 
 ### Context for Next Task
-- SimpleAnalogy uses greedy positional matching (O(n))
-- Real implementation would use Hungarian algorithm O(n³)
-- GI-complete problem; approximate solutions only
+- **WARNING**: `transfer()` is a NO-OP - returns target unchanged
+- SimpleAnalogy uses greedy positional matching (O(n)), not structure-based
+- Real implementation would use Hungarian algorithm O(n³) or feature matching
+- See backend-026 for implementing real reasoning algorithms
