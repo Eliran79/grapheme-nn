@@ -48,7 +48,7 @@ pub enum GraphemeError {
 /// Result type for GRAPHEME operations
 pub type GraphemeResult<T> = Result<T, GraphemeError>;
 
-/// Errors in clique enumeration
+/// Errors in clique operations
 #[derive(Error, Debug)]
 pub enum CliqueError {
     #[error("k value {requested} exceeds maximum {max} (would cause exponential complexity)")]
@@ -59,6 +59,8 @@ pub enum CliqueError {
     GraphTooLarge(usize),
     #[error("Timeout during clique enumeration")]
     Timeout,
+    #[error("Clique size {size} exceeds maximum {max}")]
+    SizeExceeded { size: usize, max: usize },
 }
 
 /// Maximum k value for clique enumeration (NP-hard complexity bound)
@@ -66,6 +68,10 @@ pub const MAX_CLIQUE_K: usize = 6;
 
 /// Maximum graph size for clique enumeration
 pub const MAX_CLIQUE_GRAPH_SIZE: usize = 10000;
+
+/// Maximum allowed clique size for storage and strengthen operations
+/// (different from MAX_CLIQUE_K which is for enumeration only)
+pub const MAX_CLIQUE_SIZE: usize = 10;
 
 /// Result type for clique operations
 pub type CliqueResult<T> = Result<T, CliqueError>;
@@ -536,7 +542,18 @@ impl DagNN {
     }
 
     /// Form a clique from a set of nodes
-    pub fn form_clique(&mut self, members: Vec<NodeId>, label: Option<String>) -> usize {
+    ///
+    /// # Errors
+    /// Returns `CliqueError::SizeExceeded` if members.len() > MAX_CLIQUE_SIZE
+    pub fn form_clique(&mut self, members: Vec<NodeId>, label: Option<String>) -> CliqueResult<usize> {
+        // Validate clique size
+        if members.len() > MAX_CLIQUE_SIZE {
+            return Err(CliqueError::SizeExceeded {
+                size: members.len(),
+                max: MAX_CLIQUE_SIZE,
+            });
+        }
+
         let id = self.cliques.len();
         let clique = if let Some(l) = label {
             Clique::with_label(id, members, l)
@@ -544,7 +561,7 @@ impl DagNN {
             Clique::new(id, members)
         };
         self.cliques.push(clique);
-        id
+        Ok(id)
     }
 
     /// Compute processing depth based on character complexity
@@ -798,8 +815,10 @@ impl GraphBuilder for DagNN {
         // Now form cliques from collected windows
         let mut cliques = Vec::new();
         for members in windows {
-            let clique_id = self.form_clique(members, None);
-            cliques.push(self.cliques[clique_id].clone());
+            // Safe: window size 3 is always <= MAX_CLIQUE_SIZE
+            if let Ok(clique_id) = self.form_clique(members, None) {
+                cliques.push(self.cliques[clique_id].clone());
+            }
         }
 
         cliques
@@ -1050,7 +1069,10 @@ pub trait CliqueProcessor {
     fn find_cliques_parallel(&self) -> Vec<Clique>;
 
     /// Strengthen connections within a clique
-    fn strengthen_clique(&mut self, clique: &Clique, factor: f32);
+    ///
+    /// # Errors
+    /// Returns `CliqueError::SizeExceeded` if clique.members.len() > MAX_CLIQUE_SIZE
+    fn strengthen_clique(&mut self, clique: &Clique, factor: f32) -> CliqueResult<()>;
 
     /// Compress nodes into a single clique node
     fn compress_to_clique(&mut self, nodes: Vec<NodeId>) -> NodeId;
@@ -1066,7 +1088,15 @@ impl CliqueProcessor for DagNN {
         self.cliques.clone()
     }
 
-    fn strengthen_clique(&mut self, clique: &Clique, factor: f32) {
+    fn strengthen_clique(&mut self, clique: &Clique, factor: f32) -> CliqueResult<()> {
+        // Validate clique size
+        if clique.members.len() > MAX_CLIQUE_SIZE {
+            return Err(CliqueError::SizeExceeded {
+                size: clique.members.len(),
+                max: MAX_CLIQUE_SIZE,
+            });
+        }
+
         // Strengthen all edges within the clique
         for i in 0..clique.members.len() {
             for j in (i + 1)..clique.members.len() {
@@ -1082,6 +1112,8 @@ impl CliqueProcessor for DagNN {
                 }
             }
         }
+
+        Ok(())
     }
 
     fn compress_to_clique(&mut self, nodes: Vec<NodeId>) -> NodeId {
@@ -1092,8 +1124,8 @@ impl CliqueProcessor for DagNN {
 
         let clique_node = self.graph.add_node(Node::clique(member_indices));
 
-        // Form the clique
-        self.form_clique(nodes, None);
+        // Form the clique (ignore result if too large - clique node still created)
+        let _ = self.form_clique(nodes, None);
 
         clique_node
     }
@@ -1419,6 +1451,34 @@ impl DagNN {
         }
     }
 
+    /// Get statistics about clique sizes in the graph
+    pub fn clique_stats(&self) -> CliqueStats {
+        let sizes: Vec<usize> = self.cliques.iter()
+            .map(|c| c.members.len())
+            .collect();
+
+        let count = sizes.len();
+        let max_size = sizes.iter().max().copied().unwrap_or(0);
+        let avg_size = if count > 0 {
+            sizes.iter().sum::<usize>() as f32 / count as f32
+        } else {
+            0.0
+        };
+
+        // Build size histogram
+        let mut histogram = std::collections::HashMap::new();
+        for size in &sizes {
+            *histogram.entry(*size).or_insert(0usize) += 1;
+        }
+
+        CliqueStats {
+            count,
+            max_size,
+            avg_size,
+            size_histogram: histogram,
+        }
+    }
+
     // ========================================================================
     // K-Clique Enumeration (backend-009)
     // ========================================================================
@@ -1654,6 +1714,19 @@ pub struct GraphStats {
     pub avg_activation: f32,
 }
 
+/// Statistics about clique sizes in the graph
+#[derive(Debug, Clone)]
+pub struct CliqueStats {
+    /// Total number of cliques
+    pub count: usize,
+    /// Maximum clique size
+    pub max_size: usize,
+    /// Average clique size
+    pub avg_size: f32,
+    /// Histogram of clique sizes (size -> count)
+    pub size_histogram: std::collections::HashMap<usize, usize>,
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1738,7 +1811,7 @@ mod tests {
     fn test_clique_creation() {
         let mut dag = DagNN::from_text("test").unwrap();
         let members = dag.input_nodes().to_vec();
-        let clique_id = dag.form_clique(members.clone(), Some("test_word".into()));
+        let clique_id = dag.form_clique(members.clone(), Some("test_word".into())).unwrap();
 
         assert_eq!(dag.cliques.len(), 1);
         assert_eq!(dag.cliques[clique_id].size(), 4);

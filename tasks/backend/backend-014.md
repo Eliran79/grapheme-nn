@@ -1,7 +1,7 @@
 ---
 id: backend-014
 title: Add clique size bounds validation
-status: todo
+status: done
 priority: medium
 tags:
 - backend
