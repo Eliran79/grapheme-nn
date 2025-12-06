@@ -1,7 +1,7 @@
 ---
 id: backend-073
 title: Add domain brain awareness to meta-cognition
-status: todo
+status: done
 priority: medium
 tags:
 - backend

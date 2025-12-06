@@ -18,7 +18,10 @@
 //!
 //! All implementations include complexity bounds and timeout mechanisms.
 
-use grapheme_core::{DagNN, Learnable, LearnableParam, TransformRule};
+use grapheme_core::{
+    BrainRegistry, BrainRoutingResult, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, DomainResult, Learnable, LearnableParam, MultiBrainResult, TransformRule,
+};
 use grapheme_memory::{GraphFingerprint, SemanticGraph};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
@@ -1236,6 +1239,269 @@ impl Learnable for LearnableReasoning {
             + self.rule_temperature.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware Reasoning (Multi-Brain Routing)
+// ============================================================================
+
+/// Result of brain-aware reasoning
+#[derive(Debug)]
+pub struct BrainAwareReasoningResult {
+    /// The reasoning trace from the reasoning engine
+    pub reasoning_trace: Option<ReasoningTrace>,
+    /// Results from domain brains that were consulted
+    pub brain_results: MultiBrainResult,
+    /// The final combined result
+    pub combined_result: Graph,
+    /// Confidence in the result (0.0-1.0)
+    pub confidence: f32,
+    /// Which domains contributed to the reasoning
+    pub contributing_domains: Vec<String>,
+}
+
+impl BrainAwareReasoningResult {
+    /// Create a new result with just a reasoning trace
+    pub fn from_trace(trace: ReasoningTrace) -> Self {
+        let combined = trace.conclusion.clone_graph();
+        let confidence = trace.confidence;
+        let success = trace.success;
+        Self {
+            reasoning_trace: Some(trace),
+            brain_results: MultiBrainResult::new(),
+            combined_result: combined,
+            confidence: if success { confidence } else { 0.0 },
+            contributing_domains: Vec::new(),
+        }
+    }
+
+    /// Create a result from brain routing
+    pub fn from_brain_results(brain_results: MultiBrainResult) -> Self {
+        let combined = brain_results.primary.as_ref()
+            .map(|r| r.graph.clone_graph())
+            .unwrap_or_default();
+        let confidence = brain_results.primary.as_ref()
+            .map(|r| r.confidence)
+            .unwrap_or(0.0);
+        let domains = brain_results.domains().iter().map(|s| s.to_string()).collect();
+        Self {
+            reasoning_trace: None,
+            brain_results,
+            combined_result: combined,
+            confidence,
+            contributing_domains: domains,
+        }
+    }
+}
+
+/// Brain-aware reasoning engine that routes to domain brains
+///
+/// This combines the ReasoningEngine with the ability to consult
+/// domain-specific brains for specialized reasoning tasks.
+pub struct BrainAwareReasoning {
+    /// The underlying reasoning engine
+    pub reasoning: ReasoningEngine,
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+    /// Whether to consult domain brains before reasoning
+    pub consult_brains_first: bool,
+    /// Minimum confidence threshold for using brain results
+    pub brain_confidence_threshold: f32,
+}
+
+impl Debug for BrainAwareReasoning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareReasoning")
+            .field("consult_brains_first", &self.consult_brains_first)
+            .field("brain_confidence_threshold", &self.brain_confidence_threshold)
+            .field("available_domains", &self.bridge.available_domains())
+            .finish()
+    }
+}
+
+impl BrainAwareReasoning {
+    /// Create a new brain-aware reasoning engine
+    pub fn new(reasoning: ReasoningEngine) -> Self {
+        Self {
+            reasoning,
+            bridge: DefaultCognitiveBridge::new(),
+            consult_brains_first: true,
+            brain_confidence_threshold: 0.5,
+        }
+    }
+
+    /// Create with a pre-configured bridge
+    pub fn with_bridge(reasoning: ReasoningEngine, bridge: DefaultCognitiveBridge) -> Self {
+        Self {
+            reasoning,
+            bridge,
+            consult_brains_first: true,
+            brain_confidence_threshold: 0.5,
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Set whether to consult domain brains first
+    pub fn consult_brains_first(mut self, value: bool) -> Self {
+        self.consult_brains_first = value;
+        self
+    }
+
+    /// Set the confidence threshold for using brain results
+    pub fn with_confidence_threshold(mut self, threshold: f32) -> Self {
+        self.brain_confidence_threshold = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Route an input to the most appropriate brain
+    pub fn route_to_brain(&self, input: &str) -> DomainResult<BrainRoutingResult> {
+        self.bridge.route_to_brain(input)
+    }
+
+    /// Route an input to multiple brains that can process it
+    pub fn route_to_multiple_brains(&self, input: &str) -> MultiBrainResult {
+        self.bridge.route_to_multiple_brains(input)
+    }
+
+    /// Perform brain-aware deduction
+    ///
+    /// First consults domain brains to see if they can handle the input,
+    /// then uses the reasoning engine for logical deduction.
+    pub fn deduce_with_brains(
+        &self,
+        premises: Vec<Graph>,
+        rules: &LogicRules,
+        input_text: Option<&str>,
+    ) -> ReasoningResult<BrainAwareReasoningResult> {
+        // If we have input text and should consult brains first
+        if self.consult_brains_first {
+            if let Some(text) = input_text {
+                let brain_results = self.route_to_multiple_brains(text);
+                if brain_results.success {
+                    if let Some(primary) = &brain_results.primary {
+                        if primary.confidence >= self.brain_confidence_threshold {
+                            // Domain brain handled it with high confidence
+                            return Ok(BrainAwareReasoningResult::from_brain_results(brain_results));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Use the reasoning engine
+        let derived = self.reasoning.logic.deduce(premises, rules, &self.reasoning.bounds)?;
+
+        // Create combined result
+        let combined = if derived.is_empty() {
+            DagNN::new()
+        } else {
+            derived[0].clone_graph()
+        };
+
+        Ok(BrainAwareReasoningResult {
+            reasoning_trace: None,
+            brain_results: MultiBrainResult::new(),
+            combined_result: combined,
+            confidence: if derived.is_empty() { 0.0 } else { 0.8 },
+            contributing_domains: Vec::new(),
+        })
+    }
+
+    /// Perform brain-aware proof search
+    ///
+    /// First checks if a domain brain can help, then uses backward chaining.
+    pub fn prove_with_brains(
+        &self,
+        goal: &Graph,
+        premises: &[Graph],
+        rules: &LogicRules,
+        goal_text: Option<&str>,
+    ) -> ReasoningResult<BrainAwareReasoningResult> {
+        // Consult domain brains if we have goal text
+        if self.consult_brains_first {
+            if let Some(text) = goal_text {
+                let brain_results = self.route_to_multiple_brains(text);
+                if brain_results.success {
+                    if let Some(primary) = &brain_results.primary {
+                        if primary.confidence >= self.brain_confidence_threshold {
+                            // Domain brain can help with this goal
+                            return Ok(BrainAwareReasoningResult::from_brain_results(brain_results));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Use the reasoning engine
+        let trace = self.reasoning.logic.prove(goal, premises, rules, &self.reasoning.bounds)?;
+        Ok(BrainAwareReasoningResult::from_trace(trace))
+    }
+
+    /// Perform multi-brain reasoning: consult all applicable brains and combine results
+    pub fn multi_brain_reason(&self, input: &str) -> BrainAwareReasoningResult {
+        let brain_results = self.route_to_multiple_brains(input);
+
+        // If multiple brains responded, we can combine their insights
+        if brain_results.results.len() > 1 {
+            // Combine results using a weighted approach based on confidence
+            let mut combined_confidence = 0.0;
+            let mut domains = Vec::new();
+
+            for result in &brain_results.results {
+                combined_confidence += result.confidence;
+                domains.push(result.domain_id.clone());
+            }
+            combined_confidence /= brain_results.results.len() as f32;
+
+            let combined = brain_results.primary.as_ref()
+                .map(|r| r.graph.clone_graph())
+                .unwrap_or_default();
+
+            BrainAwareReasoningResult {
+                reasoning_trace: None,
+                brain_results,
+                combined_result: combined,
+                confidence: combined_confidence,
+                contributing_domains: domains,
+            }
+        } else {
+            BrainAwareReasoningResult::from_brain_results(brain_results)
+        }
+    }
+
+    /// Get all available domain brains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+
+    /// Check if a specific domain is available
+    pub fn has_domain(&self, domain_id: &str) -> bool {
+        self.bridge.has_domain(domain_id)
+    }
+
+    /// Get all rules from all domain brains
+    pub fn all_domain_rules(&self) -> Vec<grapheme_core::DomainRule> {
+        self.bridge.all_domain_rules()
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareReasoning {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create a brain-aware reasoning engine with simple implementations
+pub fn create_brain_aware_reasoning() -> BrainAwareReasoning {
+    BrainAwareReasoning::new(create_default_reasoning_engine())
 }
 
 // ============================================================================

@@ -22,7 +22,10 @@
 //! - Simulated interaction (compromise)
 //! - Embodied interaction (ideal but hard)
 
-use grapheme_core::{DagNN, Learnable, LearnableParam};
+use grapheme_core::{
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, Learnable, LearnableParam,
+};
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -720,6 +723,74 @@ impl Learnable for LearnableGrounding {
             + self.cooccurrence_rate.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware Grounding
+// ============================================================================
+
+/// Brain-aware grounding that uses domain brains for embodied interaction
+pub struct BrainAwareGrounding {
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+}
+
+impl Debug for BrainAwareGrounding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareGrounding")
+            .field("available_domains", &self.bridge.available_domains())
+            .finish()
+    }
+}
+
+impl BrainAwareGrounding {
+    /// Create a new brain-aware grounding
+    pub fn new() -> Self {
+        Self {
+            bridge: DefaultCognitiveBridge::new(),
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Check if a domain brain can help with grounding
+    pub fn can_ground(&self, percept_text: &str) -> bool {
+        self.bridge.route_to_multiple_brains(percept_text).success
+    }
+
+    /// Get domains relevant to a percept
+    pub fn domains_for_percept(&self, percept_text: &str) -> Vec<String> {
+        self.bridge.route_to_multiple_brains(percept_text).domains().iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+}
+
+impl Default for BrainAwareGrounding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareGrounding {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create brain-aware grounding
+pub fn create_brain_aware_grounding() -> BrainAwareGrounding {
+    BrainAwareGrounding::new()
 }
 
 // ============================================================================

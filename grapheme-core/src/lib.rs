@@ -4569,6 +4569,485 @@ pub trait BrainFactory: Send + Sync {
 }
 
 // ============================================================================
+// Cognitive-Brain Bridge
+// ============================================================================
+
+/// Result of routing an input to one or more domain brains
+#[derive(Debug, Clone)]
+pub struct BrainRoutingResult {
+    /// The domain brain that processed the input
+    pub domain_id: String,
+    /// The parsed graph from the domain brain
+    pub graph: DagNN,
+    /// Confidence score (0.0-1.0) for this routing
+    pub confidence: f32,
+    /// Execution result if the brain was executed
+    pub result: Option<String>,
+}
+
+/// Result of multi-brain processing
+#[derive(Debug, Clone, Default)]
+pub struct MultiBrainResult {
+    /// Results from each brain that processed the input
+    pub results: Vec<BrainRoutingResult>,
+    /// Primary result (highest confidence)
+    pub primary: Option<BrainRoutingResult>,
+    /// Whether the processing was successful
+    pub success: bool,
+}
+
+impl MultiBrainResult {
+    /// Create a new empty result
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a result from a brain
+    pub fn add_result(&mut self, result: BrainRoutingResult) {
+        // Update primary if this has higher confidence
+        let is_primary = match &self.primary {
+            None => true,
+            Some(p) => result.confidence > p.confidence,
+        };
+        if is_primary {
+            self.primary = Some(result.clone());
+        }
+        self.results.push(result);
+        self.success = true;
+    }
+
+    /// Get all domain IDs that processed the input
+    pub fn domains(&self) -> Vec<&str> {
+        self.results.iter().map(|r| r.domain_id.as_str()).collect()
+    }
+
+    /// Get result by domain ID
+    pub fn get_by_domain(&self, domain_id: &str) -> Option<&BrainRoutingResult> {
+        self.results.iter().find(|r| r.domain_id == domain_id)
+    }
+}
+
+/// Trait for cognitive modules to interact with domain brains.
+///
+/// This bridge allows cognitive modules (memory, reasoning, meta-cognition, etc.)
+/// to discover, route to, and trigger domain-specific processing via brain plugins.
+pub trait CognitiveBrainBridge: Send + Sync {
+    /// Get reference to the brain registry
+    fn get_registry(&self) -> &BrainRegistry;
+
+    /// Get mutable reference to the brain registry
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry;
+
+    /// Route input to the most appropriate domain brain
+    fn route_to_brain(&self, input: &str) -> DomainResult<BrainRoutingResult> {
+        let registry = self.get_registry();
+        let brain = registry.find_processor(input)
+            .ok_or_else(|| DomainError::DomainNotRegistered(
+                "No brain can process this input".to_string()
+            ))?;
+
+        let graph = brain.parse(input)?;
+        let result = brain.execute(&graph)?;
+        let result_text = match result {
+            ExecutionResult::Text(t) => Some(t),
+            ExecutionResult::Numeric(v) => Some(format!("{}", v)),
+            ExecutionResult::Graph(_) => None,
+            ExecutionResult::Boolean(b) => Some(format!("{}", b)),
+            ExecutionResult::Unit => None,
+            ExecutionResult::Error(e) => Some(format!("Error: {}", e)),
+        };
+
+        Ok(BrainRoutingResult {
+            domain_id: brain.domain_id().to_string(),
+            graph,
+            confidence: 1.0, // Single brain routing has full confidence
+            result: result_text,
+        })
+    }
+
+    /// Route input to multiple brains that can process it
+    fn route_to_multiple_brains(&self, input: &str) -> MultiBrainResult {
+        let registry = self.get_registry();
+        let mut result = MultiBrainResult::new();
+
+        for domain_id in registry.domains() {
+            if let Some(brain) = registry.get(domain_id) {
+                if brain.can_process(input) {
+                    if let Ok(graph) = brain.parse(input) {
+                        let exec_result = brain.execute(&graph).ok();
+                        let result_text = exec_result.map(|r| match r {
+                            ExecutionResult::Text(t) => t,
+                            ExecutionResult::Numeric(v) => format!("{}", v),
+                            ExecutionResult::Graph(_) => "Graph result".to_string(),
+                            ExecutionResult::Boolean(b) => format!("{}", b),
+                            ExecutionResult::Unit => "Done".to_string(),
+                            ExecutionResult::Error(e) => format!("Error: {}", e),
+                        });
+
+                        // Calculate confidence based on how many brains can process
+                        let confidence = self.calculate_routing_confidence(input, brain);
+
+                        result.add_result(BrainRoutingResult {
+                            domain_id: domain_id.clone(),
+                            graph,
+                            confidence,
+                            result: result_text,
+                        });
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Calculate confidence score for routing to a specific brain
+    fn calculate_routing_confidence(&self, input: &str, brain: &dyn DomainBrain) -> f32 {
+        // Default implementation: simple heuristic based on can_process
+        if brain.can_process(input) {
+            // Check how many keywords/patterns match
+            let input_lower = input.to_lowercase();
+            let domain = brain.domain_id().to_lowercase();
+
+            // Higher confidence if domain name appears in input
+            if input_lower.contains(&domain) {
+                0.9
+            } else {
+                0.7
+            }
+        } else {
+            0.0
+        }
+    }
+
+    /// Get all available domains from the registry
+    fn available_domains(&self) -> Vec<String> {
+        self.get_registry().domains().to_vec()
+    }
+
+    /// Check if a specific domain is available
+    fn has_domain(&self, domain_id: &str) -> bool {
+        self.get_registry().has_domain(domain_id)
+    }
+
+    /// Execute a rule from a specific domain on a graph
+    fn execute_domain_rule(
+        &self,
+        domain_id: &str,
+        graph: &DagNN,
+        rule_id: usize,
+    ) -> DomainResult<DagNN> {
+        let registry = self.get_registry();
+        let brain = registry.get(domain_id)
+            .ok_or_else(|| DomainError::DomainNotRegistered(domain_id.to_string()))?;
+        brain.transform(graph, rule_id)
+    }
+
+    /// Get all rules across all domains
+    fn all_domain_rules(&self) -> Vec<DomainRule> {
+        self.get_registry().all_rules()
+    }
+
+    /// Get rules for a specific domain
+    fn domain_rules(&self, domain_id: &str) -> Vec<DomainRule> {
+        self.get_registry()
+            .get(domain_id)
+            .map(|b| b.get_rules())
+            .unwrap_or_default()
+    }
+
+    /// Generate training examples from all domains
+    fn generate_domain_examples(&self, per_domain: usize) -> Vec<DomainExample> {
+        self.get_registry().generate_examples(per_domain)
+    }
+}
+
+/// Default cognitive-brain bridge implementation using a BrainRegistry
+#[derive(Debug, Default)]
+pub struct DefaultCognitiveBridge {
+    /// The brain registry
+    pub registry: BrainRegistry,
+}
+
+impl DefaultCognitiveBridge {
+    /// Create a new default cognitive bridge
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with an existing registry
+    pub fn with_registry(registry: BrainRegistry) -> Self {
+        Self { registry }
+    }
+
+    /// Register a brain
+    pub fn register(&mut self, brain: Box<dyn DomainBrain>) {
+        self.registry.register(brain);
+    }
+}
+
+impl CognitiveBrainBridge for DefaultCognitiveBridge {
+    fn get_registry(&self) -> &BrainRegistry {
+        &self.registry
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        &mut self.registry
+    }
+}
+
+// ============================================================================
+// Cognitive-Brain Orchestrator
+// ============================================================================
+
+/// Configuration for the cognitive-brain orchestrator
+#[derive(Debug, Clone)]
+pub struct OrchestratorConfig {
+    /// Minimum confidence threshold for routing
+    pub confidence_threshold: f32,
+    /// Whether to automatically route to domain brains
+    pub auto_route: bool,
+    /// Maximum number of brains to consult for a single query
+    pub max_brains_per_query: usize,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            confidence_threshold: 0.5,
+            auto_route: true,
+            max_brains_per_query: 3,
+        }
+    }
+}
+
+/// Statistics for the orchestrator
+#[derive(Debug, Clone, Default)]
+pub struct OrchestratorStats {
+    /// Total queries processed
+    pub total_queries: u64,
+    /// Queries successfully routed to a brain
+    pub routed_queries: u64,
+    /// Queries where no brain could process
+    pub unrouted_queries: u64,
+    /// Per-domain query counts
+    pub domain_counts: std::collections::HashMap<String, u64>,
+}
+
+impl OrchestratorStats {
+    /// Record a successful routing
+    pub fn record_routing(&mut self, domain_id: &str) {
+        self.total_queries += 1;
+        self.routed_queries += 1;
+        *self.domain_counts.entry(domain_id.to_string()).or_insert(0) += 1;
+    }
+
+    /// Record a failed routing
+    pub fn record_no_routing(&mut self) {
+        self.total_queries += 1;
+        self.unrouted_queries += 1;
+    }
+
+    /// Get routing success rate
+    pub fn success_rate(&self) -> f32 {
+        if self.total_queries == 0 {
+            0.0
+        } else {
+            self.routed_queries as f32 / self.total_queries as f32
+        }
+    }
+}
+
+/// Result of orchestrated processing
+#[derive(Debug)]
+pub struct OrchestratedResult {
+    /// The primary result (from highest-confidence brain)
+    pub primary: Option<ExecutionResult>,
+    /// All brain results (domain_id -> result)
+    pub brain_results: std::collections::HashMap<String, ExecutionResult>,
+    /// Combined confidence
+    pub confidence: f32,
+    /// Domains that contributed
+    pub domains: Vec<String>,
+}
+
+impl OrchestratedResult {
+    /// Create an empty result
+    pub fn empty() -> Self {
+        Self {
+            primary: None,
+            brain_results: std::collections::HashMap::new(),
+            confidence: 0.0,
+            domains: Vec::new(),
+        }
+    }
+
+    /// Check if processing was successful
+    pub fn success(&self) -> bool {
+        self.primary.is_some()
+    }
+}
+
+/// Unified cognitive-brain orchestrator
+///
+/// This orchestrator coordinates all brain-aware cognitive components:
+/// - Routes inputs to appropriate domain brains
+/// - Combines results from multiple brains
+/// - Tracks statistics for analysis
+/// - Provides a unified interface for AGI capabilities
+#[derive(Default)]
+pub struct CognitiveBrainOrchestrator {
+    /// The brain registry
+    pub registry: BrainRegistry,
+    /// Configuration
+    pub config: OrchestratorConfig,
+    /// Statistics
+    pub stats: OrchestratorStats,
+}
+
+impl std::fmt::Debug for CognitiveBrainOrchestrator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CognitiveBrainOrchestrator")
+            .field("available_domains", &self.registry.domains())
+            .field("config", &self.config)
+            .field("stats", &self.stats)
+            .finish()
+    }
+}
+
+impl CognitiveBrainOrchestrator {
+    /// Create a new orchestrator
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: OrchestratorConfig) -> Self {
+        Self {
+            config,
+            ..Default::default()
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.registry.register(brain);
+    }
+
+    /// Process an input through the orchestrator
+    ///
+    /// Routes to appropriate domain brains and combines results.
+    pub fn process(&mut self, input: &str) -> OrchestratedResult {
+        if !self.config.auto_route {
+            self.stats.record_no_routing();
+            return OrchestratedResult::empty();
+        }
+
+        // Find all brains that can process this input
+        let mut applicable: Vec<_> = self.registry.domains().iter()
+            .filter_map(|domain_id| {
+                let brain = self.registry.get(domain_id)?;
+                if brain.can_process(input) {
+                    // Calculate confidence
+                    let input_lower = input.to_lowercase();
+                    let domain = brain.domain_id().to_lowercase();
+                    let confidence = if input_lower.contains(&domain) { 0.9 } else { 0.7 };
+                    if confidence >= self.config.confidence_threshold {
+                        Some((domain_id.clone(), confidence))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by confidence (highest first)
+        applicable.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Limit to max_brains_per_query
+        applicable.truncate(self.config.max_brains_per_query);
+
+        if applicable.is_empty() {
+            self.stats.record_no_routing();
+            return OrchestratedResult::empty();
+        }
+
+        // Process with each applicable brain
+        let mut result = OrchestratedResult::empty();
+        let mut primary_confidence = 0.0f32;
+
+        for (domain_id, confidence) in &applicable {
+            if let Some(brain) = self.registry.get(domain_id) {
+                if let Ok(graph) = brain.parse(input) {
+                    if let Ok(exec_result) = brain.execute(&graph) {
+                        result.brain_results.insert(domain_id.clone(), exec_result.clone());
+                        result.domains.push(domain_id.clone());
+
+                        // Update primary if this is highest confidence
+                        if *confidence > primary_confidence {
+                            primary_confidence = *confidence;
+                            result.primary = Some(exec_result);
+                        }
+
+                        self.stats.record_routing(domain_id);
+                    }
+                }
+            }
+        }
+
+        result.confidence = primary_confidence;
+        result
+    }
+
+    /// Get processing statistics
+    pub fn stats(&self) -> &OrchestratorStats {
+        &self.stats
+    }
+
+    /// Reset statistics
+    pub fn reset_stats(&mut self) {
+        self.stats = OrchestratorStats::default();
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.registry.domains().to_vec()
+    }
+
+    /// Check if a domain is available
+    pub fn has_domain(&self, domain_id: &str) -> bool {
+        self.registry.has_domain(domain_id)
+    }
+
+    /// Get the brain registry
+    pub fn get_registry(&self) -> &BrainRegistry {
+        &self.registry
+    }
+
+    /// Get mutable access to the brain registry
+    pub fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        &mut self.registry
+    }
+}
+
+impl CognitiveBrainBridge for CognitiveBrainOrchestrator {
+    fn get_registry(&self) -> &BrainRegistry {
+        &self.registry
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        &mut self.registry
+    }
+}
+
+/// Factory function to create a cognitive-brain orchestrator
+pub fn create_cognitive_orchestrator() -> CognitiveBrainOrchestrator {
+    CognitiveBrainOrchestrator::new()
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

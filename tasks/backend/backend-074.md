@@ -1,7 +1,7 @@
 ---
 id: backend-074
 title: Implement domain-aware goal decomposition in agency
-status: todo
+status: done
 priority: medium
 tags:
 - backend

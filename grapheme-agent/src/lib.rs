@@ -25,7 +25,10 @@
 //! - Drives are configurable
 //! - Human oversight integration points
 
-use grapheme_core::{DagNN, Learnable, LearnableParam};
+use grapheme_core::{
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, Learnable, LearnableParam,
+};
 use grapheme_meta::UncertaintyEstimate;
 use grapheme_world::WorldModeling;
 use serde::{Deserialize, Serialize};
@@ -825,6 +828,80 @@ impl Learnable for LearnableAgency {
             + self.discount_factor.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware Agency
+// ============================================================================
+
+/// Brain-aware agency that uses domain brains for goal planning
+pub struct BrainAwareAgency {
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+    /// Maximum planning depth
+    pub max_depth: usize,
+}
+
+impl Debug for BrainAwareAgency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareAgency")
+            .field("available_domains", &self.bridge.available_domains())
+            .field("max_depth", &self.max_depth)
+            .finish()
+    }
+}
+
+impl BrainAwareAgency {
+    /// Create a new brain-aware agency
+    pub fn new() -> Self {
+        Self {
+            bridge: DefaultCognitiveBridge::new(),
+            max_depth: 20,
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Check if a domain brain can help with a goal
+    pub fn can_help_with_goal(&self, goal_text: &str) -> bool {
+        let routing = self.bridge.route_to_multiple_brains(goal_text);
+        routing.success
+    }
+
+    /// Get domains that can help with a goal
+    pub fn domains_for_goal(&self, goal_text: &str) -> Vec<String> {
+        let routing = self.bridge.route_to_multiple_brains(goal_text);
+        routing.domains().iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+}
+
+impl Default for BrainAwareAgency {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareAgency {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create brain-aware agency
+pub fn create_brain_aware_agency() -> BrainAwareAgency {
+    BrainAwareAgency::new()
 }
 
 // ============================================================================

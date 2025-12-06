@@ -15,7 +15,10 @@
 //!
 //! This enables planning, counterfactual reasoning, and mental simulation.
 
-use grapheme_core::{DagNN, Learnable, LearnableParam, TransformRule};
+use grapheme_core::{
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, Learnable, LearnableParam, TransformRule,
+};
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -702,6 +705,74 @@ impl Learnable for LearnableWorldModel {
             + self.uncertainty_scale.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware World Model
+// ============================================================================
+
+/// Brain-aware world model that uses domain brains for predictions
+pub struct BrainAwareWorldModel {
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+}
+
+impl Debug for BrainAwareWorldModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareWorldModel")
+            .field("available_domains", &self.bridge.available_domains())
+            .finish()
+    }
+}
+
+impl BrainAwareWorldModel {
+    /// Create a new brain-aware world model
+    pub fn new() -> Self {
+        Self {
+            bridge: DefaultCognitiveBridge::new(),
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Check if a domain brain can help with prediction
+    pub fn can_predict(&self, state_text: &str) -> bool {
+        self.bridge.route_to_multiple_brains(state_text).success
+    }
+
+    /// Get domains relevant to a state
+    pub fn domains_for_state(&self, state_text: &str) -> Vec<String> {
+        self.bridge.route_to_multiple_brains(state_text).domains().iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+}
+
+impl Default for BrainAwareWorldModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareWorldModel {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create brain-aware world model
+pub fn create_brain_aware_world_model() -> BrainAwareWorldModel {
+    BrainAwareWorldModel::new()
 }
 
 // ============================================================================

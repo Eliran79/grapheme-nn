@@ -480,3 +480,215 @@ fn test_parameter_count() {
     // 6 + 6 + 6 + 5 + 6 + 6 + 5 = 40 parameters total
     assert_eq!(total_params, 40);
 }
+
+// ============================================================================
+// Cognitive-Brain Interaction Tests (testing-006)
+// ============================================================================
+
+#[test]
+fn test_cognitive_brain_bridge_creation() {
+    use grapheme_core::{DefaultCognitiveBridge, CognitiveBrainBridge};
+
+    let bridge = DefaultCognitiveBridge::new();
+    assert!(bridge.available_domains().is_empty());
+    assert!(!bridge.has_domain("math"));
+}
+
+#[test]
+fn test_brain_registry_operations() {
+    use grapheme_core::BrainRegistry;
+
+    let registry = BrainRegistry::new();
+    assert!(registry.domains().is_empty());
+    assert!(registry.get("nonexistent").is_none());
+}
+
+#[test]
+fn test_orchestrator_creation() {
+    use grapheme_core::{create_cognitive_orchestrator, CognitiveBrainBridge};
+
+    let orchestrator = create_cognitive_orchestrator();
+    assert!(orchestrator.available_domains().is_empty());
+}
+
+#[test]
+fn test_orchestrator_config() {
+    use grapheme_core::{CognitiveBrainOrchestrator, OrchestratorConfig};
+
+    let config = OrchestratorConfig {
+        confidence_threshold: 0.7,
+        auto_route: false,
+        max_brains_per_query: 5,
+    };
+
+    let orchestrator = CognitiveBrainOrchestrator::with_config(config.clone());
+    assert!((orchestrator.config.confidence_threshold - 0.7).abs() < 1e-6);
+    assert!(!orchestrator.config.auto_route);
+    assert_eq!(orchestrator.config.max_brains_per_query, 5);
+}
+
+#[test]
+fn test_orchestrator_stats() {
+    use grapheme_core::OrchestratorStats;
+
+    let mut stats = OrchestratorStats::default();
+    assert_eq!(stats.total_queries, 0);
+    assert_eq!(stats.success_rate(), 0.0);
+
+    stats.record_routing("math");
+    stats.record_routing("code");
+    stats.record_no_routing();
+
+    assert_eq!(stats.total_queries, 3);
+    assert_eq!(stats.routed_queries, 2);
+    assert_eq!(stats.unrouted_queries, 1);
+    assert!((stats.success_rate() - 0.666).abs() < 0.01);
+    assert_eq!(*stats.domain_counts.get("math").unwrap(), 1);
+    assert_eq!(*stats.domain_counts.get("code").unwrap(), 1);
+}
+
+#[test]
+fn test_orchestrated_result() {
+    use grapheme_core::OrchestratedResult;
+
+    let result = OrchestratedResult::empty();
+    assert!(!result.success());
+    assert!(result.primary.is_none());
+    assert!(result.domains.is_empty());
+    assert!((result.confidence - 0.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_multi_brain_result() {
+    use grapheme_core::{MultiBrainResult, BrainRoutingResult, DagNN};
+
+    let mut result = MultiBrainResult::new();
+    assert!(!result.success);
+    assert!(result.primary.is_none());
+    assert!(result.domains().is_empty());
+
+    // Add a routing result
+    result.add_result(BrainRoutingResult {
+        domain_id: "test".to_string(),
+        graph: DagNN::new(),
+        confidence: 0.8,
+        result: Some("test result".to_string()),
+    });
+
+    assert!(result.success);
+    assert!(result.primary.is_some());
+    assert_eq!(result.domains(), vec!["test"]);
+}
+
+#[test]
+fn test_brain_aware_reasoning_creation() {
+    use grapheme_reason::{create_brain_aware_reasoning, BrainAwareReasoning};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let reasoning = create_brain_aware_reasoning();
+    assert!(reasoning.available_domains().is_empty());
+    assert!(reasoning.consult_brains_first);
+}
+
+#[test]
+fn test_brain_aware_memory_creation() {
+    use grapheme_memory::{create_domain_aware_memory, DomainAwareMemory};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let memory = create_domain_aware_memory();
+    assert!(memory.available_domains().is_empty());
+    assert!(memory.auto_classify);
+}
+
+#[test]
+fn test_brain_aware_metacognition_creation() {
+    use grapheme_meta::{create_brain_aware_metacognition, BrainAwareMetaCognition};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let meta = create_brain_aware_metacognition();
+    assert!(meta.available_domains().is_empty());
+    assert!(meta.use_domain_expertise);
+}
+
+#[test]
+fn test_brain_aware_agency_creation() {
+    use grapheme_agent::{create_brain_aware_agency, BrainAwareAgency};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let agency = create_brain_aware_agency();
+    assert!(agency.available_domains().is_empty());
+}
+
+#[test]
+fn test_brain_aware_world_model_creation() {
+    use grapheme_world::{create_brain_aware_world_model, BrainAwareWorldModel};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let world = create_brain_aware_world_model();
+    assert!(world.available_domains().is_empty());
+}
+
+#[test]
+fn test_brain_aware_grounding_creation() {
+    use grapheme_ground::{create_brain_aware_grounding, BrainAwareGrounding};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let grounding = create_brain_aware_grounding();
+    assert!(grounding.available_domains().is_empty());
+}
+
+#[test]
+fn test_brain_aware_multimodal_creation() {
+    use grapheme_multimodal::{create_brain_aware_multimodal, BrainAwareMultimodal};
+    use grapheme_core::CognitiveBrainBridge;
+
+    let multimodal = create_brain_aware_multimodal();
+    assert!(multimodal.available_domains().is_empty());
+}
+
+#[test]
+fn test_domain_memory_metadata() {
+    use grapheme_memory::DomainMemoryMetadata;
+
+    let meta = DomainMemoryMetadata::for_domain("math", 0.9)
+        .with_related(vec!["science".to_string()])
+        .with_source("2+2=4");
+
+    assert_eq!(meta.domain_id.unwrap(), "math");
+    assert!((meta.domain_confidence - 0.9).abs() < 1e-6);
+    assert_eq!(meta.related_domains, vec!["science"]);
+    assert_eq!(meta.source_text.unwrap(), "2+2=4");
+}
+
+#[test]
+fn test_all_brain_aware_modules_implement_bridge() {
+    // This test verifies that all brain-aware cognitive modules implement CognitiveBrainBridge
+    use grapheme_core::CognitiveBrainBridge;
+
+    use grapheme_reason::BrainAwareReasoning;
+    use grapheme_memory::DomainAwareMemory;
+    use grapheme_meta::BrainAwareMetaCognition;
+    use grapheme_agent::BrainAwareAgency;
+    use grapheme_world::BrainAwareWorldModel;
+    use grapheme_ground::BrainAwareGrounding;
+    use grapheme_multimodal::BrainAwareMultimodal;
+
+    fn accepts_bridge<T: CognitiveBrainBridge>(_: &T) {}
+
+    let reasoning = grapheme_reason::create_brain_aware_reasoning();
+    let memory = grapheme_memory::create_domain_aware_memory();
+    let meta = grapheme_meta::create_brain_aware_metacognition();
+    let agency = grapheme_agent::create_brain_aware_agency();
+    let world = grapheme_world::create_brain_aware_world_model();
+    let grounding = grapheme_ground::create_brain_aware_grounding();
+    let multimodal = grapheme_multimodal::create_brain_aware_multimodal();
+
+    // This compiles only if all types implement CognitiveBrainBridge
+    accepts_bridge(&reasoning);
+    accepts_bridge(&memory);
+    accepts_bridge(&meta);
+    accepts_bridge(&agency);
+    accepts_bridge(&world);
+    accepts_bridge(&grounding);
+    accepts_bridge(&multimodal);
+}

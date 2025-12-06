@@ -1,7 +1,7 @@
 ---
 id: testing-006
 title: Add integration tests for cognitive-brain interaction
-status: todo
+status: done
 priority: medium
 tags:
 - testing

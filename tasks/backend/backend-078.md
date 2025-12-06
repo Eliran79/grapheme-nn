@@ -1,7 +1,7 @@
 ---
 id: backend-078
 title: Create unified cognitive-brain orchestrator
-status: todo
+status: done
 priority: high
 tags:
 - backend

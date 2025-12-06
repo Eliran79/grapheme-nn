@@ -1,7 +1,7 @@
 ---
 id: backend-072
 title: Implement domain-aware memory storage and retrieval
-status: todo
+status: done
 priority: high
 tags:
 - backend

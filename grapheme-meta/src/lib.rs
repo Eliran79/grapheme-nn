@@ -19,7 +19,10 @@
 //!
 //! Real meta-cognition may require learned policies.
 
-use grapheme_core::{DagNN, Learnable, LearnableParam};
+use grapheme_core::{
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, Learnable, LearnableParam,
+};
 use grapheme_reason::ReasoningStep;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -705,6 +708,187 @@ impl Learnable for LearnableMetaCognition {
             + self.early_stop_threshold.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware Meta-Cognition
+// ============================================================================
+
+/// Domain-specific uncertainty adjustment based on available domain expertise
+#[derive(Debug, Clone)]
+pub struct DomainUncertaintyAdjustment {
+    /// The domain ID
+    pub domain_id: String,
+    /// How much to reduce epistemic uncertainty (0.0-1.0)
+    pub epistemic_reduction: f32,
+    /// Confidence in this adjustment
+    pub confidence: f32,
+}
+
+/// Result of brain-aware uncertainty estimation
+#[derive(Debug)]
+pub struct BrainAwareUncertaintyResult {
+    /// Base uncertainty estimate
+    pub base_uncertainty: UncertaintyEstimate,
+    /// Domain-specific adjustments
+    pub domain_adjustments: Vec<DomainUncertaintyAdjustment>,
+    /// Adjusted uncertainty after domain expertise
+    pub adjusted_uncertainty: UncertaintyEstimate,
+    /// Which domain brains were consulted
+    pub consulted_domains: Vec<String>,
+}
+
+/// Brain-aware meta-cognition that uses domain brains for better uncertainty estimation
+pub struct BrainAwareMetaCognition {
+    /// The underlying meta-cognition component
+    pub meta: Box<dyn MetaCognition>,
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+    /// Whether to use domain brains for uncertainty reduction
+    pub use_domain_expertise: bool,
+}
+
+impl Debug for BrainAwareMetaCognition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareMetaCognition")
+            .field("available_domains", &self.bridge.available_domains())
+            .field("use_domain_expertise", &self.use_domain_expertise)
+            .finish()
+    }
+}
+
+impl BrainAwareMetaCognition {
+    /// Create a new brain-aware meta-cognition
+    pub fn new(meta: Box<dyn MetaCognition>) -> Self {
+        Self {
+            meta,
+            bridge: DefaultCognitiveBridge::new(),
+            use_domain_expertise: true,
+        }
+    }
+
+    /// Create with a pre-configured bridge
+    pub fn with_bridge(meta: Box<dyn MetaCognition>, bridge: DefaultCognitiveBridge) -> Self {
+        Self {
+            meta,
+            bridge,
+            use_domain_expertise: true,
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Estimate uncertainty with domain brain awareness
+    ///
+    /// If a domain brain can handle the query, epistemic uncertainty may be reduced
+    /// because we have specialized expertise for this type of query.
+    pub fn estimate_uncertainty_with_domains(
+        &self,
+        query: &Graph,
+        query_text: Option<&str>,
+    ) -> BrainAwareUncertaintyResult {
+        // Get base uncertainty
+        let base = self.meta.estimate_uncertainty(query);
+
+        // If we have text and should use domain expertise, check domain brains
+        if self.use_domain_expertise {
+            if let Some(text) = query_text {
+                let routing = self.bridge.route_to_multiple_brains(text);
+                if routing.success && !routing.results.is_empty() {
+                    // Calculate uncertainty adjustments based on domain expertise
+                    let mut adjustments = Vec::new();
+                    let mut total_reduction = 0.0;
+
+                    for result in &routing.results {
+                        // Domain expertise reduces epistemic uncertainty
+                        let reduction = result.confidence * 0.3; // Max 30% reduction per domain
+                        adjustments.push(DomainUncertaintyAdjustment {
+                            domain_id: result.domain_id.clone(),
+                            epistemic_reduction: reduction,
+                            confidence: result.confidence,
+                        });
+                        total_reduction += reduction;
+                    }
+
+                    // Cap total reduction at 50%
+                    let reduction = total_reduction.min(0.5);
+                    let adjusted_epistemic = base.epistemic * (1.0 - reduction);
+                    let mut adjusted = UncertaintyEstimate::new(adjusted_epistemic, base.aleatoric);
+                    adjusted.sources = base.sources.clone();
+
+                    return BrainAwareUncertaintyResult {
+                        base_uncertainty: base,
+                        domain_adjustments: adjustments,
+                        adjusted_uncertainty: adjusted,
+                        consulted_domains: routing.domains().iter().map(|s| s.to_string()).collect(),
+                    };
+                }
+            }
+        }
+
+        // No domain expertise available
+        BrainAwareUncertaintyResult {
+            base_uncertainty: base.clone(),
+            domain_adjustments: Vec::new(),
+            adjusted_uncertainty: base,
+            consulted_domains: Vec::new(),
+        }
+    }
+
+    /// Recognize limits with domain brain awareness
+    ///
+    /// If no domain brain can handle the query, that's a limitation.
+    pub fn recognize_limits_with_domains(
+        &self,
+        task: &Graph,
+        task_text: Option<&str>,
+    ) -> Option<LimitationType> {
+        // Check base meta-cognition first
+        if let Some(limit) = self.meta.recognize_limits(task) {
+            return Some(limit);
+        }
+
+        // Check if any domain brain can handle this
+        if let Some(text) = task_text {
+            let routing = self.bridge.route_to_multiple_brains(text);
+            if !routing.success || routing.results.is_empty() {
+                // No domain expertise for this query
+                return Some(LimitationType::KnowledgeGap {
+                    missing: format!("No domain expertise for: {}", text),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+
+    /// Check if a domain is available
+    pub fn has_domain(&self, domain_id: &str) -> bool {
+        self.bridge.has_domain(domain_id)
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareMetaCognition {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create brain-aware meta-cognition
+pub fn create_brain_aware_metacognition() -> BrainAwareMetaCognition {
+    BrainAwareMetaCognition::new(Box::new(SimpleMetaCognition::new()))
 }
 
 // ============================================================================

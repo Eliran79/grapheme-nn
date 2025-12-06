@@ -1,7 +1,7 @@
 ---
 id: backend-077
 title: Implement domain-aware world model predictions
-status: todo
+status: done
 priority: medium
 tags:
 - backend

@@ -1,7 +1,7 @@
 ---
 id: backend-076
 title: Add domain brain grounding for embodied interaction
-status: todo
+status: done
 priority: medium
 tags:
 - backend

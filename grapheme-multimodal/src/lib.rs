@@ -16,7 +16,10 @@
 //! - Unified multi-modal events
 //! - Modality translation (cross-modal inference)
 
-use grapheme_core::{DagNN, Learnable, LearnableParam};
+use grapheme_core::{
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
+    DomainBrain, Learnable, LearnableParam,
+};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -698,6 +701,74 @@ impl Learnable for LearnableMultimodal {
             + self.fusion_temperature.grad.powi(2))
         .sqrt()
     }
+}
+
+// ============================================================================
+// Brain-Aware Multimodal
+// ============================================================================
+
+/// Brain-aware multimodal that uses domain brains for cross-modal processing
+pub struct BrainAwareMultimodal {
+    /// The cognitive-brain bridge for domain routing
+    pub bridge: DefaultCognitiveBridge,
+}
+
+impl Debug for BrainAwareMultimodal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainAwareMultimodal")
+            .field("available_domains", &self.bridge.available_domains())
+            .finish()
+    }
+}
+
+impl BrainAwareMultimodal {
+    /// Create a new brain-aware multimodal
+    pub fn new() -> Self {
+        Self {
+            bridge: DefaultCognitiveBridge::new(),
+        }
+    }
+
+    /// Register a domain brain
+    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
+        self.bridge.register(brain);
+    }
+
+    /// Check if a domain brain can help with cross-modal processing
+    pub fn can_fuse(&self, modality_text: &str) -> bool {
+        self.bridge.route_to_multiple_brains(modality_text).success
+    }
+
+    /// Get domains relevant to a cross-modal input
+    pub fn domains_for_input(&self, input_text: &str) -> Vec<String> {
+        self.bridge.route_to_multiple_brains(input_text).domains().iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Get available domains
+    pub fn available_domains(&self) -> Vec<String> {
+        self.bridge.available_domains()
+    }
+}
+
+impl Default for BrainAwareMultimodal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CognitiveBrainBridge for BrainAwareMultimodal {
+    fn get_registry(&self) -> &BrainRegistry {
+        self.bridge.get_registry()
+    }
+
+    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
+        self.bridge.get_registry_mut()
+    }
+}
+
+/// Factory function to create brain-aware multimodal
+pub fn create_brain_aware_multimodal() -> BrainAwareMultimodal {
+    BrainAwareMultimodal::new()
 }
 
 // ============================================================================
