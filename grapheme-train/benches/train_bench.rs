@@ -456,7 +456,7 @@ fn bench_batch_throughput(c: &mut Criterion) {
             &batch,
             |b, batch| {
                 b.iter(|| {
-                    let mut pipeline = Pipeline::new();
+                    let pipeline = Pipeline::new();
                     pipeline.process_batch(black_box(batch))
                 })
             },

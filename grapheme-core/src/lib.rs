@@ -17,6 +17,7 @@
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
@@ -1692,24 +1693,25 @@ impl DagNN {
     /// This optimization processes low-degree nodes first, reducing
     /// the number of combinations to check in sparse graphs.
     fn degeneracy_ordering(&self) -> Vec<NodeId> {
-        let mut remaining: Vec<NodeId> = self.graph.node_indices().collect();
+        // Use HashSet for O(1) membership checks instead of Vec's O(n)
+        // This reduces overall complexity from O(n³) to O(n² + m) where m = edges
+        let mut remaining: HashSet<NodeId> = self.graph.node_indices().collect();
         let mut ordering = Vec::with_capacity(remaining.len());
 
         while !remaining.is_empty() {
-            // Find node with minimum degree among remaining
-            let min_idx = remaining
+            // Find node with minimum degree among remaining (O(n) per iteration)
+            let min_node = remaining
                 .iter()
-                .enumerate()
-                .min_by_key(|(_, &node)| {
-                    self.neighbors(node)
-                        .filter(|n| remaining.contains(n))
+                .min_by_key(|&node| {
+                    self.neighbors(*node)
+                        .filter(|n| remaining.contains(n))  // O(1) lookup now!
                         .count()
                 })
-                .map(|(i, _)| i)
+                .copied()
                 .unwrap();
 
-            let node = remaining.swap_remove(min_idx);
-            ordering.push(node);
+            remaining.remove(&min_node);
+            ordering.push(min_node);
         }
 
         ordering
@@ -3359,19 +3361,30 @@ impl MessagePassingLayer {
     }
 
     /// Forward pass for batch of nodes
+    ///
+    /// Uses parallel processing via Rayon for improved performance on large graphs.
+    /// Each node's forward pass is computed independently in parallel.
     pub fn forward_batch(&self, node_features: &Array2<f32>, adjacency: &[Vec<usize>]) -> Array2<f32> {
         let n = node_features.shape()[0];
+
+        // Process all nodes in parallel using Rayon
+        let rows: Vec<Array1<f32>> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let node_feat = node_features.row(i).to_owned();
+                let neighbor_feats: Vec<Array1<f32>> = adjacency[i]
+                    .iter()
+                    .map(|&j| node_features.row(j).to_owned())
+                    .collect();
+
+                self.forward(&node_feat, &neighbor_feats)
+            })
+            .collect();
+
+        // Assemble output matrix from parallel results
         let mut output = Array2::zeros((n, self.output_dim));
-
-        for i in 0..n {
-            let node_feat = node_features.row(i).to_owned();
-            let neighbor_feats: Vec<Array1<f32>> = adjacency[i]
-                .iter()
-                .map(|&j| node_features.row(j).to_owned())
-                .collect();
-
-            let out = self.forward(&node_feat, &neighbor_feats);
-            output.row_mut(i).assign(&out);
+        for (i, row) in rows.into_iter().enumerate() {
+            output.row_mut(i).assign(&row);
         }
 
         output

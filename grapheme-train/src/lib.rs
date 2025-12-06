@@ -20,6 +20,7 @@ use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, SymbolicEngine, Value};
 use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
 use petgraph::visit::EdgeRef;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -2373,7 +2374,10 @@ impl Pipeline {
     }
 
     /// Process natural language input through the full pipeline
-    pub fn process(&mut self, input: &str) -> PipelineResult {
+    ///
+    /// This method is thread-safe and can be called from multiple threads
+    /// for parallel processing (useful for batch inference and training).
+    pub fn process(&self, input: &str) -> PipelineResult {
         let mut result = PipelineResult::new(input);
 
         // Step 1: Parse input to expression (try direct parsing first)
@@ -2633,11 +2637,17 @@ impl Pipeline {
     }
 
     /// Process a batch of inputs
-    pub fn process_batch(&mut self, inputs: &[&str]) -> Vec<PipelineResult> {
-        inputs.iter().map(|&input| self.process(input)).collect()
+    /// Process multiple inputs in parallel using Rayon
+    ///
+    /// This provides significant speedup for batch inference.
+    pub fn process_batch(&self, inputs: &[&str]) -> Vec<PipelineResult> {
+        inputs.par_iter().map(|&input| self.process(input)).collect()
     }
 
     /// Run training mode on a dataset
+    ///
+    /// Uses parallel processing via Rayon for improved performance.
+    /// Each example in the dataset is processed in parallel within each epoch.
     pub fn train(&mut self, dataset: &Dataset, config: &TrainingConfig) -> TrainingResult<TrainingMetrics> {
         self.mode = PipelineMode::Training;
 
@@ -2645,45 +2655,55 @@ impl Pipeline {
         let mut training_loop = TrainingLoop::new(config.clone());
 
         for _epoch in 0..config.epochs {
-            let mut _epoch_loss = 0.0;
-            let mut batch_count = 0;
+            // Use Rayon's parallel fold/reduce for thread-safe accumulation
+            let (total_loss, batch_count): (f64, usize) = dataset.examples
+                .par_iter()
+                .filter_map(|example| {
+                    // Get input expression in polish notation
+                    let input = &example.input_polish;
 
-            // Process each example in the dataset
-            for example in &dataset.examples {
-                // Get input expression in polish notation
-                let input = &example.input_polish;
+                    // Forward pass: process input through pipeline (thread-safe)
+                    let result = self.process(input);
 
-                // Forward pass: process input through pipeline
-                let result = self.process(input);
+                    // Compute loss using graph edit distance
+                    if let Some(ref predicted_graph) = result.nl_graph {
+                        // Create expected graph from expected result
+                        let expected_polish = if let Some(ref sym) = example.expected_symbolic {
+                            expr_to_polish(sym)
+                        } else if let Some(n) = example.expected_result {
+                            format!("{}", n)
+                        } else {
+                            return None;
+                        };
 
-                // Compute loss using graph edit distance
-                if let Some(ref predicted_graph) = result.nl_graph {
-                    // Create expected graph from expected result
-                    let expected_polish = if let Some(ref sym) = example.expected_symbolic {
-                        expr_to_polish(sym)
-                    } else if let Some(n) = example.expected_result {
-                        format!("{}", n)
+                        // Create expected graph
+                        let expected_graph = GraphemeGraph::from_text(&expected_polish);
+
+                        // Compute GED loss
+                        let ged = GraphEditDistance::compute(predicted_graph, &expected_graph);
+                        let loss = ged.total() as f64;
+
+                        Some(loss)
                     } else {
-                        continue;
-                    };
+                        None
+                    }
+                })
+                .fold(
+                    || (0.0f64, 0usize),
+                    |(acc_loss, acc_count), loss| (acc_loss + loss, acc_count + 1)
+                )
+                .reduce(
+                    || (0.0f64, 0usize),
+                    |(a_loss, a_count), (b_loss, b_count)| (a_loss + b_loss, a_count + b_count)
+                );
 
-                    // Create expected graph
-                    let expected_graph = GraphemeGraph::from_text(&expected_polish);
-
-                    // Compute GED loss
-                    let ged = GraphEditDistance::compute(predicted_graph, &expected_graph);
-                    let loss = ged.total();
-
-                    _epoch_loss += loss as f64;
-                    batch_count += 1;
-                    training_loop.record_batch(loss);
-                }
-            }
-
-            // Complete epoch
+            // Complete epoch if we had any examples
             if batch_count > 0 {
-                let avg_loss = training_loop.complete_epoch();
-                metrics.epoch_losses.push(avg_loss);
+                // Record batch losses (average loss per batch)
+                let avg_loss = total_loss / batch_count as f64;
+                training_loop.record_batch(avg_loss as f32);
+                let epoch_avg = training_loop.complete_epoch();
+                metrics.epoch_losses.push(epoch_avg);
             }
 
             // Early stopping check
@@ -2715,14 +2735,14 @@ impl Default for Pipeline {
 
 /// Quick evaluation function for simple expressions
 pub fn quick_eval(input: &str) -> Option<f64> {
-    let mut pipeline = Pipeline::new();
+    let pipeline = Pipeline::new();
     let result = pipeline.process(input);
     result.numeric_result
 }
 
 /// Quick symbolic evaluation
 pub fn quick_symbolic(input: &str) -> Option<String> {
-    let mut pipeline = Pipeline::new();
+    let pipeline = Pipeline::new();
     let result = pipeline.process(input);
     if result.symbolic_result.is_some() {
         result.symbolic_result
@@ -3488,7 +3508,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_simple_addition() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("2 + 3");
 
         assert!(result.success());
@@ -3497,7 +3517,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_subtraction() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("10 - 4");
 
         assert!(result.success());
@@ -3506,7 +3526,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_multiplication() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("3 * 4");
 
         assert!(result.success());
@@ -3515,7 +3535,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_division() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("8 / 2");
 
         assert!(result.success());
@@ -3524,7 +3544,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_what_is() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("what is 5 + 7");
 
         assert!(result.success());
@@ -3533,7 +3553,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_calculate() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("calculate 9 - 3");
 
         assert!(result.success());
@@ -3542,7 +3562,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_symbolic() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("x + 0");
 
         // Optimizer should simplify x + 0 to x
@@ -3552,7 +3572,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_derivative() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("derivative of x squared");
 
         // d/dx(x^2) = 2x
@@ -3562,7 +3582,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_integrate_definite() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("integrate x from 0 to 1");
 
         // ∫x dx from 0 to 1 = 0.5
@@ -3572,7 +3592,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_result_string() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
 
         let result = pipeline.process("2 + 3");
         assert_eq!(result.result_string(), "5");
@@ -3600,7 +3620,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_batch_processing() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let inputs = vec!["1 + 1", "2 + 2", "3 + 3"];
         let results = pipeline.process_batch(&inputs);
 
@@ -3622,7 +3642,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_steps_recorded() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("2 + 3");
 
         assert!(!result.steps.is_empty());
@@ -3634,7 +3654,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_graphs_created() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("2 + 3");
 
         assert!(result.nl_graph.is_some());
@@ -3659,7 +3679,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_compact_operators() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
 
         let result = pipeline.process("2+3");
         assert_eq!(result.numeric_result, Some(5.0));
@@ -3670,7 +3690,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_squared() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("3 squared");
 
         assert!(result.success());
@@ -3679,7 +3699,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_cubed() {
-        let mut pipeline = Pipeline::new();
+        let pipeline = Pipeline::new();
         let result = pipeline.process("2 cubed");
 
         assert!(result.success());
