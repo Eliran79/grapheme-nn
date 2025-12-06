@@ -14,6 +14,7 @@
 // Allow &self in recursive methods for API consistency
 #![allow(clippy::only_used_in_recursion)]
 
+use grapheme_core::{DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue, ValidationSeverity};
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -550,7 +551,7 @@ impl MathTransformer {
 // ============================================================================
 
 /// The math brain that learns graph transformations
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MathBrain {
     /// The underlying engine for validation
     engine: MathEngine,
@@ -646,6 +647,228 @@ impl MathBrain {
     pub fn solve(&self, problem: &MathProblem) -> MathGraphResult<f64> {
         let graph = self.process(&problem.expression)?;
         graph.evaluate(&self.engine)
+    }
+}
+
+// ============================================================================
+// DomainBrain Implementation
+// ============================================================================
+
+impl std::fmt::Debug for MathBrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MathBrain")
+            .field("domain", &"mathematics")
+            .finish()
+    }
+}
+
+impl DomainBrain for MathBrain {
+    fn domain_id(&self) -> &str {
+        "math"
+    }
+
+    fn domain_name(&self) -> &str {
+        "Mathematics"
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+
+    fn can_process(&self, input: &str) -> bool {
+        // Check for mathematical expressions
+        let math_keywords = [
+            "calculate", "compute", "solve", "simplify", "evaluate",
+            "derive", "differentiate", "integrate", "factor",
+            "+", "-", "*", "/", "^", "=",
+            "sin", "cos", "tan", "sqrt", "log", "exp",
+        ];
+        let lower = input.to_lowercase();
+        math_keywords.iter().any(|kw| lower.contains(kw))
+            || input.chars().any(|c| c.is_ascii_digit())
+    }
+
+    fn parse(&self, input: &str) -> DomainResult<DagNN> {
+        // Parse mathematical input into a graph
+        // For now, create a simple graph from the input
+        DagNN::from_text(input).map_err(|e| e.into())
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // Transform core graph into math-specific representation
+        // For now, return a clone (actual transformation would analyze node types)
+        Ok(graph.clone())
+    }
+
+    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // Transform math-specific graph back to core representation
+        Ok(graph.clone())
+    }
+
+    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
+        let mut issues = Vec::new();
+
+        // Check for empty graph
+        if graph.input_nodes().is_empty() {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Empty math expression graph".to_string(),
+                node: None,
+            });
+        }
+
+        // Check for valid mathematical structure
+        // (placeholder - actual validation would check operator arity, type consistency, etc.)
+
+        Ok(issues)
+    }
+
+    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
+        // Try to evaluate the graph as a mathematical expression
+        // For now, return the graph text representation
+        let text = graph.to_text();
+
+        // Try to parse and evaluate if possible
+        if let Ok(result) = self.parse_and_evaluate(&text) {
+            Ok(ExecutionResult::Numeric(result))
+        } else {
+            Ok(ExecutionResult::Text(text))
+        }
+    }
+
+    fn get_rules(&self) -> Vec<DomainRule> {
+        // Return simplification rules
+        vec![
+            DomainRule {
+                id: 0,
+                domain: "math".to_string(),
+                name: "Zero Addition".to_string(),
+                description: "x + 0 = x".to_string(),
+                category: "simplification".to_string(),
+            },
+            DomainRule {
+                id: 1,
+                domain: "math".to_string(),
+                name: "Zero Multiplication".to_string(),
+                description: "x * 0 = 0".to_string(),
+                category: "simplification".to_string(),
+            },
+            DomainRule {
+                id: 2,
+                domain: "math".to_string(),
+                name: "One Multiplication".to_string(),
+                description: "x * 1 = x".to_string(),
+                category: "simplification".to_string(),
+            },
+            DomainRule {
+                id: 3,
+                domain: "math".to_string(),
+                name: "Power Zero".to_string(),
+                description: "x^0 = 1".to_string(),
+                category: "simplification".to_string(),
+            },
+            DomainRule {
+                id: 4,
+                domain: "math".to_string(),
+                name: "Power One".to_string(),
+                description: "x^1 = x".to_string(),
+                category: "simplification".to_string(),
+            },
+            DomainRule {
+                id: 5,
+                domain: "math".to_string(),
+                name: "Constant Folding".to_string(),
+                description: "Evaluate constant subexpressions".to_string(),
+                category: "optimization".to_string(),
+            },
+        ]
+    }
+
+    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
+        // Apply a transformation rule
+        // For now, just return the original (actual impl would apply algebraic rules)
+        match rule_id {
+            0..=5 => Ok(graph.clone()),
+            _ => Err(grapheme_core::DomainError::InvalidInput(
+                format!("Unknown rule ID: {}", rule_id)
+            )),
+        }
+    }
+
+    fn generate_examples(&self, count: usize) -> Vec<DomainExample> {
+        let mut examples = Vec::with_capacity(count);
+
+        for i in 0..count {
+            // Generate simple arithmetic examples
+            let a = (i % 10) as i32 + 1;
+            let b = ((i / 10) % 10) as i32 + 1;
+            let ops = ["+", "-", "*"];
+            let op = ops[i % 3];
+
+            let input = format!("{} {} {}", a, op, b);
+            let output = match op {
+                "+" => format!("{}", a + b),
+                "-" => format!("{}", a - b),
+                "*" => format!("{}", a * b),
+                _ => unreachable!(),
+            };
+
+            if let (Ok(input_graph), Ok(output_graph)) = (
+                DagNN::from_text(&input),
+                DagNN::from_text(&output),
+            ) {
+                examples.push(DomainExample {
+                    input: input_graph,
+                    output: output_graph,
+                    domain: "math".to_string(),
+                    difficulty: ((i % 5) + 1) as u8,
+                });
+            }
+        }
+
+        examples
+    }
+}
+
+impl MathBrain {
+    /// Parse and evaluate a simple expression string
+    fn parse_and_evaluate(&self, text: &str) -> Result<f64, MathGraphError> {
+        // Simple parser for basic arithmetic
+        let trimmed = text.trim();
+
+        // Try to parse as a number first
+        if let Ok(n) = trimmed.parse::<f64>() {
+            return Ok(n);
+        }
+
+        // Try simple binary operations
+        for (op_str, op) in [("+", MathOp::Add), ("-", MathOp::Sub), ("*", MathOp::Mul), ("/", MathOp::Div)] {
+            if let Some(idx) = trimmed.rfind(op_str) {
+                if idx > 0 && idx < trimmed.len() - 1 {
+                    let left = trimmed[..idx].trim().parse::<f64>();
+                    let right = trimmed[idx + 1..].trim().parse::<f64>();
+
+                    if let (Ok(l), Ok(r)) = (left, right) {
+                        let result = match op {
+                            MathOp::Add => l + r,
+                            MathOp::Sub => l - r,
+                            MathOp::Mul => l * r,
+                            MathOp::Div => {
+                                if r == 0.0 {
+                                    return Err(MathGraphError::InvalidStructure("Division by zero".to_string()));
+                                }
+                                l / r
+                            }
+                            _ => return Err(MathGraphError::InvalidStructure("Unsupported operation".to_string())),
+                        };
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+
+        Err(MathGraphError::InvalidStructure(format!("Cannot parse: {}", text)))
     }
 }
 
@@ -864,5 +1087,58 @@ mod tests {
 
         let simplified = brain.simplify(&expr);
         assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
+    }
+
+    // DomainBrain implementation tests
+    #[test]
+    fn test_domain_brain_id() {
+        let brain = MathBrain::new();
+        assert_eq!(brain.domain_id(), "math");
+        assert_eq!(brain.domain_name(), "Mathematics");
+        assert_eq!(brain.version(), "0.1.0");
+    }
+
+    #[test]
+    fn test_domain_brain_can_process() {
+        let brain = MathBrain::new();
+        assert!(brain.can_process("calculate 2 + 2"));
+        assert!(brain.can_process("sin(x)"));
+        assert!(brain.can_process("5 * 3"));
+        assert!(!brain.can_process("hello world")); // No math keywords or digits
+    }
+
+    #[test]
+    fn test_domain_brain_parse() {
+        let brain = MathBrain::new();
+        let result = brain.parse("2 + 3");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_domain_brain_get_rules() {
+        let brain = MathBrain::new();
+        let rules = brain.get_rules();
+        assert_eq!(rules.len(), 6);
+        assert_eq!(rules[0].name, "Zero Addition");
+        assert_eq!(rules[0].domain, "math");
+    }
+
+    #[test]
+    fn test_domain_brain_generate_examples() {
+        let brain = MathBrain::new();
+        let examples = brain.generate_examples(10);
+        assert_eq!(examples.len(), 10);
+        for example in &examples {
+            assert_eq!(example.domain, "math");
+            assert!(example.difficulty >= 1 && example.difficulty <= 5);
+        }
+    }
+
+    #[test]
+    fn test_domain_brain_execute() {
+        let brain = MathBrain::new();
+        let graph = DagNN::from_text("42").unwrap();
+        let result = brain.execute(&graph);
+        assert!(result.is_ok());
     }
 }
