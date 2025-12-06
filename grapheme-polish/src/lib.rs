@@ -200,26 +200,39 @@ impl PolishGraph {
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Operand)
                         .map(|e| e.target())
-                        .unwrap();
+                        .expect("Operand edge missing for unary operator (malformed graph)");
                     Expr::UnaryOp {
                         op: *op,
                         operand: Box::new(self.node_to_expr(operand_idx)),
                     }
                 } else {
+                    // Binary operator - both Left and Right edges must exist
                     let left_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Left)
-                        .map(|e| e.target())
-                        .unwrap();
+                        .map(|e| e.target());
                     let right_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Right)
-                        .map(|e| e.target())
-                        .unwrap();
-                    Expr::BinOp {
-                        op: *op,
-                        left: Box::new(self.node_to_expr(left_idx)),
-                        right: Box::new(self.node_to_expr(right_idx)),
+                        .map(|e| e.target());
+
+                    match (left_idx, right_idx) {
+                        (Some(left), Some(right)) => Expr::BinOp {
+                            op: *op,
+                            left: Box::new(self.node_to_expr(left)),
+                            right: Box::new(self.node_to_expr(right)),
+                        },
+                        (Some(left), None) => {
+                            // Treat as unary if only left operand exists
+                            Expr::UnaryOp {
+                                op: *op,
+                                operand: Box::new(self.node_to_expr(left)),
+                            }
+                        }
+                        _ => {
+                            // Fallback: treat operator as a symbol value if no edges
+                            Expr::Value(Value::Symbol(format!("{:?}", op)))
+                        }
                     }
                 }
             }

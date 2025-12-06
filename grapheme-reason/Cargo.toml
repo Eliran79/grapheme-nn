@@ -1,0 +1,27 @@
+[package]
+name = "grapheme-reason"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reasoning engine for GRAPHEME: deduction, induction, abduction, analogy, causal"
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+# Graph processing
+petgraph = { workspace = true, features = ["serde-1"] }
+
+# Core crates
+grapheme-core = { path = "../grapheme-core" }
+grapheme-memory = { path = "../grapheme-memory" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "reason_bench"
+harness = false
