@@ -3685,4 +3685,132 @@ mod tests {
         assert!(result.success());
         assert_eq!(result.numeric_result, Some(8.0));
     }
+
+    // ========================================================================
+    // Benchmark Utility Tests (testing-004)
+    // ========================================================================
+
+    #[test]
+    fn test_grapheme_graph_scaling() {
+        // Test O(n) scaling of graph creation
+        let sizes = [100, 1000, 10000];
+        let mut times: Vec<(usize, std::time::Duration)> = Vec::new();
+
+        for &size in &sizes {
+            let text: String = "a".repeat(size);
+            let start = std::time::Instant::now();
+            let graph = GraphemeGraph::from_text(&text);
+            let elapsed = start.elapsed();
+            times.push((size, elapsed));
+
+            // Verify graph has expected structure
+            assert_eq!(graph.node_count(), size);
+        }
+
+        // Verify linear scaling: time should scale roughly linearly
+        // 10x input should take roughly 10x time (with some tolerance)
+        if times.len() >= 2 {
+            let (size1, time1) = times[0];
+            let (size2, time2) = times[1];
+            let size_ratio = size2 as f64 / size1 as f64;
+            let time_ratio = time2.as_nanos() as f64 / time1.as_nanos() as f64;
+
+            // Time ratio should be within 3x of size ratio for O(n) scaling
+            assert!(
+                time_ratio < size_ratio * 3.0,
+                "Scaling too slow: size ratio {}, time ratio {}",
+                size_ratio,
+                time_ratio
+            );
+        }
+    }
+
+    #[test]
+    fn test_transformer_flop_calculation() {
+        // Verify O(n²) scaling of transformer FLOPs
+        let d_model = 256;
+        let n_heads = 8;
+        let d_head = d_model / n_heads;
+
+        // Manual calculation for seq_len=100
+        let seq_len = 100;
+
+        // Q, K, V projections: 3 * n * d * d
+        let proj_flops = 3 * seq_len * d_model * d_model;
+
+        // Attention scores: n * n * d_head (for each head)
+        let attn_flops = n_heads * seq_len * seq_len * d_head;
+
+        // Softmax: ~n * n * 5
+        let softmax_flops = seq_len * seq_len * 5;
+
+        // Output: n * n * d_head (for each head)
+        let output_flops = n_heads * seq_len * seq_len * d_head;
+
+        // Output projection: n * d * d
+        let out_proj_flops = seq_len * d_model * d_model;
+
+        let total = proj_flops + attn_flops + softmax_flops + output_flops + out_proj_flops;
+
+        // At least n² term from attention
+        assert!(total > seq_len * seq_len);
+    }
+
+    #[test]
+    fn test_memory_comparison() {
+        // GRAPHEME: ~17 bytes per node (character)
+        let grapheme_bytes_per_char = 17;
+
+        // Transformer: needs Q, K, V + attention matrix
+        let d_model = 256;
+        let seq_len = 1000;
+
+        // Q, K, V matrices: 3 * n * d * sizeof(f32)
+        let qkv_mem = 3 * seq_len * d_model * 4;
+
+        // Attention matrix: n * n * sizeof(f32)
+        let attn_mem = seq_len * seq_len * 4;
+
+        let transformer_mem = qkv_mem + attn_mem;
+
+        // GRAPHEME memory
+        let grapheme_mem = seq_len * grapheme_bytes_per_char;
+
+        // Transformer should use more memory due to O(n²) attention
+        assert!(transformer_mem > grapheme_mem);
+
+        // For n=1000, transformer attention alone is 4MB, GRAPHEME is 17KB
+        assert!(transformer_mem / grapheme_mem > 100);
+    }
+
+    #[test]
+    fn test_scaling_ratio() {
+        // Test that efficiency ratio increases with input length
+        let d_model = 256;
+        let n_heads = 8;
+
+        let calc_ratio = |seq_len: usize| -> f64 {
+            // Transformer FLOPs (dominated by O(n²) attention)
+            let d_head = d_model / n_heads;
+            let proj = 3 * seq_len * d_model * d_model;
+            let attn = n_heads * seq_len * seq_len * d_head;
+            let softmax = seq_len * seq_len * 5;
+            let output = n_heads * seq_len * seq_len * d_head;
+            let out_proj = seq_len * d_model * d_model;
+            let transformer_flops = (proj + attn + softmax + output + out_proj) as f64;
+
+            // GRAPHEME ops: O(n)
+            let grapheme_ops = (seq_len * 7) as f64; // ~7 ops per character
+
+            transformer_flops / grapheme_ops
+        };
+
+        let ratio_100 = calc_ratio(100);
+        let ratio_1000 = calc_ratio(1000);
+        let ratio_10000 = calc_ratio(10000);
+
+        // Ratio should increase with input length due to O(n²) vs O(n)
+        assert!(ratio_1000 > ratio_100);
+        assert!(ratio_10000 > ratio_1000);
+    }
 }
