@@ -412,7 +412,7 @@ impl GraphMemory {
 ///     pub memory: GraphMemory,
 /// }
 /// ```
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagNN {
     /// The underlying directed acyclic graph
     pub graph: DiGraph<Node, Edge>,
@@ -643,7 +643,7 @@ impl DagNN {
 // ============================================================================
 
 /// The main GRAPHEME graph structure (legacy - use DagNN for new code)
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphemeGraph {
     /// The underlying directed acyclic graph
     pub graph: DiGraph<Node, Edge>,

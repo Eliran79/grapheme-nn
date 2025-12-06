@@ -1976,7 +1976,7 @@ mod tests {
     fn test_expr_builders() {
         // Test int, float, symbol builders
         assert_eq!(Expr::int(42), Expr::Value(Value::Integer(42)));
-        assert_eq!(Expr::float(3.14), Expr::Value(Value::Float(3.14)));
+        assert_eq!(Expr::float(2.5), Expr::Value(Value::Float(2.5)));
         assert_eq!(
             Expr::symbol("x"),
             Expr::Value(Value::Symbol("x".to_string()))
@@ -2755,7 +2755,7 @@ mod tests {
         assert_eq!(symbolic.evaluate_numeric(&Expr::int(5)), Some(5.0));
 
         // Float
-        assert_eq!(symbolic.evaluate_numeric(&Expr::float(3.14)), Some(3.14));
+        assert_eq!(symbolic.evaluate_numeric(&Expr::float(2.5)), Some(2.5));
 
         // Addition
         assert_eq!(
