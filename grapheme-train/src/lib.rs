@@ -3722,8 +3722,10 @@ mod tests {
 
     #[test]
     fn test_training_loop_early_stopping() {
-        let mut config = TrainingConfig::default();
-        config.patience = 2;
+        let config = TrainingConfig {
+            patience: 2,
+            ..Default::default()
+        };
         let mut loop_state = TrainingLoop::new(config);
 
         // Record worse validation losses
@@ -3766,8 +3768,10 @@ mod tests {
 
     #[test]
     fn test_training_progress() {
-        let mut config = TrainingConfig::default();
-        config.epochs = 100;
+        let config = TrainingConfig {
+            epochs: 100,
+            ..Default::default()
+        };
         let mut loop_state = TrainingLoop::new(config);
 
         loop_state.state.epoch = 50;

@@ -2,8 +2,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use grapheme_agent::{
-    create_default_agent, Agency, Goal, GoalHierarchy, Plan,
-    ExplorationStrategy, Graph,
+    create_default_agent, Agency, Goal, GoalHierarchy, Plan, Graph,
 };
 use grapheme_meta::UncertaintyEstimate;
 

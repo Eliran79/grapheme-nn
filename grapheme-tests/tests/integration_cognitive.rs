@@ -9,6 +9,9 @@
 //! - LearnableMultimodal
 //! - LearnableGrounding
 
+// Allow unused imports - CognitiveBrainBridge is imported to bring trait methods into scope
+#![allow(unused_imports)]
+
 use grapheme_core::{Learnable, LearnableParam};
 
 // ============================================================================
@@ -81,7 +84,7 @@ fn test_learnable_memory_weighted_similarity() {
     let fp2 = GraphFingerprint::from_graph(&g2);
 
     let sim = memory.weighted_similarity(&fp1, &fp2);
-    assert!(sim >= 0.0 && sim <= 2.0); // similarity + bias can exceed 1.0
+    assert!((0.0..=2.0).contains(&sim)); // similarity + bias can exceed 1.0
 }
 
 // ============================================================================
@@ -165,7 +168,7 @@ fn test_learnable_world_model_state_change() {
     let world = LearnableWorldModel::new();
 
     let score = world.state_change_score(0.8, 0.6);
-    assert!(score >= 0.0 && score <= 1.0);
+    assert!((0.0..=1.0).contains(&score));
 }
 
 // ============================================================================
@@ -188,7 +191,7 @@ fn test_learnable_meta_cognition_calibration() {
     let meta = LearnableMetaCognition::new();
 
     let calibrated = meta.calibrate_confidence(0.7);
-    assert!(calibrated >= 0.0 && calibrated <= 1.0);
+    assert!((0.0..=1.0).contains(&calibrated));
 }
 
 #[test]
@@ -232,7 +235,7 @@ fn test_learnable_agency_drive_scoring() {
     let agency = LearnableAgency::new();
 
     let score = agency.drive_score(0.5, 0.8, 0.6);
-    assert!(score >= 0.0 && score <= 1.0);
+    assert!((0.0..=1.0).contains(&score));
 }
 
 #[test]
@@ -290,7 +293,7 @@ fn test_learnable_multimodal_fusion() {
     let mm = LearnableMultimodal::new();
 
     let fused = mm.weighted_fusion(0.8, 0.6, 0.9, 0.4);
-    assert!(fused >= 0.0 && fused <= 1.0);
+    assert!((0.0..=1.0).contains(&fused));
 }
 
 #[test]
@@ -340,7 +343,7 @@ fn test_learnable_grounding_score() {
     let grounding = LearnableGrounding::new();
 
     let score = grounding.grounding_score(0.8, 0.6);
-    assert!(score >= 0.0 && score <= 1.0);
+    assert!((0.0..=1.0).contains(&score));
 }
 
 #[test]
@@ -582,7 +585,7 @@ fn test_multi_brain_result() {
 
 #[test]
 fn test_brain_aware_reasoning_creation() {
-    use grapheme_reason::{create_brain_aware_reasoning, BrainAwareReasoning};
+    use grapheme_reason::create_brain_aware_reasoning;
     use grapheme_core::CognitiveBrainBridge;
 
     let reasoning = create_brain_aware_reasoning();
@@ -592,7 +595,7 @@ fn test_brain_aware_reasoning_creation() {
 
 #[test]
 fn test_brain_aware_memory_creation() {
-    use grapheme_memory::{create_domain_aware_memory, DomainAwareMemory};
+    use grapheme_memory::create_domain_aware_memory;
     use grapheme_core::CognitiveBrainBridge;
 
     let memory = create_domain_aware_memory();
@@ -602,7 +605,7 @@ fn test_brain_aware_memory_creation() {
 
 #[test]
 fn test_brain_aware_metacognition_creation() {
-    use grapheme_meta::{create_brain_aware_metacognition, BrainAwareMetaCognition};
+    use grapheme_meta::create_brain_aware_metacognition;
     use grapheme_core::CognitiveBrainBridge;
 
     let meta = create_brain_aware_metacognition();
@@ -612,7 +615,7 @@ fn test_brain_aware_metacognition_creation() {
 
 #[test]
 fn test_brain_aware_agency_creation() {
-    use grapheme_agent::{create_brain_aware_agency, BrainAwareAgency};
+    use grapheme_agent::create_brain_aware_agency;
     use grapheme_core::CognitiveBrainBridge;
 
     let agency = create_brain_aware_agency();
@@ -621,7 +624,7 @@ fn test_brain_aware_agency_creation() {
 
 #[test]
 fn test_brain_aware_world_model_creation() {
-    use grapheme_world::{create_brain_aware_world_model, BrainAwareWorldModel};
+    use grapheme_world::create_brain_aware_world_model;
     use grapheme_core::CognitiveBrainBridge;
 
     let world = create_brain_aware_world_model();
@@ -630,7 +633,7 @@ fn test_brain_aware_world_model_creation() {
 
 #[test]
 fn test_brain_aware_grounding_creation() {
-    use grapheme_ground::{create_brain_aware_grounding, BrainAwareGrounding};
+    use grapheme_ground::create_brain_aware_grounding;
     use grapheme_core::CognitiveBrainBridge;
 
     let grounding = create_brain_aware_grounding();
@@ -639,7 +642,7 @@ fn test_brain_aware_grounding_creation() {
 
 #[test]
 fn test_brain_aware_multimodal_creation() {
-    use grapheme_multimodal::{create_brain_aware_multimodal, BrainAwareMultimodal};
+    use grapheme_multimodal::create_brain_aware_multimodal;
     use grapheme_core::CognitiveBrainBridge;
 
     let multimodal = create_brain_aware_multimodal();
@@ -665,13 +668,13 @@ fn test_all_brain_aware_modules_implement_bridge() {
     // This test verifies that all brain-aware cognitive modules implement CognitiveBrainBridge
     use grapheme_core::CognitiveBrainBridge;
 
-    use grapheme_reason::BrainAwareReasoning;
-    use grapheme_memory::DomainAwareMemory;
-    use grapheme_meta::BrainAwareMetaCognition;
-    use grapheme_agent::BrainAwareAgency;
-    use grapheme_world::BrainAwareWorldModel;
-    use grapheme_ground::BrainAwareGrounding;
-    use grapheme_multimodal::BrainAwareMultimodal;
+    
+    
+    
+    
+    
+    
+    
 
     fn accepts_bridge<T: CognitiveBrainBridge>(_: &T) {}
 

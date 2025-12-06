@@ -205,9 +205,11 @@ use grapheme_train::{Pipeline, quick_eval};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Memory tracking allocator
+// Memory tracking allocator (for future use in memory benchmarks)
+#[allow(dead_code)]
 struct TrackingAllocator;
 
+#[allow(dead_code)]
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for TrackingAllocator {
@@ -225,10 +227,12 @@ unsafe impl GlobalAlloc for TrackingAllocator {
     }
 }
 
+#[allow(dead_code)]
 fn get_allocated_bytes() -> usize {
     ALLOCATED.load(Ordering::Relaxed)
 }
 
+#[allow(dead_code)]
 fn reset_allocation_counter() {
     ALLOCATED.store(0, Ordering::Relaxed);
 }

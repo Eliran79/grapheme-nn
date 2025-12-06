@@ -5512,7 +5512,7 @@ mod tests {
         assert!(combos_iter.is_empty());
 
         // Larger test: C(5,3) = 10
-        let items5 = (0..5).map(|i| NodeIndex::new(i)).collect::<Vec<_>>();
+        let items5 = (0..5).map(NodeIndex::new).collect::<Vec<_>>();
         let combos = DagNN::combinations_iter(&items5, 3);
         assert_eq!(combos.len(), 10);
     }
@@ -5573,7 +5573,7 @@ mod tests {
     #[test]
     fn test_clique_max_k_constant() {
         assert_eq!(MAX_CLIQUE_K, 6);
-        assert!(MAX_CLIQUE_GRAPH_SIZE > 0);
+        assert_eq!(MAX_CLIQUE_GRAPH_SIZE, 10000);
     }
 
     // ========================================================================
@@ -6435,7 +6435,7 @@ mod tests {
         let grads = dag.backward(&output_grad, &mut emb);
 
         // Should have gradients for both nodes
-        assert!(grads.node_grads.len() >= 1);
+        assert!(!grads.node_grads.is_empty());
     }
 
     #[test]

@@ -2,6 +2,9 @@
 //!
 //! Tests NaN handling, empty inputs, malformed data, and error recovery
 
+// Allow single_match for clearer error handling code in tests
+#![allow(clippy::single_match)]
+
 use grapheme_engine::{Expr, MathEngine, MathOp, Value};
 use grapheme_polish::PolishGraph;
 

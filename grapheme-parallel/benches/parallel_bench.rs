@@ -1,8 +1,8 @@
 //! Benchmarks for grapheme-parallel
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use grapheme_parallel::{
-    make_parallel, make_sharded, BatchProcessor, GraphBatchProcessor, ParallelDagNN,
+    make_parallel, BatchProcessor, GraphBatchProcessor,
     ParallelGraph, ParallelGraphExt, ShardedGraph, Graph,
 };
 
