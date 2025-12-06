@@ -1,7 +1,7 @@
 ---
 id: backend-068
 title: Implement cross-brain knowledge transfer
-status: todo
+status: done
 priority: medium
 tags:
 - backend

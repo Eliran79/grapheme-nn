@@ -1,7 +1,7 @@
 ---
 id: backend-060
 title: Add tree-sitter integration for language parsing
-status: todo
+status: done
 priority: medium
 tags:
 - backend
