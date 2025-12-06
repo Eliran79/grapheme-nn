@@ -49,3 +49,10 @@ rand = "0.8"
 
 # Testing
 criterion = "0.5"
+
+# Parsing (tree-sitter for multi-language support)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-c = "0.23"

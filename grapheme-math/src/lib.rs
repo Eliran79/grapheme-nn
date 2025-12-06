@@ -764,10 +764,26 @@ impl DomainBrain for MathBrain {
                 message: "Empty math expression graph".to_string(),
                 node: None,
             });
+            return Ok(issues);
         }
 
-        // Check for valid mathematical structure
-        // (placeholder - actual validation would check operator arity, type consistency, etc.)
+        // Get text representation for parsing-based validation
+        let text = graph.to_text();
+
+        // Validate balanced parentheses
+        issues.extend(self.validate_parentheses(&text));
+
+        // Validate operator usage
+        issues.extend(self.validate_operators(&text));
+
+        // Check for division by zero
+        issues.extend(self.validate_division(&text));
+
+        // Validate function arity
+        issues.extend(self.validate_functions(&text));
+
+        // Validate numeric literals
+        issues.extend(self.validate_literals(&text));
 
         Ok(issues)
     }
@@ -1019,6 +1035,260 @@ impl MathBrain {
         }
 
         Err(MathGraphError::InvalidStructure(format!("Cannot parse: {}", text)))
+    }
+}
+
+// ============================================================================
+// Validation Helper Methods
+// ============================================================================
+
+impl MathBrain {
+    /// Validate balanced parentheses
+    fn validate_parentheses(&self, text: &str) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        let mut depth = 0i32;
+        let mut position = 0usize;
+
+        for (i, ch) in text.chars().enumerate() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        position = i;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if depth > 0 {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: format!("Unbalanced parentheses: {} unclosed '('", depth),
+                node: None,
+            });
+        } else if depth < 0 {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: format!("Unbalanced parentheses: extra ')' at position {}", position),
+                node: None,
+            });
+        }
+
+        issues
+    }
+
+    /// Validate operator usage (no consecutive operators, proper placement)
+    fn validate_operators(&self, text: &str) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        let binary_operators = ['+', '*', '/', '^', '%']; // Exclude unary minus
+
+        let chars: Vec<char> = text.chars().collect();
+
+        for (i, &ch) in chars.iter().enumerate() {
+            if binary_operators.contains(&ch) {
+                // Check for consecutive binary operators (excluding unary minus after operator)
+                if i > 0 {
+                    let prev = chars[i - 1];
+                    if binary_operators.contains(&prev) {
+                        issues.push(ValidationIssue {
+                            severity: ValidationSeverity::Error,
+                            message: format!("Invalid consecutive operators '{}{}' at position {}", prev, ch, i),
+                            node: None,
+                        });
+                    }
+                }
+
+                // Check for operator at start (only * / ^ % are errors)
+                if i == 0 && ch != '+' && ch != '-' {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Expression cannot start with '{}'", ch),
+                        node: None,
+                    });
+                }
+
+                // Check for operator at end
+                if i == chars.len() - 1 {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Expression cannot end with '{}'", ch),
+                        node: None,
+                    });
+                }
+
+                // Check for operator after open paren (except unary minus)
+                if i > 0 && chars[i - 1] == '(' && ch != '-' && ch != '+' {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Invalid operator '{}' after '('", ch),
+                        node: None,
+                    });
+                }
+
+                // Check for operator before close paren
+                if i + 1 < chars.len() && chars[i + 1] == ')' {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Invalid operator '{}' before ')'", ch),
+                        node: None,
+                    });
+                }
+            }
+        }
+
+        issues
+    }
+
+    /// Check for potential division by zero
+    fn validate_division(&self, text: &str) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+
+        // Check for literal division by zero patterns
+        let patterns = [
+            "/0", "/ 0", "/0.0", "/ 0.0",
+            "/ (0)", "/(0)", "/ ( 0 )", "/( 0 )",
+        ];
+
+        for pattern in patterns {
+            if text.contains(pattern) {
+                // Check if followed by more digits (would not be zero)
+                let idx = text.find(pattern).unwrap();
+                let after_pattern = idx + pattern.len();
+                if after_pattern >= text.len() || !text.chars().nth(after_pattern).map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: "Division by zero detected".to_string(),
+                        node: None,
+                    });
+                    break;
+                }
+            }
+        }
+
+        issues
+    }
+
+    /// Validate function arity
+    fn validate_functions(&self, text: &str) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+
+        // Single-argument functions
+        let single_arg_fns = ["sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
+                              "sqrt", "cbrt", "exp", "log", "ln", "abs", "floor", "ceil", "round"];
+
+        // Two-argument functions
+        let two_arg_fns = ["pow", "log_base", "max", "min", "atan2"];
+
+        for func in single_arg_fns {
+            // Find function calls like "sin(...)"
+            let pattern = format!("{}(", func);
+            if let Some(start) = text.find(&pattern) {
+                let after = start + pattern.len();
+                let rest = &text[after..];
+                // Count commas until matching paren
+                let mut depth = 1;
+                let mut commas = 0;
+                for ch in rest.chars() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 { break; }
+                        }
+                        ',' if depth == 1 => commas += 1,
+                        _ => {}
+                    }
+                }
+                if commas > 0 {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Function '{}' expects 1 argument, got {}", func, commas + 1),
+                        node: None,
+                    });
+                }
+            }
+        }
+
+        for func in two_arg_fns {
+            let pattern = format!("{}(", func);
+            if let Some(start) = text.find(&pattern) {
+                let after = start + pattern.len();
+                let rest = &text[after..];
+                let mut depth = 1;
+                let mut commas = 0;
+                for ch in rest.chars() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 { break; }
+                        }
+                        ',' if depth == 1 => commas += 1,
+                        _ => {}
+                    }
+                }
+                if commas != 1 {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Function '{}' expects 2 arguments, got {}", func, commas + 1),
+                        node: None,
+                    });
+                }
+            }
+        }
+
+        issues
+    }
+
+    /// Validate numeric literals are well-formed
+    fn validate_literals(&self, text: &str) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+
+        // Check for multiple decimal points in a number
+        let mut in_number = false;
+        let mut decimal_count = 0;
+        let mut number_start = 0;
+
+        for (i, ch) in text.chars().enumerate() {
+            if ch.is_ascii_digit() {
+                if !in_number {
+                    in_number = true;
+                    number_start = i;
+                    decimal_count = 0;
+                }
+            } else if ch == '.' && in_number {
+                decimal_count += 1;
+                if decimal_count > 1 {
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Error,
+                        message: format!("Invalid numeric literal with multiple decimal points starting at position {}", number_start),
+                        node: None,
+                    });
+                }
+            } else if in_number {
+                in_number = false;
+                decimal_count = 0;
+            }
+        }
+
+        // Check for leading zeros followed by digits (not valid in many contexts)
+        for (i, _) in text.match_indices("00") {
+            if i > 0 {
+                let prev = text.chars().nth(i - 1);
+                if prev.is_some_and(|c| !c.is_ascii_digit() && c != '.') {
+                    // This is a standalone 00 - warn about it
+                    issues.push(ValidationIssue {
+                        severity: ValidationSeverity::Info,
+                        message: format!("Leading zeros in number at position {}", i),
+                        node: None,
+                    });
+                }
+            }
+        }
+
+        issues
     }
 }
 
@@ -1290,5 +1560,127 @@ mod tests {
         let graph = DagNN::from_text("42").unwrap();
         let result = brain.execute(&graph);
         assert!(result.is_ok());
+    }
+
+    // Math validation tests
+    #[test]
+    fn test_validate_balanced_parentheses() {
+        let brain = MathBrain::new();
+
+        // Valid parentheses
+        let graph = DagNN::from_text("(2 + 3) * 4").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let paren_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("parentheses")).collect();
+        assert!(paren_errors.is_empty());
+
+        // Unbalanced - unclosed paren
+        let graph = DagNN::from_text("(2 + 3").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("Unbalanced")));
+
+        // Unbalanced - extra close paren
+        let graph = DagNN::from_text("2 + 3)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("Unbalanced")));
+    }
+
+    #[test]
+    fn test_validate_operators() {
+        let brain = MathBrain::new();
+
+        // Valid operators
+        let graph = DagNN::from_text("2 + 3 * 4").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let op_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("operator")).collect();
+        assert!(op_errors.is_empty());
+
+        // Expression ending with operator
+        let graph = DagNN::from_text("2 +").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("end with")));
+
+        // Expression starting with * (invalid)
+        let graph = DagNN::from_text("* 2").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("start with")));
+    }
+
+    #[test]
+    fn test_validate_division_by_zero() {
+        let brain = MathBrain::new();
+
+        // Valid division
+        let graph = DagNN::from_text("10 / 2").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let div_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("Division by zero")).collect();
+        assert!(div_errors.is_empty());
+
+        // Division by zero
+        let graph = DagNN::from_text("10 / 0").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("Division by zero")));
+    }
+
+    #[test]
+    fn test_validate_function_arity() {
+        let brain = MathBrain::new();
+
+        // Valid single-arg function
+        let graph = DagNN::from_text("sin(x)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let arity_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("expects")).collect();
+        assert!(arity_errors.is_empty());
+
+        // Invalid: sin with 2 args
+        let graph = DagNN::from_text("sin(x, y)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("sin") && i.message.contains("expects 1")));
+
+        // Valid two-arg function
+        let graph = DagNN::from_text("pow(x, 2)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let arity_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("pow")).collect();
+        assert!(arity_errors.is_empty());
+
+        // Invalid: pow with 1 arg
+        let graph = DagNN::from_text("pow(x)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("pow") && i.message.contains("expects 2")));
+    }
+
+    #[test]
+    fn test_validate_literals() {
+        let brain = MathBrain::new();
+
+        // Valid literals
+        let graph = DagNN::from_text("3.14").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        let literal_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("decimal")).collect();
+        assert!(literal_errors.is_empty());
+
+        // Invalid: multiple decimal points
+        let graph = DagNN::from_text("3.14.15").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("multiple decimal")));
+    }
+
+    #[test]
+    fn test_validate_empty_graph() {
+        let brain = MathBrain::new();
+        let graph = DagNN::new();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("Empty")));
+    }
+
+    #[test]
+    fn test_validate_valid_complex_expression() {
+        let brain = MathBrain::new();
+
+        // Complex but valid expression
+        let graph = DagNN::from_text("(2 + 3) * sin(x) / (y - 1)").unwrap();
+        let issues = DomainBrain::validate(&brain, &graph).unwrap();
+        // Should have no errors (only possible infos about leading zeros, which shouldn't be here)
+        let errors: Vec<_> = issues.iter().filter(|i| matches!(i.severity, ValidationSeverity::Error)).collect();
+        assert!(errors.is_empty(), "Unexpected errors: {:?}", errors);
     }
 }
