@@ -289,7 +289,7 @@ impl Clique {
 // ============================================================================
 
 /// Topological ordering of nodes for efficient forward propagation
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TopologicalOrder {
     /// Nodes in topological order (from inputs to outputs)
     pub order: Vec<NodeId>,
@@ -334,7 +334,7 @@ impl TopologicalOrder {
 // ============================================================================
 
 /// A stored graph transformation pattern
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformationPattern {
     /// Input graph pattern
     pub input_pattern: Vec<NodeType>,
@@ -347,7 +347,7 @@ pub struct TransformationPattern {
 }
 
 /// Memory for storing graph transformation patterns
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GraphMemory {
     /// Stored transformation patterns
     pub patterns: Vec<TransformationPattern>,
@@ -411,7 +411,7 @@ impl GraphMemory {
 ///     pub memory: GraphMemory,
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DagNN {
     /// The underlying directed acyclic graph
     pub graph: DiGraph<Node, Edge>,
@@ -594,7 +594,7 @@ impl DagNN {
 // ============================================================================
 
 /// The main GRAPHEME graph structure (legacy - use DagNN for new code)
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GraphemeGraph {
     /// The underlying directed acyclic graph
     pub graph: DiGraph<Node, Edge>,
@@ -1728,6 +1728,135 @@ pub struct CliqueStats {
 }
 
 // ============================================================================
+// Persistence (backend-022)
+// ============================================================================
+
+/// Errors that can occur during persistence operations
+#[derive(Error, Debug)]
+pub enum PersistenceError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+    #[error("Deserialization error: {0}")]
+    Deserialization(String),
+    #[error("Version mismatch: expected {expected}, got {actual}")]
+    VersionMismatch { expected: u32, actual: u32 },
+    #[error("Checksum mismatch")]
+    ChecksumMismatch,
+    #[error("Corrupted data")]
+    CorruptedData,
+}
+
+/// Result type for persistence operations
+pub type PersistenceResult<T> = Result<T, PersistenceError>;
+
+/// Current persistence format version
+pub const PERSISTENCE_VERSION: u32 = 1;
+
+/// Header for serialized graph data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphHeader {
+    /// Format version for migrations
+    pub version: u32,
+    /// Type of graph ("DagNN", "GraphemeGraph", etc.)
+    pub graph_type: String,
+    /// Number of nodes
+    pub node_count: usize,
+    /// Number of edges
+    pub edge_count: usize,
+    /// Simple checksum (sum of node_count + edge_count)
+    pub checksum: u64,
+}
+
+impl GraphHeader {
+    /// Create a header for a DagNN
+    pub fn for_dagnn(dag: &DagNN) -> Self {
+        let node_count = dag.node_count();
+        let edge_count = dag.edge_count();
+        Self {
+            version: PERSISTENCE_VERSION,
+            graph_type: "DagNN".to_string(),
+            node_count,
+            edge_count,
+            checksum: (node_count + edge_count) as u64,
+        }
+    }
+
+    /// Create a header for a GraphemeGraph
+    pub fn for_grapheme_graph(graph: &GraphemeGraph) -> Self {
+        let node_count = graph.node_count();
+        let edge_count = graph.edge_count();
+        Self {
+            version: PERSISTENCE_VERSION,
+            graph_type: "GraphemeGraph".to_string(),
+            node_count,
+            edge_count,
+            checksum: (node_count + edge_count) as u64,
+        }
+    }
+
+    /// Verify checksum
+    pub fn verify(&self, node_count: usize, edge_count: usize) -> bool {
+        self.checksum == (node_count + edge_count) as u64
+    }
+}
+
+impl DagNN {
+    /// Save DagNN to JSON format
+    pub fn save_json(&self) -> PersistenceResult<String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))
+    }
+
+    /// Load DagNN from JSON format
+    pub fn load_json(json: &str) -> PersistenceResult<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+    }
+
+    /// Save DagNN to a file (JSON format)
+    pub fn save_to_file(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        let json = self.save_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load DagNN from a file (JSON format)
+    pub fn load_from_file(path: &std::path::Path) -> PersistenceResult<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::load_json(&json)
+    }
+}
+
+impl GraphemeGraph {
+    /// Save GraphemeGraph to JSON format
+    pub fn save_json(&self) -> PersistenceResult<String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))
+    }
+
+    /// Load GraphemeGraph from JSON format
+    pub fn load_json(json: &str) -> PersistenceResult<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+    }
+
+    /// Save GraphemeGraph to a file (JSON format)
+    pub fn save_to_file(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        let json = self.save_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load GraphemeGraph from a file (JSON format)
+    pub fn load_from_file(path: &std::path::Path) -> PersistenceResult<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::load_json(&json)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2201,5 +2330,106 @@ mod tests {
     fn test_clique_max_k_constant() {
         assert_eq!(MAX_CLIQUE_K, 6);
         assert!(MAX_CLIQUE_GRAPH_SIZE > 0);
+    }
+
+    // ========================================================================
+    // Persistence Tests (backend-022)
+    // ========================================================================
+
+    #[test]
+    fn test_grapheme_graph_json_roundtrip() {
+        let original = GraphemeGraph::from_text("Hello, World!");
+        let json = original.save_json().unwrap();
+        let loaded = GraphemeGraph::load_json(&json).unwrap();
+
+        assert_eq!(original.node_count(), loaded.node_count());
+        assert_eq!(original.edge_count(), loaded.edge_count());
+        assert_eq!(original.to_text(), loaded.to_text());
+    }
+
+    #[test]
+    fn test_dagnn_json_roundtrip() {
+        let original = DagNN::from_text("Test").unwrap();
+        let json = original.save_json().unwrap();
+        let loaded = DagNN::load_json(&json).unwrap();
+
+        assert_eq!(original.node_count(), loaded.node_count());
+        assert_eq!(original.edge_count(), loaded.edge_count());
+        assert_eq!(original.to_text(), loaded.to_text());
+    }
+
+    #[test]
+    fn test_graph_header_verification() {
+        let graph = GraphemeGraph::from_text("test");
+        let header = GraphHeader::for_grapheme_graph(&graph);
+
+        assert!(header.verify(graph.node_count(), graph.edge_count()));
+        assert!(!header.verify(0, 0));
+    }
+
+    #[test]
+    fn test_dagnn_file_persistence() {
+        let original = DagNN::from_text("Hello").unwrap();
+
+        // Use a temp file
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_dagnn.json");
+
+        // Save and load
+        original.save_to_file(&temp_file).unwrap();
+        let loaded = DagNN::load_from_file(&temp_file).unwrap();
+
+        assert_eq!(original.node_count(), loaded.node_count());
+        assert_eq!(original.to_text(), loaded.to_text());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_grapheme_graph_file_persistence() {
+        let original = GraphemeGraph::from_text("World");
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_grapheme.json");
+
+        original.save_to_file(&temp_file).unwrap();
+        let loaded = GraphemeGraph::load_from_file(&temp_file).unwrap();
+
+        assert_eq!(original.node_count(), loaded.node_count());
+        assert_eq!(original.to_text(), loaded.to_text());
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_persistence_with_cliques() {
+        let mut dag = DagNN::from_text("test").unwrap();
+        let nodes = dag.input_nodes().to_vec();
+        dag.store_cliques(vec![nodes]);
+
+        let json = dag.save_json().unwrap();
+        let loaded = DagNN::load_json(&json).unwrap();
+
+        assert_eq!(dag.cliques.len(), loaded.cliques.len());
+    }
+
+    #[test]
+    fn test_persistence_empty_graph() {
+        let original = GraphemeGraph::new();
+        let json = original.save_json().unwrap();
+        let loaded = GraphemeGraph::load_json(&json).unwrap();
+
+        assert_eq!(loaded.node_count(), 0);
+        assert_eq!(loaded.edge_count(), 0);
+    }
+
+    #[test]
+    fn test_persistence_unicode() {
+        let original = GraphemeGraph::from_text("你好世界"); // Chinese "Hello World"
+        let json = original.save_json().unwrap();
+        let loaded = GraphemeGraph::load_json(&json).unwrap();
+
+        assert_eq!(original.to_text(), loaded.to_text());
     }
 }

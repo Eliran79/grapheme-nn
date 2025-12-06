@@ -334,6 +334,7 @@ dependencies = [
  "grapheme-engine",
  "grapheme-math",
  "grapheme-polish",
+ "petgraph",
  "rayon",
  "serde",
  "serde_json",

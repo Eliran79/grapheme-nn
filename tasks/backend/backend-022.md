@@ -1,7 +1,7 @@
 ---
 id: backend-022
 title: Implement save/load persistence for all graph types
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -243,7 +243,25 @@ chrono = { version = "0.4", features = ["serde"] }
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
+### What Changed
+- Added Serialize/Deserialize derives to: TopologicalOrder, TransformationPattern, GraphMemory, DagNN, GraphemeGraph
+- Added PersistenceError enum with IO, Serialization, Deserialization, Version, Checksum errors
+- Added GraphHeader struct for versioned serialization
+- Added save_json()/load_json() methods to DagNN and GraphemeGraph
+- Added save_to_file()/load_from_file() methods to DagNN and GraphemeGraph
+- Added 8 persistence tests (43 total tests in grapheme-core)
+
+### Causality Impact
+- All graph types now persistable
+- Enables model checkpointing during training
+- Enables knowledge graph persistence
+- Unblocks backend-023 (online learning)
+
 ### Dependencies & Integration
-- Depends on: api-002 (core types)
-- Required by: backend-023 (online learning needs persistence)
+- Depends on: api-002 (core types) - now serde-compatible
+- Required by: backend-023 (online learning needs persistence) - now unblocked
 - Required by: api-003 (memory needs persistence)
+
+### Verification & Testing
+- Run `cargo test -p grapheme-core` for persistence tests
+- All 43 tests passing with 0 warnings

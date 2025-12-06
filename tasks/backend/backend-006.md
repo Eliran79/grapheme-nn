@@ -1,7 +1,7 @@
 ---
 id: backend-006
 title: Implement Weisfeiler-Leman kernel for GED loss
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -97,19 +97,26 @@ fn refine_colors(g: &MathGraph, colors: &[u64]) -> Vec<u64> {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
+- Added `WeisfeilerLehmanKernel` struct in `grapheme-train/src/lib.rs`
+- Implements O(n·m·k) graph similarity with color refinement
+- Added `compute_wl()` and `compute_wl_math()` to `GraphEditDistance`
+- Added `compute_combined()` for hybrid count+WL loss
+- Added petgraph dependency to grapheme-train/Cargo.toml
+- 12 new tests for WL kernel (27 total tests in grapheme-train)
 
 ### Causality Impact
 - WL kernel provides training loss signal
 - Affects gradient flow in graph-to-graph learning
+- Similarity ranges 0.0 (different) to 1.0 (identical)
 
 ### Dependencies & Integration
-- No external crate dependencies (pure Rust implementation)
+- Pure Rust implementation using std::hash
 - Integrates with existing GraphEditDistance struct
+- Requires petgraph for graph traversal
 
 ### Verification & Testing
-- Run `cargo test` for unit tests
-- Run `cargo bench --bench train_bench` for performance
+- Run `cargo test -p grapheme-train` for unit tests
+- All 27 tests passing with 0 warnings
 
 ### Context for Next Task
 - backend-007 (BP2) can use WL as reference for correctness

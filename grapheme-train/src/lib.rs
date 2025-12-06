@@ -15,12 +15,15 @@
 //! - Brain learns to approximate transformations
 //! - All outputs validated against engine
 
-use grapheme_core::GraphemeGraph;
+use grapheme_core::{GraphemeGraph, NodeType};
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, SymbolicEngine, Value};
-use grapheme_math::MathGraph;
+use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
+use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use thiserror::Error;
@@ -870,6 +873,362 @@ impl GraphEditDistance {
 }
 
 // ============================================================================
+// Weisfeiler-Leman Kernel (backend-006)
+// ============================================================================
+
+/// Default number of WL iterations
+pub const DEFAULT_WL_ITERATIONS: usize = 3;
+
+/// Weisfeiler-Leman graph kernel for computing graph similarity
+///
+/// The WL kernel provides a polynomial-time graph similarity measure that forms
+/// the theoretical foundation for Graph Neural Networks. It works by iteratively
+/// refining node "colors" based on neighborhood structure.
+///
+/// Complexity: O(n·m·k) where n=nodes, m=edges, k=iterations
+#[derive(Debug, Clone, Default)]
+pub struct WeisfeilerLehmanKernel {
+    /// Number of refinement iterations
+    pub iterations: usize,
+    /// Whether to normalize the similarity score to [0, 1]
+    pub normalize: bool,
+}
+
+impl WeisfeilerLehmanKernel {
+    /// Create a new WL kernel with default settings
+    pub fn new() -> Self {
+        Self {
+            iterations: DEFAULT_WL_ITERATIONS,
+            normalize: true,
+        }
+    }
+
+    /// Create a WL kernel with custom iteration count
+    pub fn with_iterations(iterations: usize) -> Self {
+        Self {
+            iterations,
+            normalize: true,
+        }
+    }
+
+    /// Compute WL similarity between two GRAPHEME graphs
+    ///
+    /// Returns a similarity score where:
+    /// - 1.0 = identical graph structure
+    /// - 0.0 = completely different structure
+    pub fn compute(&self, g1: &GraphemeGraph, g2: &GraphemeGraph) -> f32 {
+        // Initialize colors from node types
+        let mut colors1 = self.init_colors_grapheme(g1);
+        let mut colors2 = self.init_colors_grapheme(g2);
+
+        // Collect histograms at each iteration for multi-scale comparison
+        let mut total_similarity = 0.0f32;
+
+        for iteration in 0..=self.iterations {
+            // Compare color histograms at this iteration
+            let hist1 = self.compute_histogram(&colors1);
+            let hist2 = self.compute_histogram(&colors2);
+            let iter_similarity = self.histogram_similarity(&hist1, &hist2);
+
+            // Weight earlier iterations less (structure at finer scale)
+            let weight = 1.0 / (1 + iteration) as f32;
+            total_similarity += iter_similarity * weight;
+
+            // Refine colors for next iteration (except on last)
+            if iteration < self.iterations {
+                colors1 = self.refine_colors_grapheme(g1, &colors1);
+                colors2 = self.refine_colors_grapheme(g2, &colors2);
+            }
+        }
+
+        // Normalize by sum of weights
+        let weight_sum: f32 = (0..=self.iterations).map(|i| 1.0 / (1 + i) as f32).sum();
+        let similarity = total_similarity / weight_sum;
+
+        if self.normalize {
+            similarity.clamp(0.0, 1.0)
+        } else {
+            similarity
+        }
+    }
+
+    /// Compute WL similarity between two MathGraphs
+    pub fn compute_math(&self, g1: &MathGraph, g2: &MathGraph) -> f32 {
+        let mut colors1 = self.init_colors_math(g1);
+        let mut colors2 = self.init_colors_math(g2);
+
+        let mut total_similarity = 0.0f32;
+
+        for iteration in 0..=self.iterations {
+            let hist1 = self.compute_histogram(&colors1);
+            let hist2 = self.compute_histogram(&colors2);
+            let iter_similarity = self.histogram_similarity(&hist1, &hist2);
+
+            let weight = 1.0 / (1 + iteration) as f32;
+            total_similarity += iter_similarity * weight;
+
+            if iteration < self.iterations {
+                colors1 = self.refine_colors_math(g1, &colors1);
+                colors2 = self.refine_colors_math(g2, &colors2);
+            }
+        }
+
+        let weight_sum: f32 = (0..=self.iterations).map(|i| 1.0 / (1 + i) as f32).sum();
+        let similarity = total_similarity / weight_sum;
+
+        if self.normalize {
+            similarity.clamp(0.0, 1.0)
+        } else {
+            similarity
+        }
+    }
+
+    /// Initialize colors for a GRAPHEME graph based on node types
+    fn init_colors_grapheme(&self, graph: &GraphemeGraph) -> Vec<u64> {
+        graph.graph.node_indices()
+            .map(|idx| {
+                let node = &graph.graph[idx];
+                self.hash_node_type(&node.node_type)
+            })
+            .collect()
+    }
+
+    /// Initialize colors for a MathGraph based on node types
+    fn init_colors_math(&self, graph: &MathGraph) -> Vec<u64> {
+        graph.graph.node_indices()
+            .map(|idx| {
+                let node = &graph.graph[idx];
+                self.hash_math_node(node)
+            })
+            .collect()
+    }
+
+    /// Hash a GRAPHEME NodeType to a color
+    fn hash_node_type(&self, node_type: &NodeType) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match node_type {
+            NodeType::Input(ch) => {
+                "Input".hash(&mut hasher);
+                ch.hash(&mut hasher);
+            }
+            NodeType::Hidden => {
+                "Hidden".hash(&mut hasher);
+            }
+            NodeType::Output => {
+                "Output".hash(&mut hasher);
+            }
+            NodeType::Clique(members) => {
+                "Clique".hash(&mut hasher);
+                members.len().hash(&mut hasher);
+            }
+            NodeType::Pattern(pattern) => {
+                "Pattern".hash(&mut hasher);
+                pattern.hash(&mut hasher);
+            }
+            NodeType::Compressed(compression_type) => {
+                "Compressed".hash(&mut hasher);
+                format!("{:?}", compression_type).hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Hash a MathNode to a color
+    fn hash_math_node(&self, node: &MathNode) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match node {
+            MathNode::Integer(i) => {
+                "Integer".hash(&mut hasher);
+                i.hash(&mut hasher);
+            }
+            MathNode::Float(f) => {
+                "Float".hash(&mut hasher);
+                f.to_bits().hash(&mut hasher);
+            }
+            MathNode::Symbol(s) => {
+                "Symbol".hash(&mut hasher);
+                s.hash(&mut hasher);
+            }
+            MathNode::Operator(op) => {
+                "Operator".hash(&mut hasher);
+                format!("{:?}", op).hash(&mut hasher);
+            }
+            MathNode::Function(func) => {
+                "Function".hash(&mut hasher);
+                format!("{:?}", func).hash(&mut hasher);
+            }
+            MathNode::Result => {
+                "Result".hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Refine colors for GRAPHEME graph (WL color refinement step)
+    fn refine_colors_grapheme(&self, graph: &GraphemeGraph, colors: &[u64]) -> Vec<u64> {
+        let node_indices: Vec<_> = graph.graph.node_indices().collect();
+
+        node_indices.iter().map(|&idx| {
+            let own_color = colors[idx.index()];
+
+            // Collect neighbor colors (both incoming and outgoing)
+            let mut neighbor_colors: Vec<u64> = Vec::new();
+
+            for edge in graph.graph.edges(idx) {
+                if let Some(&color) = colors.get(edge.target().index()) {
+                    neighbor_colors.push(color);
+                }
+            }
+            for edge in graph.graph.edges_directed(idx, petgraph::Direction::Incoming) {
+                if let Some(&color) = colors.get(edge.source().index()) {
+                    neighbor_colors.push(color);
+                }
+            }
+
+            // Sort neighbor colors for canonical ordering
+            neighbor_colors.sort();
+
+            // Hash own color with sorted neighbor colors
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            own_color.hash(&mut hasher);
+            neighbor_colors.hash(&mut hasher);
+            hasher.finish()
+        }).collect()
+    }
+
+    /// Refine colors for MathGraph (WL color refinement step)
+    fn refine_colors_math(&self, graph: &MathGraph, colors: &[u64]) -> Vec<u64> {
+        let node_indices: Vec<_> = graph.graph.node_indices().collect();
+
+        node_indices.iter().map(|&idx| {
+            let own_color = colors[idx.index()];
+
+            let mut neighbor_colors: Vec<u64> = Vec::new();
+
+            for edge in graph.graph.edges(idx) {
+                if let Some(&color) = colors.get(edge.target().index()) {
+                    neighbor_colors.push(color);
+                }
+            }
+            for edge in graph.graph.edges_directed(idx, petgraph::Direction::Incoming) {
+                if let Some(&color) = colors.get(edge.source().index()) {
+                    neighbor_colors.push(color);
+                }
+            }
+
+            neighbor_colors.sort();
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            own_color.hash(&mut hasher);
+            neighbor_colors.hash(&mut hasher);
+            hasher.finish()
+        }).collect()
+    }
+
+    /// Compute a histogram of colors
+    fn compute_histogram(&self, colors: &[u64]) -> HashMap<u64, usize> {
+        let mut histogram = HashMap::new();
+        for &color in colors {
+            *histogram.entry(color).or_insert(0) += 1;
+        }
+        histogram
+    }
+
+    /// Compute similarity between two color histograms
+    ///
+    /// Uses normalized histogram intersection (min-based Jaccard-like similarity)
+    fn histogram_similarity(&self, hist1: &HashMap<u64, usize>, hist2: &HashMap<u64, usize>) -> f32 {
+        if hist1.is_empty() && hist2.is_empty() {
+            return 1.0;
+        }
+        if hist1.is_empty() || hist2.is_empty() {
+            return 0.0;
+        }
+
+        // Compute intersection (minimum of counts for matching colors)
+        let mut intersection = 0usize;
+        for (color, &count1) in hist1 {
+            if let Some(&count2) = hist2.get(color) {
+                intersection += count1.min(count2);
+            }
+        }
+
+        // Compute union (sum of max counts)
+        let mut all_colors: std::collections::HashSet<u64> = hist1.keys().copied().collect();
+        all_colors.extend(hist2.keys().copied());
+
+        let mut union = 0usize;
+        for color in all_colors {
+            let c1 = hist1.get(&color).copied().unwrap_or(0);
+            let c2 = hist2.get(&color).copied().unwrap_or(0);
+            union += c1.max(c2);
+        }
+
+        if union == 0 {
+            1.0
+        } else {
+            intersection as f32 / union as f32
+        }
+    }
+}
+
+impl GraphEditDistance {
+    /// Compute WL-based similarity between two GRAPHEME graphs
+    ///
+    /// This provides a more accurate graph comparison than simple node/edge counting
+    pub fn compute_wl(predicted: &GraphemeGraph, target: &GraphemeGraph) -> f32 {
+        let kernel = WeisfeilerLehmanKernel::new();
+        kernel.compute(predicted, target)
+    }
+
+    /// Compute WL-based similarity between two MathGraphs
+    pub fn compute_wl_math(predicted: &MathGraph, target: &MathGraph) -> f32 {
+        let kernel = WeisfeilerLehmanKernel::new();
+        kernel.compute_math(predicted, target)
+    }
+
+    /// Compute combined loss using both count-based and WL-based metrics
+    ///
+    /// Returns a weighted combination of structural (count-based) and
+    /// topological (WL-based) differences.
+    pub fn compute_combined(predicted: &GraphemeGraph, target: &GraphemeGraph, wl_weight: f32) -> Self {
+        let count_ged = Self::compute(predicted, target);
+        let wl_similarity = Self::compute_wl(predicted, target);
+
+        // Convert WL similarity to distance (1 - similarity)
+        let wl_distance = 1.0 - wl_similarity;
+
+        Self {
+            node_insertion_cost: count_ged.node_insertion_cost,
+            node_deletion_cost: count_ged.node_deletion_cost,
+            edge_insertion_cost: count_ged.edge_insertion_cost,
+            edge_deletion_cost: count_ged.edge_deletion_cost,
+            // Use WL distance for mismatch costs
+            node_mismatch_cost: wl_distance * wl_weight,
+            edge_mismatch_cost: wl_distance * wl_weight * 0.5,
+            clique_mismatch: count_ged.clique_mismatch,
+        }
+    }
+
+    /// Compute combined loss for MathGraphs
+    pub fn compute_combined_math(predicted: &MathGraph, target: &MathGraph, wl_weight: f32) -> Self {
+        let count_ged = Self::compute_math(predicted, target);
+        let wl_similarity = Self::compute_wl_math(predicted, target);
+        let wl_distance = 1.0 - wl_similarity;
+
+        Self {
+            node_insertion_cost: count_ged.node_insertion_cost,
+            node_deletion_cost: count_ged.node_deletion_cost,
+            edge_insertion_cost: count_ged.edge_insertion_cost,
+            edge_deletion_cost: count_ged.edge_deletion_cost,
+            node_mismatch_cost: wl_distance * wl_weight,
+            edge_mismatch_cost: wl_distance * wl_weight * 0.5,
+            clique_mismatch: count_ged.clique_mismatch,
+        }
+    }
+}
+
+// ============================================================================
 // Training Configuration and Trainer
 // ============================================================================
 
@@ -1295,5 +1654,155 @@ mod tests {
 
         // (2+1)*1.0 + (0.5+0.5)*1.0 = 4.0
         assert!((loss - 4.0).abs() < 1e-10);
+    }
+
+    // ========================================================================
+    // Weisfeiler-Leman Kernel Tests (backend-006)
+    // ========================================================================
+
+    #[test]
+    fn test_wl_identical_graphs() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hello");
+
+        let similarity = GraphEditDistance::compute_wl(&g1, &g2);
+        assert!((similarity - 1.0).abs() < 1e-6, "Identical graphs should have similarity 1.0");
+    }
+
+    #[test]
+    fn test_wl_completely_different_graphs() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::from_text("xyz");
+
+        let similarity = GraphEditDistance::compute_wl(&g1, &g2);
+        // Different characters means different initial colors
+        assert!(similarity < 0.5, "Different graphs should have low similarity");
+    }
+
+    #[test]
+    fn test_wl_partial_overlap() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hello!");
+
+        let similarity = GraphEditDistance::compute_wl(&g1, &g2);
+        // Should be high but not 1.0 (extra character)
+        assert!(similarity > 0.6, "Similar graphs should have high similarity");
+        assert!(similarity < 1.0, "Different graphs should not be identical");
+    }
+
+    #[test]
+    fn test_wl_empty_graphs() {
+        let g1 = GraphemeGraph::new();
+        let g2 = GraphemeGraph::new();
+
+        let kernel = WeisfeilerLehmanKernel::new();
+        let similarity = kernel.compute(&g1, &g2);
+        assert!((similarity - 1.0).abs() < 1e-6, "Empty graphs should be identical");
+    }
+
+    #[test]
+    fn test_wl_one_empty_graph() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::new();
+
+        let similarity = GraphEditDistance::compute_wl(&g1, &g2);
+        assert!(similarity < 0.1, "One empty graph should have near-zero similarity");
+    }
+
+    #[test]
+    fn test_wl_kernel_iterations() {
+        let g1 = GraphemeGraph::from_text("test");
+        let g2 = GraphemeGraph::from_text("test");
+
+        // Test with different iteration counts
+        let kernel_1 = WeisfeilerLehmanKernel::with_iterations(1);
+        let kernel_5 = WeisfeilerLehmanKernel::with_iterations(5);
+
+        let sim_1 = kernel_1.compute(&g1, &g2);
+        let sim_5 = kernel_5.compute(&g1, &g2);
+
+        // Both should be 1.0 for identical graphs
+        assert!((sim_1 - 1.0).abs() < 1e-6);
+        assert!((sim_5 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_wl_math_graphs() {
+        // Create two similar math expressions
+        let expr1 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+        let expr2 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let g1 = MathGraph::from_expr(&expr1);
+        let g2 = MathGraph::from_expr(&expr2);
+
+        let similarity = GraphEditDistance::compute_wl_math(&g1, &g2);
+        assert!((similarity - 1.0).abs() < 1e-6, "Identical math graphs should have similarity 1.0");
+    }
+
+    #[test]
+    fn test_wl_different_math_graphs() {
+        let expr1 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+        let expr2 = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let g1 = MathGraph::from_expr(&expr1);
+        let g2 = MathGraph::from_expr(&expr2);
+
+        let similarity = GraphEditDistance::compute_wl_math(&g1, &g2);
+        // Same values but different operator - they share 2/3 node types
+        // WL captures that the structure differs due to the operator
+        assert!(similarity >= 0.0, "Similarity should be non-negative");
+        assert!(similarity < 1.0, "Different operators should reduce similarity");
+    }
+
+    #[test]
+    fn test_wl_combined_ged() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hello!");
+
+        let combined = GraphEditDistance::compute_combined(&g1, &g2, 1.0);
+
+        // Should have node difference from count-based
+        assert!(combined.node_insertion_cost > 0.0 || combined.node_deletion_cost > 0.0);
+        // Should have mismatch from WL-based
+        assert!(combined.node_mismatch_cost > 0.0);
+    }
+
+    #[test]
+    fn test_wl_symmetry() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::from_text("xyz");
+
+        let sim12 = GraphEditDistance::compute_wl(&g1, &g2);
+        let sim21 = GraphEditDistance::compute_wl(&g2, &g1);
+
+        assert!((sim12 - sim21).abs() < 1e-6, "WL similarity should be symmetric");
+    }
+
+    #[test]
+    fn test_wl_histogram_computation() {
+        let kernel = WeisfeilerLehmanKernel::new();
+        let colors = vec![1u64, 2, 2, 3, 3, 3];
+
+        let histogram = kernel.compute_histogram(&colors);
+
+        assert_eq!(histogram.get(&1), Some(&1));
+        assert_eq!(histogram.get(&2), Some(&2));
+        assert_eq!(histogram.get(&3), Some(&3));
     }
 }
