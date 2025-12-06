@@ -1,7 +1,7 @@
 ---
 id: backend-019
 title: Implement Analogical Mapping
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -85,25 +85,29 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `Analogy` trait in `grapheme-reason/src/lib.rs`
+- Implemented `SimpleAnalogy` with structural mapping
+- Added `Mapping` struct for node-to-node correspondences
+- analogize() creates greedy mapping between source and target nodes
+- transfer() applies mapping to transfer knowledge across domains
+- analogy_score() combines mapping completeness with structural similarity
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Mapping tracks source→target node correspondences
+- Unmapped nodes tracked in unmapped_source/unmapped_target
+- Score reflects proportion of nodes successfully mapped
+- Transfer creates new graph with mapped relations
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-reason crate
+- Uses ComplexityBounds to limit graph sizes
+- Integrates with ReasoningEngine for multi-modal reasoning
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-reason` for unit tests
+- Test: test_simple_analogy, test_mapping
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- SimpleAnalogy uses greedy positional matching (O(n))
+- Real implementation would use Hungarian algorithm O(n³)
+- GI-complete problem; approximate solutions only

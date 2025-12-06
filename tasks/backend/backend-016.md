@@ -1,7 +1,7 @@
 ---
 id: backend-016
 title: Implement Semantic Knowledge Graph
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -85,25 +85,29 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `SemanticGraph` trait in `grapheme-memory/src/lib.rs`
+- Implemented `SimpleSemanticGraph` with assert/query/revise/retract methods
+- Added `Source` enum for fact provenance tracking (Direct, Inferred, External, Unknown)
+- Added `FactId` type for fact identification
+- Query uses GraphFingerprint similarity for approximate pattern matching
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Facts can be asserted with source provenance
+- Query returns FactIds sorted by similarity (highest first)
+- contains() checks for approximate match (similarity > 0.95)
+- revise() updates facts while preserving ID
+- retract() removes facts from the knowledge graph
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-memory crate
+- Integrates with ContinualLearning for fact reconciliation
+- Used by Abduction in grapheme-reason for background knowledge
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-memory` for unit tests
+- Tests: test_semantic_graph_assert_query, test_semantic_graph_contains
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Uses approximate similarity matching (not exact graph isomorphism)
+- SimpleSemanticGraph is vector-based; production would use proper graph DB
+- FactIds are sequential indices (0, 1, 2, ...)

@@ -1,7 +1,7 @@
 ---
 id: backend-017
 title: Implement Working Memory
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -85,25 +85,29 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `WorkingMemory` trait in `grapheme-memory/src/lib.rs`
+- Implemented `SimpleWorkingMemory` with capacity-limited buffer (~7 items)
+- Added attend() for adding items (returns true if eviction occurred)
+- Added focus() for boosting item priority (moves to end)
+- Added current() for getting most recently attended item
+- LRU eviction policy when capacity exceeded
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- attend() automatically evicts oldest item when at capacity
+- focus() moves item to most recent position
+- clear() empties working memory
+- Capacity is configurable (default 7, matching human working memory)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Part of grapheme-memory crate
+- Stores Graph (DagNN) items
+- Integrates with MemorySystem for unified memory access
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-memory` for unit tests
+- Tests: test_working_memory_capacity, test_working_memory_focus
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Default capacity of 7 mimics human working memory limits
+- Uses LRU eviction (remove oldest first)
+- SimpleWorkingMemory is suitable for single-agent scenarios
