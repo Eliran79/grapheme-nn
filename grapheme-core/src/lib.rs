@@ -3276,6 +3276,541 @@ pub mod grad_utils {
 }
 
 // ============================================================================
+// Learnable Graph Transformation Network (backend-029)
+// ============================================================================
+
+/// Edit operation types for graph transformation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EditOp {
+    /// Keep the node unchanged
+    Keep,
+    /// Delete the node
+    Delete,
+    /// Modify the node value
+    Modify,
+    /// Insert a new node after this one
+    Insert,
+}
+
+/// Message passing layer for graph neural networks
+#[derive(Debug, Clone)]
+pub struct MessagePassingLayer {
+    /// Weight matrix for transforming neighbor features
+    pub weight: Array2<f32>,
+    /// Bias vector
+    pub bias: Array1<f32>,
+    /// Weight gradient
+    pub weight_grad: Option<Array2<f32>>,
+    /// Bias gradient
+    pub bias_grad: Option<Array1<f32>>,
+    /// Input dimension
+    pub input_dim: usize,
+    /// Output dimension
+    pub output_dim: usize,
+}
+
+impl MessagePassingLayer {
+    /// Create a new message passing layer with Xavier initialization
+    pub fn new(input_dim: usize, output_dim: usize) -> Self {
+        let mut rng = rand::thread_rng();
+        let std = (2.0 / (input_dim + output_dim) as f32).sqrt();
+
+        let weight = Array2::from_shape_fn((output_dim, input_dim), |_| {
+            rng.gen::<f32>() * 2.0 * std - std
+        });
+        let bias = Array1::zeros(output_dim);
+
+        Self {
+            weight,
+            bias,
+            weight_grad: None,
+            bias_grad: None,
+            input_dim,
+            output_dim,
+        }
+    }
+
+    /// Forward pass: aggregate neighbor features and transform
+    pub fn forward(&self, node_features: &Array1<f32>, neighbor_features: &[Array1<f32>]) -> Array1<f32> {
+        // Aggregate neighbors (mean pooling)
+        let aggregated = if neighbor_features.is_empty() {
+            node_features.clone()
+        } else {
+            let mut sum = node_features.clone();
+            for neighbor in neighbor_features {
+                sum = &sum + neighbor;
+            }
+            sum / (neighbor_features.len() + 1) as f32
+        };
+
+        // Linear transformation: output = W * aggregated + b
+        let mut output = Array1::zeros(self.output_dim);
+        for i in 0..self.output_dim {
+            let mut val = self.bias[i];
+            for j in 0..self.input_dim.min(aggregated.len()) {
+                val += self.weight[[i, j]] * aggregated[j];
+            }
+            output[i] = val;
+        }
+
+        // ReLU activation
+        output.mapv_inplace(|x| x.max(0.0));
+        output
+    }
+
+    /// Forward pass for batch of nodes
+    pub fn forward_batch(&self, node_features: &Array2<f32>, adjacency: &[Vec<usize>]) -> Array2<f32> {
+        let n = node_features.shape()[0];
+        let mut output = Array2::zeros((n, self.output_dim));
+
+        for i in 0..n {
+            let node_feat = node_features.row(i).to_owned();
+            let neighbor_feats: Vec<Array1<f32>> = adjacency[i]
+                .iter()
+                .map(|&j| node_features.row(j).to_owned())
+                .collect();
+
+            let out = self.forward(&node_feat, &neighbor_feats);
+            output.row_mut(i).assign(&out);
+        }
+
+        output
+    }
+
+    /// Zero gradients
+    pub fn zero_grad(&mut self) {
+        self.weight_grad = None;
+        self.bias_grad = None;
+    }
+
+    /// Update weights with gradients
+    pub fn step(&mut self, lr: f32) {
+        if let Some(ref grad) = self.weight_grad {
+            self.weight = &self.weight - &(grad * lr);
+        }
+        if let Some(ref grad) = self.bias_grad {
+            self.bias = &self.bias - &(grad * lr);
+        }
+    }
+}
+
+/// Attention mechanism for edit localization
+#[derive(Debug, Clone)]
+pub struct AttentionLayer {
+    /// Query projection
+    pub query_proj: Array2<f32>,
+    /// Key projection
+    pub key_proj: Array2<f32>,
+    /// Value projection
+    pub value_proj: Array2<f32>,
+    /// Dimension of keys/queries
+    pub d_k: usize,
+}
+
+impl AttentionLayer {
+    /// Create a new attention layer
+    pub fn new(embed_dim: usize, num_heads: usize) -> Self {
+        let d_k = embed_dim / num_heads.max(1);
+        let mut rng = rand::thread_rng();
+        let std = (1.0 / embed_dim as f32).sqrt();
+
+        let query_proj = Array2::from_shape_fn((embed_dim, embed_dim), |_| {
+            rng.gen::<f32>() * 2.0 * std - std
+        });
+        let key_proj = Array2::from_shape_fn((embed_dim, embed_dim), |_| {
+            rng.gen::<f32>() * 2.0 * std - std
+        });
+        let value_proj = Array2::from_shape_fn((embed_dim, embed_dim), |_| {
+            rng.gen::<f32>() * 2.0 * std - std
+        });
+
+        Self {
+            query_proj,
+            key_proj,
+            value_proj,
+            d_k,
+        }
+    }
+
+    /// Compute attention scores and weighted values
+    pub fn forward(&self, query: &Array1<f32>, keys: &[Array1<f32>], values: &[Array1<f32>]) -> Array1<f32> {
+        if keys.is_empty() || values.is_empty() {
+            return query.clone();
+        }
+
+        // Project query
+        let q = self.project(query, &self.query_proj);
+
+        // Compute attention scores
+        let mut scores = Vec::with_capacity(keys.len());
+        for key in keys {
+            let k = self.project(key, &self.key_proj);
+            let score = q.iter().zip(k.iter()).map(|(qi, ki)| qi * ki).sum::<f32>();
+            scores.push(score / (self.d_k as f32).sqrt());
+        }
+
+        // Softmax
+        let max_score = scores.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let exp_scores: Vec<f32> = scores.iter().map(|&s| (s - max_score).exp()).collect();
+        let sum_exp: f32 = exp_scores.iter().sum();
+        let attention_weights: Vec<f32> = exp_scores.iter().map(|&e| e / sum_exp).collect();
+
+        // Weighted sum of values
+        let mut output = Array1::zeros(query.len());
+        for (_i, (value, &weight)) in values.iter().zip(attention_weights.iter()).enumerate() {
+            let v = self.project(value, &self.value_proj);
+            for j in 0..output.len().min(v.len()) {
+                output[j] += weight * v[j];
+            }
+        }
+
+        output
+    }
+
+    /// Project a vector using a weight matrix
+    fn project(&self, input: &Array1<f32>, weight: &Array2<f32>) -> Array1<f32> {
+        let out_dim = weight.shape()[0];
+        let in_dim = weight.shape()[1];
+        let mut output = Array1::zeros(out_dim);
+
+        for i in 0..out_dim {
+            for j in 0..in_dim.min(input.len()) {
+                output[i] += weight[[i, j]] * input[j];
+            }
+        }
+
+        output
+    }
+}
+
+/// Prediction head for node-level operations
+#[derive(Debug, Clone)]
+pub struct NodePredictionHead {
+    /// Weight matrix for edit operation prediction
+    pub weight: Array2<f32>,
+    /// Bias
+    pub bias: Array1<f32>,
+    /// Number of edit operation types
+    pub num_ops: usize,
+}
+
+impl NodePredictionHead {
+    /// Create a new node prediction head
+    pub fn new(input_dim: usize, num_ops: usize) -> Self {
+        let mut rng = rand::thread_rng();
+        let std = (2.0 / (input_dim + num_ops) as f32).sqrt();
+
+        Self {
+            weight: Array2::from_shape_fn((num_ops, input_dim), |_| {
+                rng.gen::<f32>() * 2.0 * std - std
+            }),
+            bias: Array1::zeros(num_ops),
+            num_ops,
+        }
+    }
+
+    /// Predict edit operation probabilities for a node
+    pub fn predict(&self, node_features: &Array1<f32>) -> Vec<f32> {
+        let mut logits = Vec::with_capacity(self.num_ops);
+
+        for i in 0..self.num_ops {
+            let mut val = self.bias[i];
+            for j in 0..node_features.len().min(self.weight.shape()[1]) {
+                val += self.weight[[i, j]] * node_features[j];
+            }
+            logits.push(val);
+        }
+
+        // Softmax
+        let max_logit = logits.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let exp_logits: Vec<f32> = logits.iter().map(|&l| (l - max_logit).exp()).collect();
+        let sum_exp: f32 = exp_logits.iter().sum();
+        exp_logits.iter().map(|&e| e / sum_exp).collect()
+    }
+
+    /// Get the predicted edit operation
+    pub fn predict_op(&self, node_features: &Array1<f32>) -> EditOp {
+        let probs = self.predict(node_features);
+        let max_idx = probs.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        match max_idx {
+            0 => EditOp::Keep,
+            1 => EditOp::Delete,
+            2 => EditOp::Modify,
+            3 => EditOp::Insert,
+            _ => EditOp::Keep,
+        }
+    }
+}
+
+/// Graph pooling for global features
+#[derive(Debug, Clone)]
+pub struct GraphPooling {
+    /// Pooling type
+    pub pooling_type: PoolingType,
+}
+
+/// Type of graph pooling
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PoolingType {
+    /// Mean pooling
+    Mean,
+    /// Max pooling
+    Max,
+    /// Sum pooling
+    Sum,
+}
+
+impl GraphPooling {
+    /// Create mean pooling
+    pub fn mean() -> Self {
+        Self { pooling_type: PoolingType::Mean }
+    }
+
+    /// Create max pooling
+    pub fn max() -> Self {
+        Self { pooling_type: PoolingType::Max }
+    }
+
+    /// Create sum pooling
+    pub fn sum() -> Self {
+        Self { pooling_type: PoolingType::Sum }
+    }
+
+    /// Pool node features into a graph-level feature
+    pub fn pool(&self, node_features: &[Array1<f32>]) -> Array1<f32> {
+        if node_features.is_empty() {
+            return Array1::zeros(1);
+        }
+
+        let dim = node_features[0].len();
+        let mut result = Array1::zeros(dim);
+
+        match self.pooling_type {
+            PoolingType::Mean => {
+                for feat in node_features {
+                    result = &result + feat;
+                }
+                result / node_features.len() as f32
+            }
+            PoolingType::Max => {
+                result = node_features[0].clone();
+                for feat in node_features.iter().skip(1) {
+                    for i in 0..dim {
+                        result[i] = result[i].max(feat[i]);
+                    }
+                }
+                result
+            }
+            PoolingType::Sum => {
+                for feat in node_features {
+                    result = &result + feat;
+                }
+                result
+            }
+        }
+    }
+}
+
+/// Learnable graph transformation network
+///
+/// This is the "brain" that learns to transform graphs based on training examples.
+/// It combines message passing, attention, and prediction heads to predict
+/// graph edit operations.
+#[derive(Debug)]
+pub struct GraphTransformNet {
+    /// Input embedding layer
+    pub embedding: Embedding,
+    /// Message passing layers
+    pub mp_layers: Vec<MessagePassingLayer>,
+    /// Attention layer for edit localization
+    pub attention: AttentionLayer,
+    /// Node prediction head
+    pub node_head: NodePredictionHead,
+    /// Graph pooling
+    pub pooling: GraphPooling,
+    /// Hidden dimension
+    pub hidden_dim: usize,
+    /// Number of message passing layers
+    pub num_layers: usize,
+}
+
+impl GraphTransformNet {
+    /// Create a new graph transformation network
+    pub fn new(vocab_size: usize, embed_dim: usize, hidden_dim: usize, num_layers: usize) -> Self {
+        let embedding = Embedding::xavier(vocab_size, embed_dim);
+
+        let mut mp_layers = Vec::with_capacity(num_layers);
+        let mut in_dim = embed_dim;
+        for _ in 0..num_layers {
+            mp_layers.push(MessagePassingLayer::new(in_dim, hidden_dim));
+            in_dim = hidden_dim;
+        }
+
+        let attention = AttentionLayer::new(hidden_dim, 4);
+        let node_head = NodePredictionHead::new(hidden_dim, 4); // 4 edit ops
+        let pooling = GraphPooling::mean();
+
+        Self {
+            embedding,
+            mp_layers,
+            attention,
+            node_head,
+            pooling,
+            hidden_dim,
+            num_layers,
+        }
+    }
+
+    /// Forward pass: compute node representations
+    pub fn encode(&self, dag: &DagNN) -> Vec<Array1<f32>> {
+        // Get initial embeddings
+        let mut node_features: Vec<Array1<f32>> = dag.input_nodes()
+            .iter()
+            .map(|&node| self.embedding.embed_node(&dag.graph[node]))
+            .collect();
+
+        // Build adjacency list
+        let adjacency: Vec<Vec<usize>> = dag.input_nodes()
+            .iter()
+            .enumerate()
+            .map(|(_i, &node)| {
+                dag.graph.edges_directed(node, petgraph::Direction::Incoming)
+                    .filter_map(|e| {
+                        let source = e.source();
+                        dag.input_nodes().iter().position(|&n| n == source)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Apply message passing layers
+        for layer in &self.mp_layers {
+            let features_matrix = Array2::from_shape_fn(
+                (node_features.len(), node_features[0].len()),
+                |(i, j)| node_features[i][j]
+            );
+            let new_features = layer.forward_batch(&features_matrix, &adjacency);
+
+            node_features = (0..new_features.shape()[0])
+                .map(|i| new_features.row(i).to_owned())
+                .collect();
+        }
+
+        node_features
+    }
+
+    /// Predict edit operations for each node
+    pub fn predict_edits(&self, dag: &DagNN) -> Vec<(NodeId, EditOp, Vec<f32>)> {
+        let node_features = self.encode(dag);
+
+        dag.input_nodes()
+            .iter()
+            .zip(node_features.iter())
+            .map(|(&node, features)| {
+                let probs = self.node_head.predict(features);
+                let op = self.node_head.predict_op(features);
+                (node, op, probs)
+            })
+            .collect()
+    }
+
+    /// Apply predicted edits to create output graph
+    pub fn apply_edits(&self, input: &DagNN, edits: &[(NodeId, EditOp, Vec<f32>)]) -> GraphemeResult<DagNN> {
+        let mut output_chars: Vec<char> = Vec::new();
+
+        for &(node, op, _) in edits {
+            match op {
+                EditOp::Keep => {
+                    if let NodeType::Input(ch) = input.graph[node].node_type {
+                        output_chars.push(ch);
+                    }
+                }
+                EditOp::Delete => {
+                    // Skip this character
+                }
+                EditOp::Modify => {
+                    // For now, keep the character (would need value prediction)
+                    if let NodeType::Input(ch) = input.graph[node].node_type {
+                        output_chars.push(ch);
+                    }
+                }
+                EditOp::Insert => {
+                    // Keep original and insert placeholder
+                    if let NodeType::Input(ch) = input.graph[node].node_type {
+                        output_chars.push(ch);
+                        output_chars.push(' '); // Placeholder for inserted char
+                    }
+                }
+            }
+        }
+
+        let output_text: String = output_chars.into_iter().collect();
+        DagNN::from_text(&output_text)
+    }
+
+    /// Get global graph representation
+    pub fn get_graph_embedding(&self, dag: &DagNN) -> Array1<f32> {
+        let node_features = self.encode(dag);
+        self.pooling.pool(&node_features)
+    }
+
+    /// Zero all gradients
+    pub fn zero_grad(&mut self) {
+        self.embedding.zero_grad();
+        for layer in &mut self.mp_layers {
+            layer.zero_grad();
+        }
+    }
+
+    /// Update all weights
+    pub fn step(&mut self, lr: f32) {
+        self.embedding.step(lr);
+        for layer in &mut self.mp_layers {
+            layer.step(lr);
+        }
+    }
+}
+
+impl GraphTransformer for GraphTransformNet {
+    fn transform(&mut self, input: &DagNN) -> GraphemeResult<DagNN> {
+        let edits = self.predict_edits(input);
+        self.apply_edits(input, &edits)
+    }
+
+    fn learn_transformation(&mut self, _input: &DagNN, _target: &DagNN) -> TransformRule {
+        // For learned transformations, we don't extract explicit rules
+        // The transformation is implicit in the network weights
+        let id = 0;
+        TransformRule {
+            id,
+            description: "Learned neural transformation".to_string(),
+            input_pattern: Vec::new(),
+            output_pattern: Vec::new(),
+        }
+    }
+
+    fn apply_rule(&mut self, graph: &DagNN, _rule: &TransformRule) -> GraphemeResult<DagNN> {
+        // For neural transformations, we always use the network
+        self.transform(graph)
+    }
+
+    fn compose(&self, rules: Vec<TransformRule>) -> TransformRule {
+        // Composition for neural nets is just sequential application
+        TransformRule {
+            id: rules.first().map(|r| r.id).unwrap_or(0),
+            description: format!("Composed {} neural transformations", rules.len()),
+            input_pattern: Vec::new(),
+            output_pattern: Vec::new(),
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -4655,5 +5190,232 @@ mod tests {
 
         let emb_grads = tape.get_embedding_grads();
         assert_eq!(emb_grads.len(), 2);
+    }
+
+    // ========================================================================
+    // Graph Transform Network Tests (backend-029)
+    // ========================================================================
+
+    #[test]
+    fn test_message_passing_layer_creation() {
+        let layer = MessagePassingLayer::new(64, 32);
+        assert_eq!(layer.input_dim, 64);
+        assert_eq!(layer.output_dim, 32);
+        assert_eq!(layer.weight.shape(), &[32, 64]);
+    }
+
+    #[test]
+    fn test_message_passing_forward() {
+        let layer = MessagePassingLayer::new(4, 4);
+        let node_feat = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let neighbor1 = Array1::from_vec(vec![0.5, 0.5, 0.5, 0.5]);
+
+        let output = layer.forward(&node_feat, &[neighbor1]);
+        assert_eq!(output.len(), 4);
+    }
+
+    #[test]
+    fn test_message_passing_no_neighbors() {
+        let layer = MessagePassingLayer::new(4, 4);
+        let node_feat = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+
+        let output = layer.forward(&node_feat, &[]);
+        assert_eq!(output.len(), 4);
+    }
+
+    #[test]
+    fn test_message_passing_batch() {
+        let layer = MessagePassingLayer::new(4, 4);
+        let features = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 0.5, 0.5, 0.5, 0.5, 1.5, 1.5, 1.5, 1.5]
+        ).unwrap();
+        let adjacency = vec![vec![1], vec![0, 2], vec![1]];
+
+        let output = layer.forward_batch(&features, &adjacency);
+        assert_eq!(output.shape(), &[3, 4]);
+    }
+
+    #[test]
+    fn test_attention_layer_creation() {
+        let attn = AttentionLayer::new(64, 4);
+        assert_eq!(attn.d_k, 16);
+        assert_eq!(attn.query_proj.shape(), &[64, 64]);
+    }
+
+    #[test]
+    fn test_attention_forward() {
+        let attn = AttentionLayer::new(4, 1);
+        let query = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let key = Array1::from_vec(vec![0.5, 0.5, 0.5, 0.5]);
+        let value = Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]);
+
+        let output = attn.forward(&query, &[key], &[value]);
+        assert_eq!(output.len(), 4);
+    }
+
+    #[test]
+    fn test_attention_empty_keys() {
+        let attn = AttentionLayer::new(4, 1);
+        let query = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+
+        let output = attn.forward(&query, &[], &[]);
+        assert_eq!(output, query);
+    }
+
+    #[test]
+    fn test_node_prediction_head() {
+        let head = NodePredictionHead::new(32, 4);
+        let features = Array1::from_vec(vec![0.1; 32]);
+
+        let probs = head.predict(&features);
+        assert_eq!(probs.len(), 4);
+
+        // Softmax should sum to 1
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_node_prediction_op() {
+        let head = NodePredictionHead::new(4, 4);
+        let features = Array1::from_vec(vec![0.1, 0.2, 0.3, 0.4]);
+
+        let op = head.predict_op(&features);
+        // Should return one of the valid operations
+        assert!(matches!(op, EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert));
+    }
+
+    #[test]
+    fn test_graph_pooling_mean() {
+        let pooling = GraphPooling::mean();
+        let features = vec![
+            Array1::from_vec(vec![1.0, 2.0]),
+            Array1::from_vec(vec![3.0, 4.0]),
+        ];
+
+        let pooled = pooling.pool(&features);
+        assert!((pooled[0] - 2.0).abs() < 1e-6);
+        assert!((pooled[1] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_graph_pooling_max() {
+        let pooling = GraphPooling::max();
+        let features = vec![
+            Array1::from_vec(vec![1.0, 4.0]),
+            Array1::from_vec(vec![3.0, 2.0]),
+        ];
+
+        let pooled = pooling.pool(&features);
+        assert!((pooled[0] - 3.0).abs() < 1e-6);
+        assert!((pooled[1] - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_graph_pooling_sum() {
+        let pooling = GraphPooling::sum();
+        let features = vec![
+            Array1::from_vec(vec![1.0, 2.0]),
+            Array1::from_vec(vec![3.0, 4.0]),
+        ];
+
+        let pooled = pooling.pool(&features);
+        assert!((pooled[0] - 4.0).abs() < 1e-6);
+        assert!((pooled[1] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_graph_pooling_empty() {
+        let pooling = GraphPooling::mean();
+        let features: Vec<Array1<f32>> = vec![];
+
+        let pooled = pooling.pool(&features);
+        assert_eq!(pooled.len(), 1);
+        assert_eq!(pooled[0], 0.0);
+    }
+
+    #[test]
+    fn test_graph_transform_net_creation() {
+        let net = GraphTransformNet::new(256, 32, 64, 2);
+        assert_eq!(net.hidden_dim, 64);
+        assert_eq!(net.num_layers, 2);
+        assert_eq!(net.mp_layers.len(), 2);
+    }
+
+    #[test]
+    fn test_graph_transform_net_encode() {
+        let net = GraphTransformNet::new(256, 16, 16, 1);
+        let dag = DagNN::from_text("hi").unwrap();
+
+        let node_features = net.encode(&dag);
+        assert_eq!(node_features.len(), 2); // 'h' and 'i'
+        assert_eq!(node_features[0].len(), 16);
+    }
+
+    #[test]
+    fn test_graph_transform_net_predict_edits() {
+        let net = GraphTransformNet::new(256, 16, 16, 1);
+        let dag = DagNN::from_text("abc").unwrap();
+
+        let edits = net.predict_edits(&dag);
+        assert_eq!(edits.len(), 3);
+
+        // Each edit should have node, operation, and probabilities
+        for (_node, op, probs) in &edits {
+            assert!(matches!(op, EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert));
+            assert_eq!(probs.len(), 4);
+        }
+    }
+
+    #[test]
+    fn test_graph_transform_net_transform() {
+        let mut net = GraphTransformNet::new(256, 16, 16, 1);
+        let dag = DagNN::from_text("hello").unwrap();
+
+        let result = net.transform(&dag);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_graph_transform_net_graph_embedding() {
+        let net = GraphTransformNet::new(256, 16, 16, 1);
+        let dag = DagNN::from_text("test").unwrap();
+
+        let embedding = net.get_graph_embedding(&dag);
+        assert_eq!(embedding.len(), 16);
+    }
+
+    #[test]
+    fn test_graph_transform_net_zero_grad() {
+        let mut net = GraphTransformNet::new(256, 16, 16, 1);
+
+        net.zero_grad();
+
+        // Embedding grad should be zeroed (Some with all zeros)
+        assert!(net.embedding.grad.is_some());
+        let grad = net.embedding.grad.as_ref().unwrap();
+        assert!(grad.iter().all(|&x| x == 0.0));
+
+        // Message passing layers should have None grads
+        for layer in &net.mp_layers {
+            assert!(layer.weight_grad.is_none());
+            assert!(layer.bias_grad.is_none());
+        }
+    }
+
+    #[test]
+    fn test_edit_op_variants() {
+        assert_eq!(EditOp::Keep, EditOp::Keep);
+        assert_ne!(EditOp::Keep, EditOp::Delete);
+        assert_ne!(EditOp::Delete, EditOp::Modify);
+        assert_ne!(EditOp::Modify, EditOp::Insert);
+    }
+
+    #[test]
+    fn test_pooling_type_variants() {
+        assert_eq!(PoolingType::Mean, PoolingType::Mean);
+        assert_ne!(PoolingType::Mean, PoolingType::Max);
+        assert_ne!(PoolingType::Max, PoolingType::Sum);
     }
 }
