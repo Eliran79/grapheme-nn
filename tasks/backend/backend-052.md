@@ -1,7 +1,7 @@
 ---
 id: backend-052
 title: Implement symbolic example validation in dataset generation
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -99,25 +99,28 @@ Malformed symbolic expressions are counted as valid without any structural check
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `validate_symbolic_expr()` function in grapheme-train/src/lib.rs
+- Validates expression structure recursively with max depth check (100 levels)
+- Checks for: empty symbol names, division by zero in rationals, excessive nesting
+- Updated `validate_dataset()` to call symbolic validation for non-numeric examples
+- Validates both input expression and expected_symbolic output expression
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `validate_dataset()` now validates symbolic examples instead of auto-passing them
+- Invalid symbolic expressions are counted as `invalid` in ValidationReport
+- Error messages include expression ID and specific validation failure reason
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No new dependencies
+- Integrated into existing validate_dataset function
+- ValidationReport now properly counts symbolic validation failures
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- All workspace tests pass
+- Validation catches: empty symbols, zero denominators, deeply nested expressions
+- MAX_DEPTH set to 100 levels (configurable)
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Validation is structural only - doesn't verify semantic correctness
+- Future enhancement: validate symbol consistency between input and output
+- Consider adding arity checking for functions

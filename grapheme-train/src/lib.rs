@@ -310,6 +310,41 @@ pub struct DataGenerator {
     symbolic: SymbolicEngine,
     rng_seed: u64,
     counter: usize,
+    /// Statistics tracking
+    stats: GenerationStats,
+}
+
+/// Statistics for data generation
+#[derive(Debug, Clone, Default)]
+pub struct GenerationStats {
+    /// Total attempted generations
+    pub attempted: usize,
+    /// Successfully generated examples
+    pub generated: usize,
+    /// Examples dropped due to evaluation errors
+    pub dropped_eval_error: usize,
+}
+
+impl GenerationStats {
+    /// Get success rate as percentage
+    pub fn success_rate(&self) -> f64 {
+        if self.attempted == 0 {
+            100.0
+        } else {
+            (self.generated as f64 / self.attempted as f64) * 100.0
+        }
+    }
+
+    /// Print summary to stderr
+    pub fn print_summary(&self) {
+        eprintln!(
+            "Generation stats: {} attempted, {} generated, {} dropped ({:.1}% success)",
+            self.attempted,
+            self.generated,
+            self.dropped_eval_error,
+            self.success_rate()
+        );
+    }
 }
 
 impl DataGenerator {
@@ -320,7 +355,18 @@ impl DataGenerator {
             symbolic: SymbolicEngine::new(),
             rng_seed: seed,
             counter: 0,
+            stats: GenerationStats::default(),
         }
+    }
+
+    /// Get generation statistics
+    pub fn stats(&self) -> &GenerationStats {
+        &self.stats
+    }
+
+    /// Reset statistics
+    pub fn reset_stats(&mut self) {
+        self.stats = GenerationStats::default();
     }
 
     /// Generate a unique ID for an example
@@ -384,6 +430,7 @@ impl DataGenerator {
         let ops = [MathOp::Add, MathOp::Sub, MathOp::Mul];
 
         for _ in 0..count {
+            self.stats.attempted += 1;
             let a = self.rand_int(1, 20);
             let b = self.rand_int(1, 20);
             let op = *self.choose(&ops).unwrap();
@@ -394,9 +441,15 @@ impl DataGenerator {
                 right: Box::new(Expr::Value(Value::Integer(b))),
             };
 
-            if let Ok(result) = self.engine.evaluate(&expr) {
-                let id = self.next_id(1);
-                examples.push(TrainingExample::numeric(id, expr, result, 1));
+            match self.engine.evaluate(&expr) {
+                Ok(result) => {
+                    let id = self.next_id(1);
+                    examples.push(TrainingExample::numeric(id, expr, result, 1));
+                    self.stats.generated += 1;
+                }
+                Err(_) => {
+                    self.stats.dropped_eval_error += 1;
+                }
             }
         }
     }
@@ -406,6 +459,7 @@ impl DataGenerator {
         let ops = [MathOp::Add, MathOp::Sub, MathOp::Mul];
 
         for _ in 0..count {
+            self.stats.attempted += 1;
             let a = self.rand_int(1, 10);
             let b = self.rand_int(1, 10);
             let c = self.rand_int(1, 10);
@@ -422,9 +476,15 @@ impl DataGenerator {
                 right: Box::new(Expr::Value(Value::Integer(c))),
             };
 
-            if let Ok(result) = self.engine.evaluate(&expr) {
-                let id = self.next_id(2);
-                examples.push(TrainingExample::numeric(id, expr, result, 2));
+            match self.engine.evaluate(&expr) {
+                Ok(result) => {
+                    let id = self.next_id(2);
+                    examples.push(TrainingExample::numeric(id, expr, result, 2));
+                    self.stats.generated += 1;
+                }
+                Err(_) => {
+                    self.stats.dropped_eval_error += 1;
+                }
             }
         }
     }
@@ -435,6 +495,7 @@ impl DataGenerator {
         let symbols = ["x", "y", "z"];
 
         for _ in 0..count {
+            self.stats.attempted += 1;
             let sym = *self.choose(&symbols).unwrap();
             let sym_value = self.rand_int(1, 10) as f64;
             let b = self.rand_int(1, 10);
@@ -451,11 +512,17 @@ impl DataGenerator {
             let mut eval_engine = MathEngine::new();
             eval_engine.bind(sym, Value::Float(sym_value));
 
-            if let Ok(result) = eval_engine.evaluate(&expr) {
-                let id = self.next_id(3);
-                let example = TrainingExample::numeric(id, expr, result, 3)
-                    .with_bindings(vec![(sym.to_string(), sym_value)]);
-                examples.push(example);
+            match eval_engine.evaluate(&expr) {
+                Ok(result) => {
+                    let id = self.next_id(3);
+                    let example = TrainingExample::numeric(id, expr, result, 3)
+                        .with_bindings(vec![(sym.to_string(), sym_value)]);
+                    examples.push(example);
+                    self.stats.generated += 1;
+                }
+                Err(_) => {
+                    self.stats.dropped_eval_error += 1;
+                }
             }
         }
     }
@@ -466,6 +533,7 @@ impl DataGenerator {
         let perfect_squares = [1, 4, 9, 16, 25, 36, 49, 64, 81, 100];
 
         for i in 0..count {
+            self.stats.attempted += 1;
             // Alternate between different function types
             let func_type = i % 3;
 
@@ -480,6 +548,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.stats.dropped_eval_error += 1;
                         continue;
                     }
                 }
@@ -493,6 +562,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.stats.dropped_eval_error += 1;
                         continue;
                     }
                 }
@@ -506,6 +576,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.stats.dropped_eval_error += 1;
                         continue;
                     }
                 }
@@ -513,6 +584,7 @@ impl DataGenerator {
 
             let id = self.next_id(4);
             examples.push(TrainingExample::numeric(id, expr, result, 4));
+            self.stats.generated += 1;
         }
     }
 
@@ -521,6 +593,7 @@ impl DataGenerator {
         let var = "x";
 
         for i in 0..count {
+            self.stats.attempted += 1;
             // Generate different types of expressions to differentiate
             let expr_type = i % 5;
 
@@ -565,6 +638,7 @@ impl DataGenerator {
 
             let id = self.next_id(5);
             examples.push(TrainingExample::symbolic(id, input_expr, derivative, 5));
+            self.stats.generated += 1;
         }
     }
 
@@ -2167,6 +2241,41 @@ pub fn compute_ged_loss(
 // Validation Utilities
 // ============================================================================
 
+/// Validate symbolic expression structure
+fn validate_symbolic_expr(expr: &Expr, max_depth: usize) -> Result<(), String> {
+    if max_depth == 0 {
+        return Err("Expression exceeds maximum nesting depth".to_string());
+    }
+
+    match expr {
+        Expr::Value(v) => {
+            // Validate value types
+            match v {
+                Value::Symbol(s) if s.is_empty() => {
+                    Err("Empty symbol name".to_string())
+                }
+                Value::Rational(_, 0) => {
+                    Err("Division by zero in rational".to_string())
+                }
+                _ => Ok(()),
+            }
+        }
+        Expr::BinOp { left, right, .. } => {
+            validate_symbolic_expr(left, max_depth - 1)?;
+            validate_symbolic_expr(right, max_depth - 1)
+        }
+        Expr::UnaryOp { operand, .. } => {
+            validate_symbolic_expr(operand, max_depth - 1)
+        }
+        Expr::Function { args, .. } => {
+            for arg in args {
+                validate_symbolic_expr(arg, max_depth - 1)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Validate an entire dataset
 pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
     let engine = MathEngine::new();
@@ -2201,7 +2310,25 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
                 }
             }
         } else {
-            // Symbolic - just count as valid for now
+            // Symbolic validation - check expression structure
+            const MAX_DEPTH: usize = 100;
+
+            // Validate input expression
+            if let Err(e) = validate_symbolic_expr(&example.input_expr, MAX_DEPTH) {
+                report.invalid += 1;
+                report.errors.push(format!("{}: input expr - {}", example.id, e));
+                continue;
+            }
+
+            // Validate output expression if present
+            if let Some(ref output_expr) = example.expected_symbolic {
+                if let Err(e) = validate_symbolic_expr(output_expr, MAX_DEPTH) {
+                    report.invalid += 1;
+                    report.errors.push(format!("{}: output expr - {}", example.id, e));
+                    continue;
+                }
+            }
+
             report.valid += 1;
         }
     }
