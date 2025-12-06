@@ -1,7 +1,7 @@
 ---
 id: backend-024
 title: Complete TODO implementations in memory and training
-status: todo
+status: done
 priority: low
 tags:
 - backend

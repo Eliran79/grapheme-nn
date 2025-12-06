@@ -119,7 +119,7 @@ pub trait ParallelGraph: Send + Sync + Debug {
         M: Fn(R, R) -> R + Send + Sync,
     {
         self.par_node_indices()
-            .fold(identity.clone(), |acc, idx| fold(acc, idx))
+            .fold(identity.clone(), fold)
             .reduce(identity, merge)
     }
 
@@ -421,7 +421,7 @@ impl<G: Send + Sync> ShardedGraph<G> {
     {
         self.shards
             .par_iter()
-            .fold(identity.clone(), |acc, g| fold(acc, g))
+            .fold(identity.clone(), fold)
             .reduce(identity, merge)
     }
 }

@@ -754,7 +754,7 @@ impl<'a> BatchIterator<'a> {
 
     /// Get the number of batches
     pub fn num_batches(&self) -> usize {
-        (self.examples.len() + self.batch_size - 1) / self.batch_size
+        self.examples.len().div_ceil(self.batch_size)
     }
 }
 
@@ -831,6 +831,22 @@ impl GraphEditDistance {
         let node_diff = pred_nodes - target_nodes;
         let edge_diff = pred_edges - target_edges;
 
+        // Compute clique mismatch based on clique count and size differences
+        let pred_cliques = predicted.cliques.len();
+        let target_cliques = target.cliques.len();
+        let clique_count_diff = (pred_cliques as i32 - target_cliques as i32).abs() as f32;
+
+        // Also compare average clique sizes
+        let pred_avg_size = if pred_cliques > 0 {
+            predicted.cliques.iter().map(|c| c.len()).sum::<usize>() as f32 / pred_cliques as f32
+        } else { 0.0 };
+        let target_avg_size = if target_cliques > 0 {
+            target.cliques.iter().map(|c| c.len()).sum::<usize>() as f32 / target_cliques as f32
+        } else { 0.0 };
+        let size_diff = (pred_avg_size - target_avg_size).abs();
+
+        let clique_mismatch = (clique_count_diff * 0.3 + size_diff * 0.1).min(5.0);
+
         Self {
             node_insertion_cost: node_diff.max(0) as f32,
             node_deletion_cost: (-node_diff).max(0) as f32,
@@ -838,7 +854,7 @@ impl GraphEditDistance {
             edge_deletion_cost: (-edge_diff).max(0) as f32 * 0.5,
             node_mismatch_cost: 0.0, // Would require node alignment
             edge_mismatch_cost: 0.0, // Would require edge alignment
-            clique_mismatch: 0.0,    // TODO: implement clique comparison
+            clique_mismatch,
         }
     }
 

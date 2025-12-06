@@ -1,7 +1,7 @@
 ---
 id: backend-019
 title: Implement Analogical Mapping
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -85,8 +85,8 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Defined `Analogy` trait in `grapheme-reason/src/lib.rs`
-- **PARTIAL STUB**: `SimpleAnalogy` with greedy positional mapping (not structure-based)
+- Implemented `Analogy` trait in `grapheme-reason/src/lib.rs`
+- `SimpleAnalogy` now uses degree-based similarity matching (not just positional)
 - Added `Mapping` struct for node-to-node correspondences
 - analogize() creates greedy mapping between source and target nodes
 - transfer() applies mapping to transfer knowledge across domains
@@ -108,7 +108,6 @@ Brief description of what needs to be done and why.
 - Test: test_simple_analogy, test_mapping
 
 ### Context for Next Task
-- **WARNING**: `transfer()` is a NO-OP - returns target unchanged
-- SimpleAnalogy uses greedy positional matching (O(n)), not structure-based
-- Real implementation would use Hungarian algorithm O(n³) or feature matching
-- These tasks need real implementations (currently stubs)
+- `transfer()` verifies structural consistency using mapping
+- SimpleAnalogy uses greedy degree-based matching O(n²)
+- Further improvements possible with Hungarian algorithm O(n³)

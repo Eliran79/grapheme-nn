@@ -840,11 +840,7 @@ impl GraphBuilder for DagNN {
                 continue;
             }
 
-            let distance = if node_pos > other_pos {
-                node_pos - other_pos
-            } else {
-                other_pos - node_pos
-            };
+            let distance = node_pos.abs_diff(other_pos);
 
             if distance <= context_window && distance > 1 {
                 // Add skip connection with weight based on distance
@@ -1225,11 +1221,10 @@ impl MemoryManager for DagNN {
 
             // Skip input nodes (they're allowed to have no incoming edges)
             // Using HashSet for O(1) lookup instead of Vec::contains() O(n)
-            if !has_incoming && !has_outgoing {
-                if !self.input_nodes_set.contains(&node_idx) {
+            if !has_incoming && !has_outgoing
+                && !self.input_nodes_set.contains(&node_idx) {
                     disconnected.push(node_idx);
                 }
-            }
         }
 
         let count = disconnected.len();

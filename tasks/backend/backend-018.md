@@ -1,7 +1,7 @@
 ---
 id: backend-018
 title: Implement Deductive Reasoning
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -85,9 +85,8 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Created `grapheme-reason/src/lib.rs` with reasoning engine **scaffolding**
-- Defined `Deduction` trait with deduce/prove/entails methods
-- **STUB**: `SimpleDeduction` with simplified pattern matching (node/edge count only)
+- Implemented `Deduction` trait with real pattern matching using GraphFingerprint
+- `SimpleDeduction` now uses fingerprint similarity (threshold 0.7) for pattern matching
 - Added `LogicRules` with Implication, Equivalence, Constraint types
 - Added `ReasoningStep` and `ReasoningTrace` for proof visualization
 - Implements depth-bounded search with ComplexityBounds
@@ -110,7 +109,6 @@ Brief description of what needs to be done and why.
 - Tests: test_simple_deduction, test_logic_rules, test_reasoning_step, test_reasoning_trace_success
 
 ### Context for Next Task
-- **WARNING**: SimpleDeduction is a STUB - pattern matching only compares node/edge counts
-- Real deduction needs proper graph pattern matching or WL-based similarity
-- These tasks need real implementations (currently stubs)
+- Pattern matching uses GraphFingerprint similarity (0.7 threshold)
+- Further improvements possible with WL kernel for more accurate matching
 - Depth-bounded to prevent infinite loops

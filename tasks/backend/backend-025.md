@@ -1,7 +1,7 @@
 ---
 id: backend-025
 title: Address clippy warnings for code quality
-status: todo
+status: done
 priority: low
 tags:
 - backend

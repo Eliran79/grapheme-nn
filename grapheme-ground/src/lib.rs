@@ -200,7 +200,7 @@ impl Grounding {
         if verified {
             self.confidence = (self.confidence + 1.0) / 2.0; // Move toward 1.0
         } else {
-            self.confidence = self.confidence / 2.0; // Move toward 0.0
+            self.confidence /= 2.0; // Move toward 0.0
         }
     }
 }

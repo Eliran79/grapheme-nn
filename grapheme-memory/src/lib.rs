@@ -616,12 +616,19 @@ impl GraphFingerprint {
         let node_count = graph.node_count();
         let edge_count = graph.edge_count();
 
-        // Compute degree histogram
+        // Compute degree histogram and node type distribution
         let mut degree_hist = [0usize; 8];
+        let mut node_types = [0usize; 8];
+
         for node in graph.graph.node_indices() {
             let degree = graph.graph.edges(node).count();
             let bucket = degree.min(7);
             degree_hist[bucket] += 1;
+
+            // Categorize nodes by activation level (buckets 0-7)
+            let node_data = &graph.graph[node];
+            let activation_bucket = ((node_data.activation * 7.0).clamp(0.0, 7.0)) as usize;
+            node_types[activation_bucket] += 1;
         }
 
         // Simple structure hash
@@ -629,12 +636,13 @@ impl GraphFingerprint {
         node_count.hash(&mut hasher);
         edge_count.hash(&mut hasher);
         degree_hist.hash(&mut hasher);
+        node_types.hash(&mut hasher);
         let structure_hash = hasher.finish();
 
         Self {
             node_count,
             edge_count,
-            node_types: [0; 8], // TODO: populate from node types
+            node_types,
             degree_hist,
             structure_hash,
         }
@@ -662,8 +670,21 @@ impl GraphFingerprint {
             1.0
         };
 
-        // Combined similarity
-        (node_sim + edge_sim + degree_sim) / 3.0
+        // Node type distribution similarity
+        let mut type_diff = 0.0f32;
+        let mut type_total = 0.0f32;
+        for i in 0..8 {
+            type_diff += (self.node_types[i] as f32 - other.node_types[i] as f32).abs();
+            type_total += (self.node_types[i] + other.node_types[i]) as f32;
+        }
+        let type_sim = if type_total > 0.0 {
+            1.0 - type_diff / type_total
+        } else {
+            1.0
+        };
+
+        // Combined similarity (weighted average)
+        (node_sim + edge_sim + degree_sim + type_sim) / 4.0
     }
 }
 

@@ -1,7 +1,7 @@
 ---
 id: backend-020
 title: Implement Causal Reasoning
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -86,8 +86,8 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Defined `CausalReasoning` trait in `grapheme-reason/src/lib.rs`
-- **ALL STUBS**: `SimpleCausalReasoning` - all methods are no-ops
+- Implemented `CausalReasoning` trait in `grapheme-reason/src/lib.rs`
+- `SimpleCausalReasoning` with fingerprint-based node matching and BFS path finding
 - Added `CausalGraph` struct with edge strengths and confounders
 - intervene() applies do-calculus interventions
 - counterfactual() computes alternative timelines
@@ -110,7 +110,6 @@ Brief description of what needs to be done and why.
 - Test: test_causal_graph
 
 ### Context for Next Task
-- **WARNING**: ALL methods are STUBS - `intervene()` and `counterfactual()` return input unchanged
-- `causes()` always returns false
-- Real implementation would use PC algorithm, do-calculus
-- These tasks need real implementations (currently stubs)
+- `infer_causal_graph()` computes edge strengths from co-occurrence
+- `causes()` uses BFS path finding to check causal paths
+- Further improvements possible with PC algorithm for structure learning
