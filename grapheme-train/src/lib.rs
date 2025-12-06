@@ -1338,78 +1338,82 @@ impl GraphEditDistance {
     }
 
     /// Compute node-to-node cost matrix for GRAPHEME graphs
+    ///
+    /// Uses parallel processing via Rayon for improved performance on large graphs.
     fn compute_node_costs_grapheme(g1: &GraphemeGraph, g2: &GraphemeGraph) -> Vec<Vec<NodeCost>> {
-        let n1 = g1.node_count();
-        let n2 = g2.node_count();
-
         let indices1: Vec<_> = g1.graph.node_indices().collect();
         let indices2: Vec<_> = g2.graph.node_indices().collect();
 
-        let mut costs = vec![vec![NodeCost { label_cost: 1.0, degree_cost: 0.0 }; n2]; n1];
+        // Compute each row in parallel
+        indices1
+            .par_iter()
+            .map(|&idx1| {
+                let node1 = &g1.graph[idx1];
+                let degree1 = g1.graph.edges(idx1).count();
 
-        for (i, &idx1) in indices1.iter().enumerate() {
-            let node1 = &g1.graph[idx1];
-            let degree1 = g1.graph.edges(idx1).count();
+                indices2
+                    .iter()
+                    .map(|&idx2| {
+                        let node2 = &g2.graph[idx2];
+                        let degree2 = g2.graph.edges(idx2).count();
 
-            for (j, &idx2) in indices2.iter().enumerate() {
-                let node2 = &g2.graph[idx2];
-                let degree2 = g2.graph.edges(idx2).count();
+                        // Label cost: 0 if same type, 1 if different
+                        let label_cost = if node1.node_type == node2.node_type {
+                            0.0
+                        } else {
+                            1.0
+                        };
 
-                // Label cost: 0 if same type, 1 if different
-                let label_cost = if node1.node_type == node2.node_type {
-                    0.0
-                } else {
-                    1.0
-                };
+                        // Degree cost: normalized difference
+                        let degree_cost = (degree1 as f32 - degree2 as f32).abs()
+                            / (1 + degree1.max(degree2)) as f32;
 
-                // Degree cost: normalized difference
-                let degree_cost = (degree1 as f32 - degree2 as f32).abs()
-                    / (1 + degree1.max(degree2)) as f32;
-
-                costs[i][j] = NodeCost { label_cost, degree_cost };
-            }
-        }
-
-        costs
+                        NodeCost { label_cost, degree_cost }
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Compute node-to-node cost matrix for MathGraphs
+    ///
+    /// Uses parallel processing via Rayon for improved performance on large graphs.
     fn compute_node_costs_math(g1: &MathGraph, g2: &MathGraph) -> Vec<Vec<NodeCost>> {
-        let n1 = g1.node_count();
-        let n2 = g2.node_count();
-
         let indices1: Vec<_> = g1.graph.node_indices().collect();
         let indices2: Vec<_> = g2.graph.node_indices().collect();
 
-        let mut costs = vec![vec![NodeCost { label_cost: 1.0, degree_cost: 0.0 }; n2]; n1];
+        // Compute each row in parallel
+        indices1
+            .par_iter()
+            .map(|&idx1| {
+                let node1 = &g1.graph[idx1];
+                let degree1 = g1.graph.edges(idx1).count();
 
-        for (i, &idx1) in indices1.iter().enumerate() {
-            let node1 = &g1.graph[idx1];
-            let degree1 = g1.graph.edges(idx1).count();
+                indices2
+                    .iter()
+                    .map(|&idx2| {
+                        let node2 = &g2.graph[idx2];
+                        let degree2 = g2.graph.edges(idx2).count();
 
-            for (j, &idx2) in indices2.iter().enumerate() {
-                let node2 = &g2.graph[idx2];
-                let degree2 = g2.graph.edges(idx2).count();
+                        // Label cost: 0 if same type, 1 if different
+                        let label_cost = if Self::math_nodes_equal(node1, node2) {
+                            0.0
+                        } else {
+                            0.5 + 0.5 * if Self::math_node_category(node1) == Self::math_node_category(node2) {
+                                0.0
+                            } else {
+                                1.0
+                            }
+                        };
 
-                // Label cost: 0 if same type, 1 if different
-                let label_cost = if Self::math_nodes_equal(node1, node2) {
-                    0.0
-                } else {
-                    0.5 + 0.5 * if Self::math_node_category(node1) == Self::math_node_category(node2) {
-                        0.0
-                    } else {
-                        1.0
-                    }
-                };
+                        let degree_cost = (degree1 as f32 - degree2 as f32).abs()
+                            / (1 + degree1.max(degree2)) as f32;
 
-                let degree_cost = (degree1 as f32 - degree2 as f32).abs()
-                    / (1 + degree1.max(degree2)) as f32;
-
-                costs[i][j] = NodeCost { label_cost, degree_cost };
-            }
-        }
-
-        costs
+                        NodeCost { label_cost, degree_cost }
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Check if two math nodes are equal
