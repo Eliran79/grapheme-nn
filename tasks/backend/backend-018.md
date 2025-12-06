@@ -1,7 +1,7 @@
 ---
 id: backend-018
 title: Implement Deductive Reasoning
-status: done
+status: todo
 priority: medium
 tags:
 - backend
