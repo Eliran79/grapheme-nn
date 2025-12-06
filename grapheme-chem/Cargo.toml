@@ -1,0 +1,22 @@
+[package]
+name = "grapheme-chem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Chemistry Brain: Molecular structure and reaction analysis for GRAPHEME"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+grapheme-core = { path = "../grapheme-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "chem_bench"
+harness = false

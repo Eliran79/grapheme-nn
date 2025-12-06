@@ -1,7 +1,7 @@
 ---
 id: backend-063
 title: Add legal citation and precedent graph nodes
-status: todo
+status: done
 priority: medium
 tags:
 - backend

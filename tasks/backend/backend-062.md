@@ -1,7 +1,7 @@
 ---
 id: backend-062
 title: 'Implement grapheme-law: Legal reasoning brain'
-status: todo
+status: done
 priority: medium
 tags:
 - backend

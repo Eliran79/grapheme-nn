@@ -1,0 +1,22 @@
+[package]
+name = "grapheme-music"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Music Brain: Music theory and composition analysis for GRAPHEME"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+grapheme-core = { path = "../grapheme-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "music_bench"
+harness = false

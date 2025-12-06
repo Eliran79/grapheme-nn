@@ -1,7 +1,7 @@
 ---
 id: backend-064
 title: Implement case law reasoning and argument structure
-status: todo
+status: done
 priority: medium
 tags:
 - backend

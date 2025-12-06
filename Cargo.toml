@@ -15,6 +15,9 @@ members = [
     "grapheme-ground",
     "grapheme-parallel",
     "grapheme-code",
+    "grapheme-law",
+    "grapheme-music",
+    "grapheme-chem",
     "grapheme-tests",
 ]
 

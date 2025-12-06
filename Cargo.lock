@@ -215,6 +215,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-chem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-code"
 version = "0.1.0"
 dependencies = [
@@ -266,6 +279,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-law"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-math"
 version = "0.1.0"
 dependencies = [
@@ -311,6 +337,19 @@ dependencies = [
  "grapheme-core",
  "petgraph",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "grapheme-music"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
