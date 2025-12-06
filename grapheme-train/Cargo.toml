@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
 petgraph.workspace = true
+ndarray.workspace = true
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }

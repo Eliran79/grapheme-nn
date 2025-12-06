@@ -1687,6 +1687,478 @@ impl Trainer {
 }
 
 // ============================================================================
+// Optimizers (backend-028)
+// ============================================================================
+
+use ndarray::Array2;
+
+/// Trait for optimizers that update parameters
+pub trait Optimizer {
+    /// Perform a single optimization step
+    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>);
+
+    /// Zero out gradients (called at start of each iteration)
+    fn zero_grad(&mut self);
+
+    /// Get current learning rate
+    fn get_lr(&self) -> f32;
+
+    /// Set learning rate
+    fn set_lr(&mut self, lr: f32);
+}
+
+/// Stochastic Gradient Descent with optional momentum
+#[derive(Debug, Clone)]
+pub struct SGD {
+    /// Learning rate
+    pub lr: f32,
+    /// Momentum coefficient (0 = no momentum)
+    pub momentum: f32,
+    /// Weight decay (L2 regularization)
+    pub weight_decay: f32,
+    /// Velocity buffer for momentum
+    velocity: Option<Array2<f32>>,
+}
+
+impl SGD {
+    /// Create a new SGD optimizer
+    pub fn new(lr: f32) -> Self {
+        Self {
+            lr,
+            momentum: 0.0,
+            weight_decay: 0.0,
+            velocity: None,
+        }
+    }
+
+    /// Add momentum to the optimizer
+    pub fn with_momentum(mut self, momentum: f32) -> Self {
+        self.momentum = momentum;
+        self
+    }
+
+    /// Add weight decay (L2 regularization)
+    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+}
+
+impl Optimizer for SGD {
+    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>) {
+        // Apply weight decay
+        let mut adjusted_grads = if self.weight_decay > 0.0 {
+            grads + &(params.clone() * self.weight_decay)
+        } else {
+            grads.clone()
+        };
+
+        // Apply momentum if enabled
+        if self.momentum > 0.0 {
+            if self.velocity.is_none() {
+                self.velocity = Some(Array2::zeros(params.dim()));
+            }
+
+            if let Some(ref mut v) = self.velocity {
+                *v = &*v * self.momentum + &adjusted_grads;
+                adjusted_grads = v.clone();
+            }
+        }
+
+        // Update parameters: params -= lr * grads
+        *params = &*params - &(&adjusted_grads * self.lr);
+    }
+
+    fn zero_grad(&mut self) {
+        // SGD doesn't need to zero anything, momentum is preserved
+    }
+
+    fn get_lr(&self) -> f32 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
+    }
+}
+
+/// Adam optimizer
+#[derive(Debug, Clone)]
+pub struct Adam {
+    /// Learning rate
+    pub lr: f32,
+    /// Beta1 (exponential decay rate for first moment)
+    pub beta1: f32,
+    /// Beta2 (exponential decay rate for second moment)
+    pub beta2: f32,
+    /// Epsilon for numerical stability
+    pub epsilon: f32,
+    /// Weight decay
+    pub weight_decay: f32,
+    /// First moment estimate
+    m: Option<Array2<f32>>,
+    /// Second moment estimate
+    v: Option<Array2<f32>>,
+    /// Timestep
+    t: usize,
+}
+
+impl Adam {
+    /// Create a new Adam optimizer with default parameters
+    pub fn new(lr: f32) -> Self {
+        Self {
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            epsilon: 1e-8,
+            weight_decay: 0.0,
+            m: None,
+            v: None,
+            t: 0,
+        }
+    }
+
+    /// Set beta1
+    pub fn with_beta1(mut self, beta1: f32) -> Self {
+        self.beta1 = beta1;
+        self
+    }
+
+    /// Set beta2
+    pub fn with_beta2(mut self, beta2: f32) -> Self {
+        self.beta2 = beta2;
+        self
+    }
+
+    /// Add weight decay
+    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+}
+
+impl Optimizer for Adam {
+    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>) {
+        self.t += 1;
+
+        // Initialize moment estimates if needed
+        if self.m.is_none() {
+            self.m = Some(Array2::zeros(params.dim()));
+        }
+        if self.v.is_none() {
+            self.v = Some(Array2::zeros(params.dim()));
+        }
+
+        // Apply weight decay (decoupled, as in AdamW)
+        if self.weight_decay > 0.0 {
+            *params = &*params - &(params.clone() * (self.lr * self.weight_decay));
+        }
+
+        // Update biased first moment estimate
+        if let Some(ref mut m) = self.m {
+            *m = &*m * self.beta1 + &(grads * (1.0 - self.beta1));
+        }
+
+        // Update biased second moment estimate
+        if let Some(ref mut v) = self.v {
+            let grads_sq = grads.mapv(|x| x * x);
+            *v = &*v * self.beta2 + &(grads_sq * (1.0 - self.beta2));
+        }
+
+        // Compute bias-corrected estimates
+        let bias_correction1 = 1.0 - self.beta1.powi(self.t as i32);
+        let bias_correction2 = 1.0 - self.beta2.powi(self.t as i32);
+
+        if let (Some(ref m), Some(ref v)) = (&self.m, &self.v) {
+            let m_hat = m / bias_correction1;
+            let v_hat = v / bias_correction2;
+
+            // Update parameters
+            let denom = v_hat.mapv(|x| x.sqrt() + self.epsilon);
+            let update = m_hat / denom;
+            *params = &*params - &(update * self.lr);
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        // Adam keeps momentum, but this resets for fresh training
+    }
+
+    fn get_lr(&self) -> f32 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
+    }
+}
+
+// ============================================================================
+// Learning Rate Schedulers
+// ============================================================================
+
+/// Learning rate scheduler types
+#[derive(Debug, Clone)]
+pub enum LRScheduler {
+    /// Constant learning rate (no decay)
+    Constant,
+    /// Step decay: lr = lr * gamma every step_size epochs
+    StepLR { step_size: usize, gamma: f32 },
+    /// Exponential decay: lr = lr * gamma^epoch
+    ExponentialLR { gamma: f32 },
+    /// Cosine annealing: lr oscillates from max to min
+    CosineAnnealingLR { t_max: usize, eta_min: f32 },
+    /// Linear warmup: lr increases linearly for warmup_steps, then constant
+    WarmupLR { warmup_steps: usize },
+    /// Warmup then cosine decay
+    WarmupCosineDecay { warmup_steps: usize, total_steps: usize, eta_min: f32 },
+}
+
+impl LRScheduler {
+    /// Compute learning rate for given epoch
+    pub fn get_lr(&self, base_lr: f32, epoch: usize) -> f32 {
+        match self {
+            LRScheduler::Constant => base_lr,
+
+            LRScheduler::StepLR { step_size, gamma } => {
+                let num_decays = epoch / step_size;
+                base_lr * gamma.powi(num_decays as i32)
+            }
+
+            LRScheduler::ExponentialLR { gamma } => {
+                base_lr * gamma.powi(epoch as i32)
+            }
+
+            LRScheduler::CosineAnnealingLR { t_max, eta_min } => {
+                let t = (epoch % t_max) as f32;
+                let t_max = *t_max as f32;
+                eta_min + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
+            }
+
+            LRScheduler::WarmupLR { warmup_steps } => {
+                if epoch < *warmup_steps {
+                    base_lr * (epoch + 1) as f32 / *warmup_steps as f32
+                } else {
+                    base_lr
+                }
+            }
+
+            LRScheduler::WarmupCosineDecay { warmup_steps, total_steps, eta_min } => {
+                if epoch < *warmup_steps {
+                    base_lr * (epoch + 1) as f32 / *warmup_steps as f32
+                } else {
+                    let t = (epoch - warmup_steps) as f32;
+                    let t_max = (total_steps - warmup_steps) as f32;
+                    eta_min + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Training Loop
+// ============================================================================
+
+/// Training state for a training run
+#[derive(Debug, Clone)]
+pub struct TrainingState {
+    /// Current epoch
+    pub epoch: usize,
+    /// Current step (batch)
+    pub step: usize,
+    /// Total steps completed
+    pub total_steps: usize,
+    /// Current learning rate
+    pub current_lr: f32,
+    /// Best validation loss seen
+    pub best_val_loss: f32,
+    /// Epochs since improvement (for early stopping)
+    pub epochs_without_improvement: usize,
+    /// Running loss for current epoch
+    pub running_loss: f32,
+    /// Number of batches in current epoch
+    pub batches_in_epoch: usize,
+}
+
+impl Default for TrainingState {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            step: 0,
+            total_steps: 0,
+            current_lr: 0.001,
+            best_val_loss: f32::MAX,
+            epochs_without_improvement: 0,
+            running_loss: 0.0,
+            batches_in_epoch: 0,
+        }
+    }
+}
+
+/// Metrics logged during training
+#[derive(Debug, Clone, Default)]
+pub struct TrainingMetrics {
+    /// Loss values per epoch
+    pub epoch_losses: Vec<f32>,
+    /// Validation losses per epoch
+    pub val_losses: Vec<f32>,
+    /// Validation accuracy per epoch
+    pub val_accuracies: Vec<f32>,
+    /// Learning rates per epoch
+    pub learning_rates: Vec<f32>,
+}
+
+impl TrainingMetrics {
+    /// Add epoch metrics
+    pub fn record_epoch(&mut self, loss: f32, lr: f32) {
+        self.epoch_losses.push(loss);
+        self.learning_rates.push(lr);
+    }
+
+    /// Add validation metrics
+    pub fn record_validation(&mut self, val_loss: f32, val_accuracy: f32) {
+        self.val_losses.push(val_loss);
+        self.val_accuracies.push(val_accuracy);
+    }
+
+    /// Get the latest training loss
+    pub fn latest_loss(&self) -> Option<f32> {
+        self.epoch_losses.last().copied()
+    }
+
+    /// Check if loss is improving
+    pub fn is_improving(&self, window: usize) -> bool {
+        if self.epoch_losses.len() < window + 1 {
+            return true;
+        }
+
+        let recent = &self.epoch_losses[self.epoch_losses.len() - window..];
+        let prev = &self.epoch_losses[self.epoch_losses.len() - window - 1..self.epoch_losses.len() - 1];
+
+        let recent_avg: f32 = recent.iter().sum::<f32>() / recent.len() as f32;
+        let prev_avg: f32 = prev.iter().sum::<f32>() / prev.len() as f32;
+
+        recent_avg < prev_avg
+    }
+}
+
+/// Training loop that orchestrates forward/backward passes
+#[derive(Debug)]
+pub struct TrainingLoop {
+    /// Configuration
+    pub config: TrainingConfig,
+    /// Learning rate scheduler
+    pub scheduler: LRScheduler,
+    /// Training state
+    pub state: TrainingState,
+    /// Metrics
+    pub metrics: TrainingMetrics,
+    /// Base learning rate
+    base_lr: f32,
+}
+
+impl TrainingLoop {
+    /// Create a new training loop
+    pub fn new(config: TrainingConfig) -> Self {
+        let base_lr = config.learning_rate;
+        Self {
+            config,
+            scheduler: LRScheduler::Constant,
+            state: TrainingState::default(),
+            metrics: TrainingMetrics::default(),
+            base_lr,
+        }
+    }
+
+    /// Set the learning rate scheduler
+    pub fn with_scheduler(mut self, scheduler: LRScheduler) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+
+    /// Update learning rate based on scheduler
+    pub fn update_lr(&mut self) {
+        self.state.current_lr = self.scheduler.get_lr(self.base_lr, self.state.epoch);
+    }
+
+    /// Record a batch loss
+    pub fn record_batch(&mut self, loss: f32) {
+        self.state.running_loss += loss;
+        self.state.batches_in_epoch += 1;
+        self.state.step += 1;
+        self.state.total_steps += 1;
+    }
+
+    /// Complete an epoch and record metrics
+    pub fn complete_epoch(&mut self) -> f32 {
+        let avg_loss = if self.state.batches_in_epoch > 0 {
+            self.state.running_loss / self.state.batches_in_epoch as f32
+        } else {
+            0.0
+        };
+
+        self.metrics.record_epoch(avg_loss, self.state.current_lr);
+
+        // Reset for next epoch
+        self.state.running_loss = 0.0;
+        self.state.batches_in_epoch = 0;
+        self.state.epoch += 1;
+        self.update_lr();
+
+        avg_loss
+    }
+
+    /// Record validation results
+    pub fn record_validation(&mut self, val_loss: f32, val_accuracy: f32) -> bool {
+        self.metrics.record_validation(val_loss, val_accuracy);
+
+        // Check for improvement
+        if val_loss < self.state.best_val_loss {
+            self.state.best_val_loss = val_loss;
+            self.state.epochs_without_improvement = 0;
+            true // New best
+        } else {
+            self.state.epochs_without_improvement += 1;
+            false
+        }
+    }
+
+    /// Check if early stopping should trigger
+    pub fn should_stop(&self) -> bool {
+        self.state.epochs_without_improvement >= self.config.patience
+    }
+
+    /// Check if validation should run this epoch
+    pub fn should_validate(&self) -> bool {
+        self.state.epoch % self.config.val_frequency == 0
+    }
+
+    /// Get progress as percentage
+    pub fn progress(&self) -> f32 {
+        self.state.epoch as f32 / self.config.epochs as f32 * 100.0
+    }
+}
+
+/// Compute GED-based loss between predicted and target graphs
+///
+/// Loss = alpha * node_cost + beta * edge_cost + gamma * clique_mismatch
+pub fn compute_ged_loss(
+    predicted: &GraphemeGraph,
+    target: &GraphemeGraph,
+    alpha: f32,
+    beta: f32,
+    gamma: f32,
+) -> f32 {
+    let ged = GraphEditDistance::compute(predicted, target);
+
+    let node_cost = ged.node_insertion_cost + ged.node_deletion_cost + ged.node_mismatch_cost;
+    let edge_cost = ged.edge_insertion_cost + ged.edge_deletion_cost + ged.edge_mismatch_cost;
+
+    alpha * node_cost + beta * edge_cost + gamma * ged.clique_mismatch
+}
+
+// ============================================================================
 // Validation Utilities
 // ============================================================================
 
@@ -2257,5 +2729,250 @@ mod tests {
 
         // Node mismatch cost should be symmetric
         assert!((bp2_12.node_mismatch_cost - bp2_21.node_mismatch_cost).abs() < 0.01);
+    }
+
+    // ========================================================================
+    // Optimizer Tests (backend-028)
+    // ========================================================================
+
+    #[test]
+    fn test_sgd_basic() {
+        let mut sgd = SGD::new(0.1);
+        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let grads = Array2::from_shape_vec((2, 2), vec![0.1, 0.2, 0.3, 0.4]).unwrap();
+
+        sgd.step(&mut params, &grads);
+
+        // params should decrease by lr * grads
+        assert!((params[[0, 0]] - 0.99).abs() < 1e-6); // 1.0 - 0.1 * 0.1
+        assert!((params[[0, 1]] - 1.98).abs() < 1e-6); // 2.0 - 0.1 * 0.2
+    }
+
+    #[test]
+    fn test_sgd_with_momentum() {
+        let mut sgd = SGD::new(0.1).with_momentum(0.9);
+        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let grads = Array2::from_shape_vec((2, 2), vec![1.0, 1.0, 1.0, 1.0]).unwrap();
+
+        // First step
+        sgd.step(&mut params, &grads);
+        let after_first = params[[0, 0]];
+
+        // Second step with same gradient - momentum should increase update
+        sgd.step(&mut params, &grads);
+
+        // Second step should move more due to momentum
+        let diff_first = 1.0 - after_first;
+        let diff_second = after_first - params[[0, 0]];
+        assert!(diff_second > diff_first);
+    }
+
+    #[test]
+    fn test_sgd_with_weight_decay() {
+        let mut sgd = SGD::new(0.1).with_weight_decay(0.01);
+        let mut params = Array2::from_shape_vec((2, 2), vec![10.0, 10.0, 10.0, 10.0]).unwrap();
+        let grads = Array2::zeros((2, 2));
+
+        // With zero gradients, only weight decay should affect params
+        sgd.step(&mut params, &grads);
+
+        // params should shrink due to weight decay
+        assert!(params[[0, 0]] < 10.0);
+    }
+
+    #[test]
+    fn test_adam_basic() {
+        let mut adam = Adam::new(0.1);
+        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let grads = Array2::from_shape_vec((2, 2), vec![0.5, 0.5, 0.5, 0.5]).unwrap();
+
+        adam.step(&mut params, &grads);
+
+        // Params should have changed
+        assert!(params[[0, 0]] != 1.0);
+    }
+
+    #[test]
+    fn test_adam_multiple_steps() {
+        let mut adam = Adam::new(0.01);
+        let mut params = Array2::from_shape_vec((2, 2), vec![5.0, 5.0, 5.0, 5.0]).unwrap();
+        let grads = Array2::from_shape_vec((2, 2), vec![1.0, 1.0, 1.0, 1.0]).unwrap();
+
+        let initial = params[[0, 0]];
+
+        // Run multiple steps
+        for _ in 0..10 {
+            adam.step(&mut params, &grads);
+        }
+
+        // Params should decrease with positive gradients
+        assert!(params[[0, 0]] < initial);
+    }
+
+    #[test]
+    fn test_optimizer_set_lr() {
+        let mut sgd = SGD::new(0.1);
+        assert_eq!(sgd.get_lr(), 0.1);
+
+        sgd.set_lr(0.01);
+        assert_eq!(sgd.get_lr(), 0.01);
+    }
+
+    // ========================================================================
+    // Learning Rate Scheduler Tests
+    // ========================================================================
+
+    #[test]
+    fn test_lr_scheduler_constant() {
+        let scheduler = LRScheduler::Constant;
+        assert_eq!(scheduler.get_lr(0.1, 0), 0.1);
+        assert_eq!(scheduler.get_lr(0.1, 100), 0.1);
+    }
+
+    #[test]
+    fn test_lr_scheduler_step() {
+        let scheduler = LRScheduler::StepLR { step_size: 10, gamma: 0.5 };
+
+        assert_eq!(scheduler.get_lr(0.1, 0), 0.1);
+        assert_eq!(scheduler.get_lr(0.1, 9), 0.1);
+        assert_eq!(scheduler.get_lr(0.1, 10), 0.05);
+        assert_eq!(scheduler.get_lr(0.1, 20), 0.025);
+    }
+
+    #[test]
+    fn test_lr_scheduler_exponential() {
+        let scheduler = LRScheduler::ExponentialLR { gamma: 0.9 };
+
+        assert!((scheduler.get_lr(0.1, 0) - 0.1).abs() < 1e-6);
+        assert!((scheduler.get_lr(0.1, 1) - 0.09).abs() < 1e-6);
+        assert!((scheduler.get_lr(0.1, 2) - 0.081).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_lr_scheduler_warmup() {
+        let scheduler = LRScheduler::WarmupLR { warmup_steps: 5 };
+
+        // During warmup, lr increases linearly
+        assert!((scheduler.get_lr(0.1, 0) - 0.02).abs() < 1e-6);  // 1/5
+        assert!((scheduler.get_lr(0.1, 4) - 0.1).abs() < 1e-6);   // 5/5
+        assert_eq!(scheduler.get_lr(0.1, 10), 0.1);  // After warmup
+    }
+
+    #[test]
+    fn test_lr_scheduler_cosine() {
+        let scheduler = LRScheduler::CosineAnnealingLR { t_max: 10, eta_min: 0.0 };
+
+        // At epoch 0, lr should be at max
+        assert!((scheduler.get_lr(0.1, 0) - 0.1).abs() < 0.001);
+
+        // At t_max/2, lr should be at eta_min (cos(pi) = -1, so (1 + -1)/2 = 0)
+        // Actually at epoch 5: cos(pi * 5/10) = cos(pi/2) = 0, so lr = 0.05
+        let lr_at_5 = scheduler.get_lr(0.1, 5);
+        assert!((lr_at_5 - 0.05).abs() < 0.001, "Expected ~0.05, got {}", lr_at_5);
+
+        // At t_max, lr should be back to eta_min (cos(pi) = -1)
+        let lr_at_10 = scheduler.get_lr(0.1, 10);
+        assert!((lr_at_10 - 0.1).abs() < 0.001, "Expected ~0.1 (cycle restart), got {}", lr_at_10);
+    }
+
+    // ========================================================================
+    // Training Loop Tests
+    // ========================================================================
+
+    #[test]
+    fn test_training_state_default() {
+        let state = TrainingState::default();
+        assert_eq!(state.epoch, 0);
+        assert_eq!(state.step, 0);
+        assert_eq!(state.best_val_loss, f32::MAX);
+    }
+
+    #[test]
+    fn test_training_loop_creation() {
+        let config = TrainingConfig::default();
+        let loop_state = TrainingLoop::new(config);
+
+        assert_eq!(loop_state.state.epoch, 0);
+    }
+
+    #[test]
+    fn test_training_loop_record_batch() {
+        let config = TrainingConfig::default();
+        let mut loop_state = TrainingLoop::new(config);
+
+        loop_state.record_batch(0.5);
+        loop_state.record_batch(0.3);
+
+        assert_eq!(loop_state.state.batches_in_epoch, 2);
+        assert!((loop_state.state.running_loss - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_training_loop_complete_epoch() {
+        let config = TrainingConfig::default();
+        let mut loop_state = TrainingLoop::new(config);
+
+        loop_state.record_batch(0.4);
+        loop_state.record_batch(0.6);
+
+        let avg_loss = loop_state.complete_epoch();
+
+        assert!((avg_loss - 0.5).abs() < 1e-6);
+        assert_eq!(loop_state.state.epoch, 1);
+        assert_eq!(loop_state.state.batches_in_epoch, 0);
+    }
+
+    #[test]
+    fn test_training_loop_early_stopping() {
+        let mut config = TrainingConfig::default();
+        config.patience = 2;
+        let mut loop_state = TrainingLoop::new(config);
+
+        // Record worse validation losses
+        loop_state.record_validation(0.5, 0.8);
+        assert!(!loop_state.should_stop());
+
+        loop_state.record_validation(0.6, 0.75);
+        assert!(!loop_state.should_stop());
+
+        loop_state.record_validation(0.7, 0.7);
+        assert!(loop_state.should_stop());
+    }
+
+    #[test]
+    fn test_training_loop_with_scheduler() {
+        let config = TrainingConfig::default();
+        let loop_state = TrainingLoop::new(config)
+            .with_scheduler(LRScheduler::StepLR { step_size: 5, gamma: 0.5 });
+
+        assert!(matches!(loop_state.scheduler, LRScheduler::StepLR { .. }));
+    }
+
+    #[test]
+    fn test_training_metrics_is_improving() {
+        let mut metrics = TrainingMetrics::default();
+
+        // Add improving losses
+        metrics.epoch_losses.push(1.0);
+        metrics.epoch_losses.push(0.9);
+        metrics.epoch_losses.push(0.8);
+
+        assert!(metrics.is_improving(2));
+
+        // Add worsening losses
+        metrics.epoch_losses.push(0.9);
+        metrics.epoch_losses.push(1.0);
+
+        assert!(!metrics.is_improving(2));
+    }
+
+    #[test]
+    fn test_training_progress() {
+        let mut config = TrainingConfig::default();
+        config.epochs = 100;
+        let mut loop_state = TrainingLoop::new(config);
+
+        loop_state.state.epoch = 50;
+        assert!((loop_state.progress() - 50.0).abs() < 1e-6);
     }
 }

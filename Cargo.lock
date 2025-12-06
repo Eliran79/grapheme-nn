@@ -347,6 +347,7 @@ dependencies = [
  "grapheme-engine",
  "grapheme-math",
  "grapheme-polish",
+ "ndarray",
  "petgraph",
  "rayon",
  "serde",
