@@ -1,7 +1,7 @@
 ---
 id: backend-034
 title: Add learnable world model with transition dynamics
-status: todo
+status: done
 priority: high
 tags:
 - backend

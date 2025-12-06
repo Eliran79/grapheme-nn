@@ -1,7 +1,7 @@
 ---
 id: backend-037
 title: Add learnable multimodal fusion and cross-modal binding
-status: todo
+status: done
 priority: medium
 tags:
 - backend

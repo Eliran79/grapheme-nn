@@ -25,7 +25,7 @@
 //! - Drives are configurable
 //! - Human oversight integration points
 
-use grapheme_core::DagNN;
+use grapheme_core::{DagNN, Learnable, LearnableParam};
 use grapheme_meta::UncertaintyEstimate;
 use grapheme_world::WorldModeling;
 use serde::{Deserialize, Serialize};
@@ -703,6 +703,128 @@ impl Agency for SimpleAgency {
 /// Create a default agent
 pub fn create_default_agent() -> SimpleAgency {
     SimpleAgency::new()
+}
+
+// ============================================================================
+// Learnable Agency
+// ============================================================================
+
+/// Learnable agency with trainable goal and planning parameters
+///
+/// This module learns to prioritize goals, balance exploration/exploitation,
+/// and allocate resources for planning.
+#[derive(Debug, Clone)]
+pub struct LearnableAgency {
+    /// Bias for goal importance estimation
+    pub goal_importance_bias: LearnableParam,
+    /// Weight for curiosity drive
+    pub curiosity_weight: LearnableParam,
+    /// Weight for safety drive
+    pub safety_weight: LearnableParam,
+    /// Weight for efficiency drive
+    pub efficiency_weight: LearnableParam,
+    /// Exploration-exploitation temperature
+    pub explore_temperature: LearnableParam,
+    /// Discount factor for future rewards
+    pub discount_factor: LearnableParam,
+}
+
+impl LearnableAgency {
+    /// Create a new learnable agency module
+    pub fn new() -> Self {
+        Self {
+            goal_importance_bias: LearnableParam::new(0.0),
+            curiosity_weight: LearnableParam::new(0.3),
+            safety_weight: LearnableParam::new(0.8),
+            efficiency_weight: LearnableParam::new(0.5),
+            explore_temperature: LearnableParam::new(1.0),
+            discount_factor: LearnableParam::new(0.99),
+        }
+    }
+
+    /// Adjust goal importance with learned bias
+    pub fn adjusted_importance(&self, raw_importance: f32) -> f32 {
+        (raw_importance + self.goal_importance_bias.value).clamp(0.0, 1.0)
+    }
+
+    /// Compute weighted drive score
+    pub fn drive_score(&self, curiosity: f32, safety: f32, efficiency: f32) -> f32 {
+        let cw = self.curiosity_weight.value.max(0.0);
+        let sw = self.safety_weight.value.max(0.0);
+        let ew = self.efficiency_weight.value.max(0.0);
+        let total = cw + sw + ew;
+        if total > 0.0 {
+            (cw * curiosity + sw * safety + ew * efficiency) / total
+        } else {
+            (curiosity + safety + efficiency) / 3.0
+        }
+    }
+
+    /// Compute exploration probability based on uncertainty
+    pub fn exploration_probability(&self, uncertainty: f32) -> f32 {
+        let temp = self.explore_temperature.value.max(0.01);
+        let logit = (uncertainty / temp).clamp(-10.0, 10.0);
+        1.0 / (1.0 + (-logit).exp())
+    }
+
+    /// Compute discounted value
+    pub fn discounted_value(&self, value: f32, steps: usize) -> f32 {
+        let gamma = self.discount_factor.value.clamp(0.0, 1.0);
+        value * gamma.powi(steps as i32)
+    }
+}
+
+impl Default for LearnableAgency {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableAgency {
+    fn zero_grad(&mut self) {
+        self.goal_importance_bias.zero_grad();
+        self.curiosity_weight.zero_grad();
+        self.safety_weight.zero_grad();
+        self.efficiency_weight.zero_grad();
+        self.explore_temperature.zero_grad();
+        self.discount_factor.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.goal_importance_bias.step(lr);
+        self.curiosity_weight.step(lr);
+        self.safety_weight.step(lr);
+        self.efficiency_weight.step(lr);
+        self.explore_temperature.step(lr);
+        self.discount_factor.step(lr);
+
+        // Ensure valid ranges
+        self.explore_temperature.value = self.explore_temperature.value.max(0.01);
+        self.discount_factor.value = self.discount_factor.value.clamp(0.0, 1.0);
+    }
+
+    fn num_parameters(&self) -> usize {
+        6
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.goal_importance_bias.grad != 0.0
+            || self.curiosity_weight.grad != 0.0
+            || self.safety_weight.grad != 0.0
+            || self.efficiency_weight.grad != 0.0
+            || self.explore_temperature.grad != 0.0
+            || self.discount_factor.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.goal_importance_bias.grad.powi(2)
+            + self.curiosity_weight.grad.powi(2)
+            + self.safety_weight.grad.powi(2)
+            + self.efficiency_weight.grad.powi(2)
+            + self.explore_temperature.grad.powi(2)
+            + self.discount_factor.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

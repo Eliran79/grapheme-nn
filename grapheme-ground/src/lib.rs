@@ -22,7 +22,7 @@
 //! - Simulated interaction (compromise)
 //! - Embodied interaction (ideal but hard)
 
-use grapheme_core::DagNN;
+use grapheme_core::{DagNN, Learnable, LearnableParam};
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -607,6 +607,119 @@ pub fn create_linguistic_sensor() -> SimpleSensor {
 /// Create a simple embodied agent
 pub fn create_default_embodied_agent() -> SimpleEmbodiedAgent {
     SimpleEmbodiedAgent::new()
+}
+
+// ============================================================================
+// Learnable Grounding
+// ============================================================================
+
+/// Learnable grounding with trainable binding thresholds
+///
+/// This module learns to ground symbols to referents by adjusting
+/// binding thresholds and exploration behavior.
+#[derive(Debug, Clone)]
+pub struct LearnableGrounding {
+    /// Threshold for grounding confidence
+    pub grounding_threshold: LearnableParam,
+    /// Weight for perception-based grounding
+    pub perception_weight: LearnableParam,
+    /// Weight for action-based grounding
+    pub action_weight: LearnableParam,
+    /// Exploration bonus for novel referents
+    pub exploration_bonus: LearnableParam,
+    /// Co-occurrence learning rate
+    pub cooccurrence_rate: LearnableParam,
+}
+
+impl LearnableGrounding {
+    /// Create a new learnable grounding module
+    pub fn new() -> Self {
+        Self {
+            grounding_threshold: LearnableParam::new(0.5),
+            perception_weight: LearnableParam::new(0.6),
+            action_weight: LearnableParam::new(0.4),
+            exploration_bonus: LearnableParam::new(0.1),
+            cooccurrence_rate: LearnableParam::new(0.01),
+        }
+    }
+
+    /// Check if a grounding is confident enough
+    pub fn is_grounded(&self, confidence: f32) -> bool {
+        confidence >= self.grounding_threshold.value
+    }
+
+    /// Compute weighted grounding score from perception and action
+    pub fn grounding_score(&self, perception_confidence: f32, action_confidence: f32) -> f32 {
+        let pw = self.perception_weight.value.max(0.0);
+        let aw = self.action_weight.value.max(0.0);
+        let total = pw + aw;
+        if total > 0.0 {
+            (pw * perception_confidence + aw * action_confidence) / total
+        } else {
+            (perception_confidence + action_confidence) / 2.0
+        }
+    }
+
+    /// Compute exploration bonus for a novel referent
+    pub fn novelty_bonus(&self, novelty: f32) -> f32 {
+        self.exploration_bonus.value.max(0.0) * novelty.clamp(0.0, 1.0)
+    }
+
+    /// Update co-occurrence strength
+    pub fn update_cooccurrence(&self, current_strength: f32, observed: bool) -> f32 {
+        let rate = self.cooccurrence_rate.value.clamp(0.0, 1.0);
+        let target = if observed { 1.0 } else { 0.0 };
+        current_strength + rate * (target - current_strength)
+    }
+}
+
+impl Default for LearnableGrounding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableGrounding {
+    fn zero_grad(&mut self) {
+        self.grounding_threshold.zero_grad();
+        self.perception_weight.zero_grad();
+        self.action_weight.zero_grad();
+        self.exploration_bonus.zero_grad();
+        self.cooccurrence_rate.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.grounding_threshold.step(lr);
+        self.perception_weight.step(lr);
+        self.action_weight.step(lr);
+        self.exploration_bonus.step(lr);
+        self.cooccurrence_rate.step(lr);
+
+        // Ensure valid ranges
+        self.grounding_threshold.value = self.grounding_threshold.value.clamp(0.0, 1.0);
+        self.cooccurrence_rate.value = self.cooccurrence_rate.value.clamp(0.0, 1.0);
+    }
+
+    fn num_parameters(&self) -> usize {
+        5
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.grounding_threshold.grad != 0.0
+            || self.perception_weight.grad != 0.0
+            || self.action_weight.grad != 0.0
+            || self.exploration_bonus.grad != 0.0
+            || self.cooccurrence_rate.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.grounding_threshold.grad.powi(2)
+            + self.perception_weight.grad.powi(2)
+            + self.action_weight.grad.powi(2)
+            + self.exploration_bonus.grad.powi(2)
+            + self.cooccurrence_rate.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

@@ -16,7 +16,7 @@
 //! - Unified multi-modal events
 //! - Modality translation (cross-modal inference)
 
-use grapheme_core::DagNN;
+use grapheme_core::{DagNN, Learnable, LearnableParam};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -435,6 +435,139 @@ impl MultiModalGraph for SimpleMultiModal {
 /// Create a default multi-modal processor
 pub fn create_default_multimodal() -> SimpleMultiModal {
     SimpleMultiModal::new()
+}
+
+// ============================================================================
+// Learnable Multimodal
+// ============================================================================
+
+/// Learnable multimodal fusion with trainable modality weights
+///
+/// This module learns to weight different modalities and adjust
+/// binding strength for cross-modal associations.
+#[derive(Debug, Clone)]
+pub struct LearnableMultimodal {
+    /// Weight for visual modality
+    pub visual_weight: LearnableParam,
+    /// Weight for auditory modality
+    pub auditory_weight: LearnableParam,
+    /// Weight for linguistic modality
+    pub linguistic_weight: LearnableParam,
+    /// Weight for tactile modality
+    pub tactile_weight: LearnableParam,
+    /// Binding strength for cross-modal associations
+    pub binding_strength: LearnableParam,
+    /// Temperature for fusion attention
+    pub fusion_temperature: LearnableParam,
+}
+
+impl LearnableMultimodal {
+    /// Create a new learnable multimodal module
+    pub fn new() -> Self {
+        Self {
+            visual_weight: LearnableParam::new(0.3),
+            auditory_weight: LearnableParam::new(0.2),
+            linguistic_weight: LearnableParam::new(0.4),
+            tactile_weight: LearnableParam::new(0.1),
+            binding_strength: LearnableParam::new(0.5),
+            fusion_temperature: LearnableParam::new(1.0),
+        }
+    }
+
+    /// Get normalized modality weights
+    pub fn normalized_weights(&self) -> [f32; 4] {
+        let weights = [
+            self.visual_weight.value.max(0.0),
+            self.auditory_weight.value.max(0.0),
+            self.linguistic_weight.value.max(0.0),
+            self.tactile_weight.value.max(0.0),
+        ];
+        let sum: f32 = weights.iter().sum();
+        if sum > 0.0 {
+            [weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum]
+        } else {
+            [0.25, 0.25, 0.25, 0.25]
+        }
+    }
+
+    /// Compute weighted fusion of modality values
+    pub fn weighted_fusion(&self, visual: f32, auditory: f32, linguistic: f32, tactile: f32) -> f32 {
+        let w = self.normalized_weights();
+        w[0] * visual + w[1] * auditory + w[2] * linguistic + w[3] * tactile
+    }
+
+    /// Compute binding score between two elements
+    pub fn binding_score(&self, similarity: f32) -> f32 {
+        let strength = self.binding_strength.value.clamp(0.0, 1.0);
+        strength * similarity
+    }
+
+    /// Compute attention weights with temperature scaling
+    pub fn attention_weights(&self, scores: &[f32]) -> Vec<f32> {
+        let temp = self.fusion_temperature.value.max(0.01);
+        let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_scores: Vec<f32> = scores.iter()
+            .map(|&s| ((s - max_score) / temp).exp())
+            .collect();
+        let sum: f32 = exp_scores.iter().sum();
+        if sum > 0.0 {
+            exp_scores.iter().map(|&e| e / sum).collect()
+        } else {
+            vec![1.0 / scores.len() as f32; scores.len()]
+        }
+    }
+}
+
+impl Default for LearnableMultimodal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableMultimodal {
+    fn zero_grad(&mut self) {
+        self.visual_weight.zero_grad();
+        self.auditory_weight.zero_grad();
+        self.linguistic_weight.zero_grad();
+        self.tactile_weight.zero_grad();
+        self.binding_strength.zero_grad();
+        self.fusion_temperature.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.visual_weight.step(lr);
+        self.auditory_weight.step(lr);
+        self.linguistic_weight.step(lr);
+        self.tactile_weight.step(lr);
+        self.binding_strength.step(lr);
+        self.fusion_temperature.step(lr);
+
+        // Ensure valid ranges
+        self.fusion_temperature.value = self.fusion_temperature.value.max(0.01);
+    }
+
+    fn num_parameters(&self) -> usize {
+        6
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.visual_weight.grad != 0.0
+            || self.auditory_weight.grad != 0.0
+            || self.linguistic_weight.grad != 0.0
+            || self.tactile_weight.grad != 0.0
+            || self.binding_strength.grad != 0.0
+            || self.fusion_temperature.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.visual_weight.grad.powi(2)
+            + self.auditory_weight.grad.powi(2)
+            + self.linguistic_weight.grad.powi(2)
+            + self.tactile_weight.grad.powi(2)
+            + self.binding_strength.grad.powi(2)
+            + self.fusion_temperature.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

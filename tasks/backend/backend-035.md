@@ -1,7 +1,7 @@
 ---
 id: backend-035
 title: Add learnable meta-cognition with calibrated uncertainty
-status: todo
+status: done
 priority: medium
 tags:
 - backend

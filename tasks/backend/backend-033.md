@@ -1,7 +1,7 @@
 ---
 id: backend-033
 title: Add learnable reasoning with rule confidence updating
-status: todo
+status: done
 priority: high
 tags:
 - backend

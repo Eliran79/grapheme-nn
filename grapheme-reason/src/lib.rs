@@ -18,7 +18,7 @@
 //!
 //! All implementations include complexity bounds and timeout mechanisms.
 
-use grapheme_core::{DagNN, TransformRule};
+use grapheme_core::{DagNN, Learnable, LearnableParam, TransformRule};
 use grapheme_memory::{GraphFingerprint, SemanticGraph};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
@@ -1072,6 +1072,170 @@ pub fn create_default_reasoning_engine() -> ReasoningEngine {
         Box::new(SimpleAnalogy::new()),
         Box::new(SimpleCausalReasoning::new()),
     )
+}
+
+// ============================================================================
+// Learnable Reasoning
+// ============================================================================
+
+/// Reasoning mode for selecting which reasoning type to apply
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningMode {
+    /// Forward/backward logical inference
+    Deduction,
+    /// Generalization from examples
+    Induction,
+    /// Inference to best explanation
+    Abduction,
+}
+
+/// Learnable reasoning with trainable confidence weights
+///
+/// This module learns to weight different reasoning modes and adjust
+/// rule confidence based on feedback.
+#[derive(Debug, Clone)]
+pub struct LearnableReasoning {
+    /// Confidence weight for deductive reasoning
+    pub deduction_confidence: LearnableParam,
+    /// Confidence weight for inductive reasoning
+    pub induction_confidence: LearnableParam,
+    /// Confidence weight for abductive reasoning
+    pub abduction_confidence: LearnableParam,
+    /// Weight for structural similarity in analogical reasoning
+    pub analogy_structure_weight: LearnableParam,
+    /// Weight for causal strength estimation
+    pub causal_strength_weight: LearnableParam,
+    /// Temperature for softmax rule selection
+    pub rule_temperature: LearnableParam,
+}
+
+impl LearnableReasoning {
+    /// Create a new learnable reasoning module with default weights
+    pub fn new() -> Self {
+        Self {
+            deduction_confidence: LearnableParam::new(1.0),
+            induction_confidence: LearnableParam::new(0.8),
+            abduction_confidence: LearnableParam::new(0.7),
+            analogy_structure_weight: LearnableParam::new(0.5),
+            causal_strength_weight: LearnableParam::new(0.5),
+            rule_temperature: LearnableParam::new(1.0),
+        }
+    }
+
+    /// Select reasoning mode based on learned weights
+    pub fn select_mode(&self, context_features: &[f32; 3]) -> ReasoningMode {
+        // Context features: [structural_clarity, num_examples, explanation_needed]
+        let scores = [
+            self.deduction_confidence.value * context_features[0],
+            self.induction_confidence.value * context_features[1],
+            self.abduction_confidence.value * context_features[2],
+        ];
+
+        // Softmax selection with temperature
+        let temp = self.rule_temperature.value.max(0.01);
+        let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_scores: Vec<f32> = scores.iter()
+            .map(|&s| ((s - max_score) / temp).exp())
+            .collect();
+        let sum: f32 = exp_scores.iter().sum();
+
+        let probs: Vec<f32> = exp_scores.iter().map(|&e| e / sum).collect();
+
+        // Return mode with highest probability
+        if probs[0] >= probs[1] && probs[0] >= probs[2] {
+            ReasoningMode::Deduction
+        } else if probs[1] >= probs[2] {
+            ReasoningMode::Induction
+        } else {
+            ReasoningMode::Abduction
+        }
+    }
+
+    /// Adjust rule confidence based on feedback
+    pub fn update_confidence(&mut self, mode: ReasoningMode, success: bool, lr: f32) {
+        let delta = if success { 0.1 } else { -0.1 };
+        match mode {
+            ReasoningMode::Deduction => {
+                self.deduction_confidence.grad = -delta;
+                self.deduction_confidence.step(lr);
+            }
+            ReasoningMode::Induction => {
+                self.induction_confidence.grad = -delta;
+                self.induction_confidence.step(lr);
+            }
+            ReasoningMode::Abduction => {
+                self.abduction_confidence.grad = -delta;
+                self.abduction_confidence.step(lr);
+            }
+        }
+        // Clamp confidence values
+        self.deduction_confidence.value = self.deduction_confidence.value.clamp(0.1, 2.0);
+        self.induction_confidence.value = self.induction_confidence.value.clamp(0.1, 2.0);
+        self.abduction_confidence.value = self.abduction_confidence.value.clamp(0.1, 2.0);
+    }
+
+    /// Compute analogy score with learned weights
+    pub fn analogy_score(&self, structural_sim: f32, semantic_sim: f32) -> f32 {
+        let w = self.analogy_structure_weight.value.clamp(0.0, 1.0);
+        w * structural_sim + (1.0 - w) * semantic_sim
+    }
+
+    /// Estimate causal strength with learned weights
+    pub fn causal_strength(&self, co_occurrence: f32, temporal_order: f32) -> f32 {
+        let w = self.causal_strength_weight.value.clamp(0.0, 1.0);
+        w * co_occurrence + (1.0 - w) * temporal_order
+    }
+}
+
+impl Default for LearnableReasoning {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableReasoning {
+    fn zero_grad(&mut self) {
+        self.deduction_confidence.zero_grad();
+        self.induction_confidence.zero_grad();
+        self.abduction_confidence.zero_grad();
+        self.analogy_structure_weight.zero_grad();
+        self.causal_strength_weight.zero_grad();
+        self.rule_temperature.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.deduction_confidence.step(lr);
+        self.induction_confidence.step(lr);
+        self.abduction_confidence.step(lr);
+        self.analogy_structure_weight.step(lr);
+        self.causal_strength_weight.step(lr);
+        self.rule_temperature.step(lr);
+        // Ensure temperature stays positive
+        self.rule_temperature.value = self.rule_temperature.value.max(0.01);
+    }
+
+    fn num_parameters(&self) -> usize {
+        6 // deduction, induction, abduction confidence + analogy, causal weights + temperature
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.deduction_confidence.grad != 0.0
+            || self.induction_confidence.grad != 0.0
+            || self.abduction_confidence.grad != 0.0
+            || self.analogy_structure_weight.grad != 0.0
+            || self.causal_strength_weight.grad != 0.0
+            || self.rule_temperature.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.deduction_confidence.grad.powi(2)
+            + self.induction_confidence.grad.powi(2)
+            + self.abduction_confidence.grad.powi(2)
+            + self.analogy_structure_weight.grad.powi(2)
+            + self.causal_strength_weight.grad.powi(2)
+            + self.rule_temperature.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

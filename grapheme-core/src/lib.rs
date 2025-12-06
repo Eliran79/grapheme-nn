@@ -1031,6 +1031,51 @@ pub trait Learnable {
     fn gradient_norm(&self) -> f32;
 }
 
+/// A single learnable parameter with value and gradient
+///
+/// Use this for simple scalar parameters that need gradient-based learning.
+/// For vector/matrix parameters, use ndarray-based structures instead.
+#[derive(Debug, Clone)]
+pub struct LearnableParam {
+    /// Current parameter value
+    pub value: f32,
+    /// Accumulated gradient
+    pub grad: f32,
+}
+
+impl LearnableParam {
+    /// Create a new learnable parameter with the given initial value
+    pub fn new(value: f32) -> Self {
+        Self { value, grad: 0.0 }
+    }
+
+    /// Zero the accumulated gradient
+    pub fn zero_grad(&mut self) {
+        self.grad = 0.0;
+    }
+
+    /// Update the parameter using gradient descent
+    pub fn step(&mut self, lr: f32) {
+        self.value -= lr * self.grad;
+    }
+
+    /// Accumulate gradient
+    pub fn accumulate_grad(&mut self, grad: f32) {
+        self.grad += grad;
+    }
+
+    /// Get the absolute value of the gradient (for norm computation)
+    pub fn grad_abs(&self) -> f32 {
+        self.grad.abs()
+    }
+}
+
+impl Default for LearnableParam {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
 impl Learnable for Embedding {
     fn zero_grad(&mut self) {
         // Delegate to inherent method which creates zeroed gradient

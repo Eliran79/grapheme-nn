@@ -15,7 +15,7 @@
 //!
 //! This enables planning, counterfactual reasoning, and mental simulation.
 
-use grapheme_core::{DagNN, TransformRule};
+use grapheme_core::{DagNN, Learnable, LearnableParam, TransformRule};
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -498,6 +498,127 @@ pub fn create_default_world_model() -> SimpleWorldModel {
     let relations = DagNN::new();
     let state = WorldState::new(entities, relations);
     SimpleWorldModel::new(state)
+}
+
+// ============================================================================
+// Learnable World Model
+// ============================================================================
+
+/// Learnable world model with trainable transition dynamics
+///
+/// This module learns to predict state transitions and adjust
+/// uncertainty estimates based on experience.
+#[derive(Debug, Clone)]
+pub struct LearnableWorldModel {
+    /// Bias for transition probability estimation
+    pub transition_bias: LearnableParam,
+    /// Confidence in predictions
+    pub prediction_confidence: LearnableParam,
+    /// Temporal discount factor for multi-step predictions
+    pub temporal_discount: LearnableParam,
+    /// Weight for entity changes in state updates
+    pub entity_weight: LearnableParam,
+    /// Weight for relation changes in state updates
+    pub relation_weight: LearnableParam,
+    /// Uncertainty scaling factor
+    pub uncertainty_scale: LearnableParam,
+}
+
+impl LearnableWorldModel {
+    /// Create a new learnable world model with default weights
+    pub fn new() -> Self {
+        Self {
+            transition_bias: LearnableParam::new(0.0),
+            prediction_confidence: LearnableParam::new(0.8),
+            temporal_discount: LearnableParam::new(0.9),
+            entity_weight: LearnableParam::new(0.5),
+            relation_weight: LearnableParam::new(0.5),
+            uncertainty_scale: LearnableParam::new(1.0),
+        }
+    }
+
+    /// Compute transition probability with learned parameters
+    pub fn transition_probability(&self, base_prob: f32) -> f32 {
+        (base_prob + self.transition_bias.value).clamp(0.0, 1.0)
+    }
+
+    /// Compute prediction confidence with temporal decay
+    pub fn decayed_confidence(&self, time_steps: usize) -> f32 {
+        let base = self.prediction_confidence.value;
+        let discount = self.temporal_discount.value.clamp(0.0, 1.0);
+        base * discount.powi(time_steps as i32)
+    }
+
+    /// Compute combined state change score
+    pub fn state_change_score(&self, entity_change: f32, relation_change: f32) -> f32 {
+        let ew = self.entity_weight.value.clamp(0.0, 1.0);
+        let rw = self.relation_weight.value.clamp(0.0, 1.0);
+        let total = ew + rw;
+        if total > 0.0 {
+            (ew * entity_change + rw * relation_change) / total
+        } else {
+            0.5 * entity_change + 0.5 * relation_change
+        }
+    }
+
+    /// Compute uncertainty for a prediction
+    pub fn prediction_uncertainty(&self, base_uncertainty: f32) -> f32 {
+        (base_uncertainty * self.uncertainty_scale.value).clamp(0.0, 1.0)
+    }
+}
+
+impl Default for LearnableWorldModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableWorldModel {
+    fn zero_grad(&mut self) {
+        self.transition_bias.zero_grad();
+        self.prediction_confidence.zero_grad();
+        self.temporal_discount.zero_grad();
+        self.entity_weight.zero_grad();
+        self.relation_weight.zero_grad();
+        self.uncertainty_scale.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.transition_bias.step(lr);
+        self.prediction_confidence.step(lr);
+        self.temporal_discount.step(lr);
+        self.entity_weight.step(lr);
+        self.relation_weight.step(lr);
+        self.uncertainty_scale.step(lr);
+
+        // Ensure values stay in valid ranges
+        self.prediction_confidence.value = self.prediction_confidence.value.clamp(0.0, 1.0);
+        self.temporal_discount.value = self.temporal_discount.value.clamp(0.0, 1.0);
+        self.uncertainty_scale.value = self.uncertainty_scale.value.max(0.01);
+    }
+
+    fn num_parameters(&self) -> usize {
+        6 // transition_bias, prediction_confidence, temporal_discount, entity/relation weights, uncertainty_scale
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.transition_bias.grad != 0.0
+            || self.prediction_confidence.grad != 0.0
+            || self.temporal_discount.grad != 0.0
+            || self.entity_weight.grad != 0.0
+            || self.relation_weight.grad != 0.0
+            || self.uncertainty_scale.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.transition_bias.grad.powi(2)
+            + self.prediction_confidence.grad.powi(2)
+            + self.temporal_discount.grad.powi(2)
+            + self.entity_weight.grad.powi(2)
+            + self.relation_weight.grad.powi(2)
+            + self.uncertainty_scale.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

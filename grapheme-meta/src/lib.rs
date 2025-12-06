@@ -19,7 +19,7 @@
 //!
 //! Real meta-cognition may require learned policies.
 
-use grapheme_core::DagNN;
+use grapheme_core::{DagNN, Learnable, LearnableParam};
 use grapheme_reason::ReasoningStep;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -594,6 +594,117 @@ impl MetaCognition for SimpleMetaCognition {
 /// Create a default meta-cognition system
 pub fn create_default_metacognition() -> SimpleMetaCognition {
     SimpleMetaCognition::new()
+}
+
+// ============================================================================
+// Learnable Meta-Cognition
+// ============================================================================
+
+/// Learnable meta-cognition with trainable calibration and allocation
+///
+/// This module learns to estimate uncertainty and allocate computation
+/// more accurately based on experience.
+#[derive(Debug, Clone)]
+pub struct LearnableMetaCognition {
+    /// Bias for calibrating confidence predictions
+    pub calibration_bias: LearnableParam,
+    /// Scale for uncertainty estimates
+    pub uncertainty_scale: LearnableParam,
+    /// Weight for epistemic uncertainty
+    pub epistemic_weight: LearnableParam,
+    /// Bias for compute allocation
+    pub compute_bias: LearnableParam,
+    /// Early stopping threshold
+    pub early_stop_threshold: LearnableParam,
+}
+
+impl LearnableMetaCognition {
+    /// Create a new learnable meta-cognition module
+    pub fn new() -> Self {
+        Self {
+            calibration_bias: LearnableParam::new(0.0),
+            uncertainty_scale: LearnableParam::new(1.0),
+            epistemic_weight: LearnableParam::new(0.5),
+            compute_bias: LearnableParam::new(0.0),
+            early_stop_threshold: LearnableParam::new(0.95),
+        }
+    }
+
+    /// Calibrate a raw confidence score
+    pub fn calibrate_confidence(&self, raw_confidence: f32) -> f32 {
+        (raw_confidence + self.calibration_bias.value).clamp(0.0, 1.0)
+    }
+
+    /// Scale uncertainty estimate
+    pub fn scale_uncertainty(&self, raw_uncertainty: f32) -> f32 {
+        (raw_uncertainty * self.uncertainty_scale.value).clamp(0.0, 1.0)
+    }
+
+    /// Weight epistemic vs aleatoric uncertainty
+    pub fn weighted_uncertainty(&self, epistemic: f32, aleatoric: f32) -> f32 {
+        let w = self.epistemic_weight.value.clamp(0.0, 1.0);
+        w * epistemic + (1.0 - w) * aleatoric
+    }
+
+    /// Compute adjusted compute budget
+    pub fn adjusted_compute(&self, base_compute: usize) -> usize {
+        let adjustment = 1.0 + self.compute_bias.value.clamp(-0.5, 0.5);
+        ((base_compute as f32) * adjustment).max(1.0) as usize
+    }
+
+    /// Check if should early stop based on confidence
+    pub fn should_early_stop(&self, confidence: f32) -> bool {
+        confidence >= self.early_stop_threshold.value
+    }
+}
+
+impl Default for LearnableMetaCognition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableMetaCognition {
+    fn zero_grad(&mut self) {
+        self.calibration_bias.zero_grad();
+        self.uncertainty_scale.zero_grad();
+        self.epistemic_weight.zero_grad();
+        self.compute_bias.zero_grad();
+        self.early_stop_threshold.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.calibration_bias.step(lr);
+        self.uncertainty_scale.step(lr);
+        self.epistemic_weight.step(lr);
+        self.compute_bias.step(lr);
+        self.early_stop_threshold.step(lr);
+
+        // Ensure valid ranges
+        self.uncertainty_scale.value = self.uncertainty_scale.value.max(0.01);
+        self.early_stop_threshold.value = self.early_stop_threshold.value.clamp(0.5, 1.0);
+    }
+
+    fn num_parameters(&self) -> usize {
+        5
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.calibration_bias.grad != 0.0
+            || self.uncertainty_scale.grad != 0.0
+            || self.epistemic_weight.grad != 0.0
+            || self.compute_bias.grad != 0.0
+            || self.early_stop_threshold.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.calibration_bias.grad.powi(2)
+            + self.uncertainty_scale.grad.powi(2)
+            + self.epistemic_weight.grad.powi(2)
+            + self.compute_bias.grad.powi(2)
+            + self.early_stop_threshold.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

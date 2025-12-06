@@ -26,7 +26,7 @@
 //! - Feature-based hashing for O(n) approximate retrieval
 //! - Index by structural features (node count, edge count, degree histogram)
 
-use grapheme_core::{DagNN, TransformRule};
+use grapheme_core::{DagNN, Learnable, LearnableParam, TransformRule};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -1087,6 +1087,154 @@ pub fn create_default_memory_system() -> MemorySystem {
         Box::new(SimpleWorkingMemory::new(7)),
         Box::new(SimpleContinualLearning::new(1000)),
     )
+}
+
+// ============================================================================
+// Learnable Memory Retrieval
+// ============================================================================
+
+/// Learnable memory retrieval with trainable similarity weights
+///
+/// This module learns to weight different aspects of graph similarity
+/// for memory retrieval (node count, edge count, degree distribution, type distribution).
+#[derive(Debug, Clone)]
+pub struct LearnableMemoryRetrieval {
+    /// Weight for node count similarity
+    pub node_weight: LearnableParam,
+    /// Weight for edge count similarity
+    pub edge_weight: LearnableParam,
+    /// Weight for degree histogram similarity
+    pub degree_weight: LearnableParam,
+    /// Weight for node type distribution similarity
+    pub type_weight: LearnableParam,
+    /// Bias term for importance scoring
+    pub importance_bias: LearnableParam,
+    /// Temperature for softmax-like retrieval
+    pub temperature: LearnableParam,
+}
+
+impl LearnableMemoryRetrieval {
+    /// Create a new learnable memory retrieval with default weights
+    pub fn new() -> Self {
+        Self {
+            node_weight: LearnableParam::new(0.25),
+            edge_weight: LearnableParam::new(0.25),
+            degree_weight: LearnableParam::new(0.25),
+            type_weight: LearnableParam::new(0.25),
+            importance_bias: LearnableParam::new(0.0),
+            temperature: LearnableParam::new(1.0),
+        }
+    }
+
+    /// Compute weighted similarity between two fingerprints
+    pub fn weighted_similarity(&self, a: &GraphFingerprint, b: &GraphFingerprint) -> f32 {
+        // Node count similarity
+        let node_sim = 1.0 - (a.node_count as f32 - b.node_count as f32).abs()
+            / (a.node_count.max(b.node_count).max(1) as f32);
+
+        // Edge count similarity
+        let edge_sim = 1.0 - (a.edge_count as f32 - b.edge_count as f32).abs()
+            / (a.edge_count.max(b.edge_count).max(1) as f32);
+
+        // Degree histogram similarity
+        let mut degree_diff = 0.0f32;
+        let mut degree_total = 0.0f32;
+        for i in 0..8 {
+            degree_diff += (a.degree_hist[i] as f32 - b.degree_hist[i] as f32).abs();
+            degree_total += (a.degree_hist[i] + b.degree_hist[i]) as f32;
+        }
+        let degree_sim = if degree_total > 0.0 {
+            1.0 - degree_diff / degree_total
+        } else {
+            1.0
+        };
+
+        // Node type distribution similarity
+        let mut type_diff = 0.0f32;
+        let mut type_total = 0.0f32;
+        for i in 0..8 {
+            type_diff += (a.node_types[i] as f32 - b.node_types[i] as f32).abs();
+            type_total += (a.node_types[i] + b.node_types[i]) as f32;
+        }
+        let type_sim = if type_total > 0.0 {
+            1.0 - type_diff / type_total
+        } else {
+            1.0
+        };
+
+        // Weighted sum with softmax-normalized weights
+        let weights = [
+            self.node_weight.value.exp(),
+            self.edge_weight.value.exp(),
+            self.degree_weight.value.exp(),
+            self.type_weight.value.exp(),
+        ];
+        let weight_sum: f32 = weights.iter().sum();
+
+        (weights[0] * node_sim + weights[1] * edge_sim +
+         weights[2] * degree_sim + weights[3] * type_sim) / weight_sum
+         + self.importance_bias.value
+    }
+
+    /// Score an episode for retrieval given a query
+    pub fn score_episode(&self, query_fp: &GraphFingerprint, episode: &Episode) -> f32 {
+        let content_fp = GraphFingerprint::from_graph(&episode.content);
+        let sim = self.weighted_similarity(query_fp, &content_fp);
+
+        // Apply temperature scaling
+        (sim / self.temperature.value.max(0.01)).clamp(-10.0, 10.0)
+    }
+}
+
+impl Default for LearnableMemoryRetrieval {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Learnable for LearnableMemoryRetrieval {
+    fn zero_grad(&mut self) {
+        self.node_weight.zero_grad();
+        self.edge_weight.zero_grad();
+        self.degree_weight.zero_grad();
+        self.type_weight.zero_grad();
+        self.importance_bias.zero_grad();
+        self.temperature.zero_grad();
+    }
+
+    fn step(&mut self, lr: f32) {
+        self.node_weight.step(lr);
+        self.edge_weight.step(lr);
+        self.degree_weight.step(lr);
+        self.type_weight.step(lr);
+        self.importance_bias.step(lr);
+        self.temperature.step(lr);
+        // Ensure temperature stays positive
+        self.temperature.value = self.temperature.value.max(0.01);
+    }
+
+    fn num_parameters(&self) -> usize {
+        6 // node, edge, degree, type weights + importance_bias + temperature
+    }
+
+    fn has_gradients(&self) -> bool {
+        self.node_weight.grad != 0.0
+            || self.edge_weight.grad != 0.0
+            || self.degree_weight.grad != 0.0
+            || self.type_weight.grad != 0.0
+            || self.importance_bias.grad != 0.0
+            || self.temperature.grad != 0.0
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        (self.node_weight.grad.powi(2)
+            + self.edge_weight.grad.powi(2)
+            + self.degree_weight.grad.powi(2)
+            + self.type_weight.grad.powi(2)
+            + self.importance_bias.grad.powi(2)
+            + self.temperature.grad.powi(2))
+        .sqrt()
+    }
 }
 
 // ============================================================================

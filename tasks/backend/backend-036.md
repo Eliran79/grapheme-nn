@@ -1,7 +1,7 @@
 ---
 id: backend-036
 title: Add learnable agency with adaptive goals and values
-status: todo
+status: done
 priority: medium
 tags:
 - backend

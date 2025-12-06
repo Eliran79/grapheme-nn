@@ -11,6 +11,13 @@ publish = false
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-core = { path = "../grapheme-core" }
+grapheme-memory = { path = "../grapheme-memory" }
+grapheme-reason = { path = "../grapheme-reason" }
+grapheme-world = { path = "../grapheme-world" }
+grapheme-meta = { path = "../grapheme-meta" }
+grapheme-agent = { path = "../grapheme-agent" }
+grapheme-multimodal = { path = "../grapheme-multimodal" }
+grapheme-ground = { path = "../grapheme-ground" }
 
 # Test utilities
 rand.workspace = true
@@ -22,3 +29,7 @@ path = "tests/integration_pipeline.rs"
 [[test]]
 name = "integration_robustness"
 path = "tests/integration_robustness.rs"
+
+[[test]]
+name = "integration_cognitive"
+path = "tests/integration_cognitive.rs"
