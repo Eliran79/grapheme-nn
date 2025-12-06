@@ -421,7 +421,7 @@ impl SimpleMultiModal {
     /// Create with specific focus modality
     pub fn with_focus(focus: Modality) -> Self {
         Self {
-            focus: Some(focus.clone()),
+            focus: Some(focus),
             fused_graphs: Vec::new(),
             attention_weights: ModalityAttention::focused(focus),
         }
@@ -429,7 +429,7 @@ impl SimpleMultiModal {
 
     /// Set the current focus modality
     pub fn set_focus(&mut self, modality: Modality) {
-        self.focus = Some(modality.clone());
+        self.focus = Some(modality);
         self.attention_weights = ModalityAttention::focused(modality);
     }
 

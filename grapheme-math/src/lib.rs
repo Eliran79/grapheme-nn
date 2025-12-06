@@ -11,6 +11,9 @@
 //! Unlike traditional NLP, we use typed nodes rather than embeddings,
 //! but remain vocabulary-free through the type system.
 
+// Allow &self in recursive methods for API consistency
+#![allow(clippy::only_used_in_recursion)]
+
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;

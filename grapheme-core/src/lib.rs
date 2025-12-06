@@ -14,6 +14,11 @@
 //! - Dynamic graph growth with input
 //! - Universal Unicode support
 
+// Allow &self in recursive methods for API consistency
+#![allow(clippy::only_used_in_recursion)]
+// Complex type is intentional for flexibility
+#![allow(clippy::type_complexity)]
+
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -614,12 +619,9 @@ impl DagNN {
         nodes_by_pos.sort_by_key(|&(p, _)| p);
 
         // Sliding window approach
-        for i in 0..nodes_by_pos.len() {
-            let (pos_i, node_i) = nodes_by_pos[i];
-
+        for (i, &(pos_i, node_i)) in nodes_by_pos.iter().enumerate() {
             // Look at nodes ahead within window
-            for j in (i + 1)..nodes_by_pos.len() {
-                let (pos_j, node_j) = nodes_by_pos[j];
+            for &(pos_j, node_j) in &nodes_by_pos[(i + 1)..] {
                 let distance = pos_j - pos_i;
 
                 // Early break if beyond window
@@ -964,7 +966,7 @@ impl ForwardPass for DagNN {
 
             // Apply activation function (simple ReLU-like)
             if incoming_count > 0 {
-                let new_activation = (incoming_sum / incoming_count as f32).max(0.0).min(1.0);
+                let new_activation = (incoming_sum / incoming_count as f32).clamp(0.0, 1.0);
                 self.graph[node].activation = new_activation;
             }
             // Input nodes keep their original activation
@@ -3872,7 +3874,7 @@ impl AttentionLayer {
 
         // Weighted sum of values
         let mut output = Array1::zeros(query.len());
-        for (_i, (value, &weight)) in values.iter().zip(attention_weights.iter()).enumerate() {
+        for (value, &weight) in values.iter().zip(attention_weights.iter()) {
             let v = self.project(value, &self.value_proj);
             for j in 0..output.len().min(v.len()) {
                 output[j] += weight * v[j];
@@ -4092,8 +4094,7 @@ impl GraphTransformNet {
         // Build adjacency list
         let adjacency: Vec<Vec<usize>> = dag.input_nodes()
             .iter()
-            .enumerate()
-            .map(|(_i, &node)| {
+            .map(|&node| {
                 dag.graph.edges_directed(node, petgraph::Direction::Incoming)
                     .filter_map(|e| {
                         let source = e.source();
@@ -4230,6 +4231,341 @@ impl GraphTransformer for GraphTransformNet {
             output_pattern: Vec::new(),
         }
     }
+}
+
+// ============================================================================
+// Domain Brain Plugin Architecture
+// ============================================================================
+
+/// Domain-specific node types that can be extended by plugins
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DomainNodeType {
+    /// Core GRAPHEME node (character-level)
+    Core(NodeType),
+    /// Mathematical node (from grapheme-math)
+    Math(String),
+    /// Code/AST node (from grapheme-code)
+    Code(String),
+    /// Legal node (from grapheme-law)
+    Legal(String),
+    /// Music theory node (from grapheme-music)
+    Music(String),
+    /// Chemistry node (from grapheme-chem)
+    Chemistry(String),
+    /// Custom domain node
+    Custom { domain: String, node_type: String },
+}
+
+impl Default for DomainNodeType {
+    fn default() -> Self {
+        DomainNodeType::Core(NodeType::Hidden)
+    }
+}
+
+/// Domain-specific edge types
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DomainEdgeType {
+    /// Core GRAPHEME edge
+    Core(EdgeType),
+    /// Domain-specific edge
+    Domain { domain: String, edge_type: String },
+}
+
+impl Default for DomainEdgeType {
+    fn default() -> Self {
+        DomainEdgeType::Core(EdgeType::Sequential)
+    }
+}
+
+/// Result type for domain brain operations
+pub type DomainResult<T> = Result<T, DomainError>;
+
+/// Errors in domain brain operations
+#[derive(Error, Debug)]
+pub enum DomainError {
+    #[error("Domain not registered: {0}")]
+    DomainNotRegistered(String),
+    #[error("Invalid domain input: {0}")]
+    InvalidInput(String),
+    #[error("Processing error: {0}")]
+    ProcessingError(String),
+    #[error("Graph error: {0}")]
+    GraphError(#[from] GraphemeError),
+}
+
+/// Trait for domain-specific brain plugins (like tree-sitter for languages)
+///
+/// Each domain brain provides:
+/// - Domain-specific node and edge types
+/// - Transformation rules for the domain
+/// - Validation and type checking
+/// - Training data generation
+pub trait DomainBrain: Send + Sync + std::fmt::Debug {
+    /// Get the unique domain identifier (e.g., "math", "code", "law")
+    fn domain_id(&self) -> &str;
+
+    /// Get human-readable domain name
+    fn domain_name(&self) -> &str;
+
+    /// Get the version of this brain
+    fn version(&self) -> &str;
+
+    /// Check if this brain can process the given input
+    fn can_process(&self, input: &str) -> bool;
+
+    /// Parse domain-specific input into a graph
+    fn parse(&self, input: &str) -> DomainResult<DagNN>;
+
+    /// Transform a core graph into domain-specific representation
+    #[allow(clippy::wrong_self_convention)]
+    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN>;
+
+    /// Transform domain-specific graph back to core representation
+    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN>;
+
+    /// Validate a domain-specific graph
+    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>>;
+
+    /// Execute/evaluate a domain graph (e.g., compute math, compile code)
+    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult>;
+
+    /// Get available transformation rules for this domain
+    fn get_rules(&self) -> Vec<DomainRule>;
+
+    /// Apply a domain-specific transformation
+    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN>;
+
+    /// Generate training examples for this domain
+    fn generate_examples(&self, count: usize) -> Vec<DomainExample>;
+}
+
+/// Validation issue found in a domain graph
+#[derive(Debug, Clone)]
+pub struct ValidationIssue {
+    /// Severity of the issue
+    pub severity: ValidationSeverity,
+    /// Description of the issue
+    pub message: String,
+    /// Optional node where issue was found
+    pub node: Option<NodeId>,
+}
+
+/// Severity levels for validation issues
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationSeverity {
+    /// Informational
+    Info,
+    /// Warning - may cause problems
+    Warning,
+    /// Error - invalid graph
+    Error,
+}
+
+/// Result of executing a domain graph
+#[derive(Debug, Clone)]
+pub enum ExecutionResult {
+    /// Numeric result (e.g., math evaluation)
+    Numeric(f64),
+    /// String result (e.g., code output)
+    Text(String),
+    /// Graph result (e.g., transformed graph)
+    Graph(Box<DagNN>),
+    /// Boolean result (e.g., validation)
+    Boolean(bool),
+    /// No result (side effects only)
+    Unit,
+    /// Error during execution
+    Error(String),
+}
+
+/// A domain-specific transformation rule
+#[derive(Debug, Clone)]
+pub struct DomainRule {
+    /// Unique rule identifier
+    pub id: usize,
+    /// Domain this rule belongs to
+    pub domain: String,
+    /// Human-readable name
+    pub name: String,
+    /// Description of what the rule does
+    pub description: String,
+    /// Category (e.g., "simplification", "optimization")
+    pub category: String,
+}
+
+/// A training example from a domain
+#[derive(Debug, Clone)]
+pub struct DomainExample {
+    /// Input graph
+    pub input: DagNN,
+    /// Expected output graph
+    pub output: DagNN,
+    /// Domain this example is from
+    pub domain: String,
+    /// Difficulty level (1-10)
+    pub difficulty: u8,
+}
+
+/// Registry for domain brain plugins
+#[derive(Debug, Default)]
+pub struct BrainRegistry {
+    /// Registered domain brains
+    brains: HashMap<String, Box<dyn DomainBrain>>,
+    /// Load order for deterministic iteration
+    load_order: Vec<String>,
+}
+
+impl BrainRegistry {
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a domain brain
+    pub fn register(&mut self, brain: Box<dyn DomainBrain>) {
+        let domain_id = brain.domain_id().to_string();
+        if !self.brains.contains_key(&domain_id) {
+            self.load_order.push(domain_id.clone());
+        }
+        self.brains.insert(domain_id, brain);
+    }
+
+    /// Get a brain by domain ID
+    pub fn get(&self, domain_id: &str) -> Option<&dyn DomainBrain> {
+        self.brains.get(domain_id).map(|b| b.as_ref())
+    }
+
+    /// Get a mutable brain by domain ID
+    pub fn get_mut(&mut self, domain_id: &str) -> Option<&mut Box<dyn DomainBrain>> {
+        self.brains.get_mut(domain_id)
+    }
+
+    /// Check if a domain is registered
+    pub fn has_domain(&self, domain_id: &str) -> bool {
+        self.brains.contains_key(domain_id)
+    }
+
+    /// Get all registered domain IDs
+    pub fn domains(&self) -> &[String] {
+        &self.load_order
+    }
+
+    /// Get count of registered brains
+    pub fn len(&self) -> usize {
+        self.brains.len()
+    }
+
+    /// Check if registry is empty
+    pub fn is_empty(&self) -> bool {
+        self.brains.is_empty()
+    }
+
+    /// Find a brain that can process the given input
+    pub fn find_processor(&self, input: &str) -> Option<&dyn DomainBrain> {
+        for domain_id in &self.load_order {
+            if let Some(brain) = self.brains.get(domain_id) {
+                if brain.can_process(input) {
+                    return Some(brain.as_ref());
+                }
+            }
+        }
+        None
+    }
+
+    /// Process input with the appropriate brain
+    pub fn process(&self, input: &str) -> DomainResult<DagNN> {
+        self.find_processor(input)
+            .ok_or_else(|| DomainError::DomainNotRegistered("No brain can process this input".to_string()))?
+            .parse(input)
+    }
+
+    /// Get all available rules across all domains
+    pub fn all_rules(&self) -> Vec<DomainRule> {
+        self.load_order
+            .iter()
+            .filter_map(|id| self.brains.get(id))
+            .flat_map(|b| b.get_rules())
+            .collect()
+    }
+
+    /// Generate examples from all domains
+    pub fn generate_examples(&self, per_domain: usize) -> Vec<DomainExample> {
+        self.load_order
+            .iter()
+            .filter_map(|id| self.brains.get(id))
+            .flat_map(|b| b.generate_examples(per_domain))
+            .collect()
+    }
+
+    /// Unregister a domain brain
+    pub fn unregister(&mut self, domain_id: &str) -> Option<Box<dyn DomainBrain>> {
+        self.load_order.retain(|id| id != domain_id);
+        self.brains.remove(domain_id)
+    }
+
+    /// Clear all registered brains
+    pub fn clear(&mut self) {
+        self.brains.clear();
+        self.load_order.clear();
+    }
+}
+
+/// Cross-domain knowledge transfer
+#[derive(Default)]
+pub struct CrossDomainBridge {
+    /// Mapping functions between domains
+    mappings: HashMap<(String, String), Box<dyn Fn(&DagNN) -> DomainResult<DagNN> + Send + Sync>>,
+}
+
+impl std::fmt::Debug for CrossDomainBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrossDomainBridge")
+            .field("mappings", &format!("{} mappings", self.mappings.len()))
+            .finish()
+    }
+}
+
+impl CrossDomainBridge {
+    /// Create a new cross-domain bridge
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a mapping from one domain to another
+    pub fn register_mapping<F>(&mut self, from: &str, to: &str, mapper: F)
+    where
+        F: Fn(&DagNN) -> DomainResult<DagNN> + Send + Sync + 'static,
+    {
+        self.mappings.insert(
+            (from.to_string(), to.to_string()),
+            Box::new(mapper),
+        );
+    }
+
+    /// Transfer knowledge from one domain to another
+    pub fn transfer(&self, graph: &DagNN, from: &str, to: &str) -> DomainResult<DagNN> {
+        let key = (from.to_string(), to.to_string());
+        self.mappings
+            .get(&key)
+            .ok_or_else(|| DomainError::DomainNotRegistered(
+                format!("No mapping from {} to {}", from, to)
+            ))
+            .and_then(|f| f(graph))
+    }
+
+    /// Check if a mapping exists
+    pub fn has_mapping(&self, from: &str, to: &str) -> bool {
+        self.mappings.contains_key(&(from.to_string(), to.to_string()))
+    }
+}
+
+/// Factory for creating domain brains
+pub trait BrainFactory: Send + Sync {
+    /// Create a new instance of a domain brain
+    fn create(&self) -> Box<dyn DomainBrain>;
+
+    /// Get the domain ID this factory creates
+    fn domain_id(&self) -> &str;
 }
 
 // ============================================================================

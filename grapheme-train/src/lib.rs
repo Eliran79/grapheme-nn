@@ -15,6 +15,9 @@
 //! - Brain learns to approximate transformations
 //! - All outputs validated against engine
 
+// Allow &self in recursive methods for API consistency
+#![allow(clippy::only_used_in_recursion)]
+
 use grapheme_core::{GraphemeGraph, NodeType};
 use grapheme_engine::{Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value};
 use grapheme_math::{MathGraph, MathNode};
@@ -1642,9 +1645,9 @@ impl GraphEditDistance {
 
         // Build list of all possible pairs sorted by cost
         let mut pairs: Vec<(usize, usize, f32)> = Vec::with_capacity(n1 * n2);
-        for i in 0..n1 {
-            for j in 0..n2 {
-                pairs.push((i, j, costs[i][j].total()));
+        for (i, row) in costs.iter().enumerate().take(n1) {
+            for (j, cost) in row.iter().enumerate().take(n2) {
+                pairs.push((i, j, cost.total()));
             }
         }
         pairs.sort_by(|a, b| a.2.total_cmp(&b.2));
@@ -2327,7 +2330,7 @@ impl TrainingLoop {
 
     /// Check if validation should run this epoch
     pub fn should_validate(&self) -> bool {
-        self.state.epoch % self.config.val_frequency == 0
+        self.state.epoch.is_multiple_of(self.config.val_frequency)
     }
 
     /// Get progress as percentage
@@ -2997,13 +3000,9 @@ pub fn quick_eval(input: &str) -> Option<f64> {
 pub fn quick_symbolic(input: &str) -> Option<String> {
     let pipeline = Pipeline::new();
     let result = pipeline.process(input);
-    if result.symbolic_result.is_some() {
-        result.symbolic_result
-    } else if let Some(n) = result.numeric_result {
-        Some(format!("{}", n))
-    } else {
-        None
-    }
+    result.symbolic_result.or_else(|| {
+        result.numeric_result.map(|n| format!("{}", n))
+    })
 }
 
 // ============================================================================

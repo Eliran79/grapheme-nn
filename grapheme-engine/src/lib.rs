@@ -11,6 +11,11 @@
 //!
 //! All other layers depend on this for correctness verification.
 
+// Allow method names like add, sub, mul, div for expression builders (not implementing std traits)
+#![allow(clippy::should_implement_trait)]
+// Allow &self in recursive methods for API consistency
+#![allow(clippy::only_used_in_recursion)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;

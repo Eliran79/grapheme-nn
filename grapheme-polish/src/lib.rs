@@ -13,6 +13,9 @@
 //! - Natural tree/graph structure
 //! - Easy to parse and generate
 
+// Allow &self in recursive methods for API consistency
+#![allow(clippy::only_used_in_recursion)]
+
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
