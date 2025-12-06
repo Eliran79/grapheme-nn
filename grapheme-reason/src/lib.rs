@@ -782,13 +782,13 @@ impl Abduction for SimpleAbduction {
         -> ReasoningResult<Explanation> {
         let explanations = self.abduce(observation, background, bounds)?;
         explanations.into_iter()
-            .max_by(|a, b| a.score().partial_cmp(&b.score()).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| a.score().total_cmp(&b.score()))
             .ok_or(ReasoningError::NoExplanationFound)
     }
 
     fn rank_explanations<'a>(&self, explanations: &'a [Explanation]) -> Vec<&'a Explanation> {
         let mut sorted: Vec<_> = explanations.iter().collect();
-        sorted.sort_by(|a, b| b.score().partial_cmp(&a.score()).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| b.score().total_cmp(&a.score()));
         sorted
     }
 }

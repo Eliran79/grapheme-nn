@@ -1456,7 +1456,7 @@ impl GraphEditDistance {
                 pairs.push((i, j, costs[i][j].total()));
             }
         }
-        pairs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.sort_by(|a, b| a.2.total_cmp(&b.2));
 
         // Greedy assignment
         for (i, j, cost) in pairs {
@@ -2686,6 +2686,11 @@ impl Pipeline {
                         // Compute GED loss
                         let ged = GraphEditDistance::compute(predicted_graph, &expected_graph);
                         let loss = ged.total() as f64;
+
+                        // Skip NaN losses (indicates numerical instability)
+                        if loss.is_nan() || loss.is_infinite() {
+                            return None;
+                        }
 
                         Some(loss)
                     } else {

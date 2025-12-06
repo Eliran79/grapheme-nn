@@ -1,7 +1,7 @@
 ---
 id: backend-045
 title: Fix NaN panic in predict_op float comparison
-status: todo
+status: done
 priority: high
 tags:
 - backend

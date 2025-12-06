@@ -1,7 +1,7 @@
 ---
 id: backend-047
 title: Guard against empty slices in data generation choose calls
-status: todo
+status: done
 priority: high
 tags:
 - backend

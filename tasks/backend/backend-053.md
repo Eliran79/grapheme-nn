@@ -1,7 +1,7 @@
 ---
 id: backend-053
 title: Fix greedy_coloring empty collection handling
-status: todo
+status: done
 priority: medium
 tags:
 - backend
