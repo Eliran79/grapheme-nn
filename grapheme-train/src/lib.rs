@@ -2236,6 +2236,504 @@ impl ValidationReport {
 }
 
 // ============================================================================
+// End-to-End Pipeline (Layer 4-3-2-1)
+// ============================================================================
+
+use grapheme_core::GraphTransformNet;
+
+/// Pipeline mode for inference or training
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineMode {
+    /// Inference mode with frozen weights
+    Inference,
+    /// Training mode with gradient flow
+    Training,
+}
+
+/// Result of pipeline processing
+#[derive(Debug)]
+pub struct PipelineResult {
+    /// The original input text
+    pub input: String,
+    /// Natural language graph (Layer 4)
+    pub nl_graph: Option<GraphemeGraph>,
+    /// Math graph representation (Layer 3)
+    pub math_graph: Option<MathGraph>,
+    /// Expression after optimization (Layer 2)
+    pub optimized_expr: Option<Expr>,
+    /// Numeric result if available (Layer 1)
+    pub numeric_result: Option<f64>,
+    /// Symbolic result if available (Layer 1)
+    pub symbolic_result: Option<String>,
+    /// Processing steps taken
+    pub steps: Vec<String>,
+    /// Any errors encountered
+    pub errors: Vec<String>,
+}
+
+impl PipelineResult {
+    fn new(input: &str) -> Self {
+        Self {
+            input: input.to_string(),
+            nl_graph: None,
+            math_graph: None,
+            optimized_expr: None,
+            numeric_result: None,
+            symbolic_result: None,
+            steps: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// Check if processing succeeded
+    pub fn success(&self) -> bool {
+        self.errors.is_empty() && (self.numeric_result.is_some() || self.symbolic_result.is_some())
+    }
+
+    /// Get primary result as string
+    pub fn result_string(&self) -> String {
+        if let Some(n) = self.numeric_result {
+            if n.fract() == 0.0 && n.abs() < 1e10 {
+                format!("{}", n as i64)
+            } else {
+                format!("{}", n)
+            }
+        } else if let Some(ref s) = self.symbolic_result {
+            s.clone()
+        } else if !self.errors.is_empty() {
+            format!("Error: {}", self.errors.join(", "))
+        } else {
+            "No result".to_string()
+        }
+    }
+}
+
+/// End-to-end pipeline from natural language to math result
+///
+/// Chains all layers:
+/// - Layer 4 (grapheme-core): NL text → DagNN graph
+/// - Layer 3 (grapheme-math): DagNN → MathGraph
+/// - Layer 2 (grapheme-polish): MathGraph → Optimized expression
+/// - Layer 1 (grapheme-engine): Expression → Evaluated result
+#[derive(Debug)]
+pub struct Pipeline {
+    /// The graph transformation network (Layer 4)
+    pub transform_net: Option<GraphTransformNet>,
+    /// The math engine (Layer 1)
+    pub engine: MathEngine,
+    /// The symbolic engine (Layer 1)
+    pub symbolic: SymbolicEngine,
+    /// Current mode
+    pub mode: PipelineMode,
+    /// Whether to cache intermediate representations
+    pub cache_enabled: bool,
+    /// Cache of NL to expression mappings (for future use)
+    _cache: HashMap<String, Expr>,
+}
+
+impl Pipeline {
+    /// Create a new pipeline
+    pub fn new() -> Self {
+        Self {
+            transform_net: None,
+            engine: MathEngine::new(),
+            symbolic: SymbolicEngine::new(),
+            mode: PipelineMode::Inference,
+            cache_enabled: false,
+            _cache: HashMap::new(),
+        }
+    }
+
+    /// Create pipeline with a trained transformation network
+    pub fn with_transform_net(mut self, net: GraphTransformNet) -> Self {
+        self.transform_net = Some(net);
+        self
+    }
+
+    /// Set pipeline mode
+    pub fn with_mode(mut self, mode: PipelineMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Enable caching
+    pub fn with_cache(mut self, enabled: bool) -> Self {
+        self.cache_enabled = enabled;
+        self
+    }
+
+    /// Bind a variable value
+    pub fn bind(&mut self, name: &str, value: f64) {
+        self.engine.bind(name.to_string(), Value::Float(value));
+    }
+
+    /// Clear all variable bindings
+    pub fn clear_bindings(&mut self) {
+        self.engine.clear_bindings();
+    }
+
+    /// Process natural language input through the full pipeline
+    pub fn process(&mut self, input: &str) -> PipelineResult {
+        let mut result = PipelineResult::new(input);
+
+        // Step 1: Parse input to expression (try direct parsing first)
+        result.steps.push("Layer 4: Parsing input".to_string());
+
+        // Try to extract math expression from natural language
+        let expr = match self.extract_expression(input) {
+            Ok(e) => {
+                result.steps.push(format!("  Extracted: {}", expr_to_polish(&e)));
+                e
+            }
+            Err(e) => {
+                result.errors.push(format!("Parse error: {}", e));
+                return result;
+            }
+        };
+
+        // Step 2: Create NL graph (Layer 4)
+        let nl_graph = GraphemeGraph::from_text(input);
+        result.steps.push(format!("  NL graph: {} nodes", nl_graph.graph.node_count()));
+        result.nl_graph = Some(nl_graph);
+
+        // Step 3: Create math graph (Layer 3)
+        result.steps.push("Layer 3: Building math graph".to_string());
+        let math_graph = MathGraph::from_expr(&expr);
+        result.steps.push(format!("  Math graph: {} nodes, {} edges",
+            math_graph.node_count(), math_graph.edge_count()));
+        result.math_graph = Some(math_graph);
+
+        // Step 4: Optimize expression (Layer 2)
+        result.steps.push("Layer 2: Optimizing expression".to_string());
+        let optimizer = grapheme_polish::Optimizer::with_defaults();
+        let optimized = optimizer.optimize_fixpoint(&expr);
+        result.steps.push(format!("  Optimized: {}", expr_to_polish(&optimized)));
+        result.optimized_expr = Some(optimized.clone());
+
+        // Step 5: Evaluate (Layer 1)
+        result.steps.push("Layer 1: Evaluating".to_string());
+
+        // Try numeric evaluation
+        match self.engine.evaluate(&optimized) {
+            Ok(val) => {
+                result.steps.push(format!("  Numeric: {}", val));
+                result.numeric_result = Some(val);
+            }
+            Err(e) => {
+                result.steps.push(format!("  Numeric eval failed: {}", e));
+            }
+        }
+
+        // If symbolic, generate symbolic result
+        if optimized.is_symbolic() {
+            let symbolic = expr_to_polish(&optimized);
+            result.steps.push(format!("  Symbolic: {}", symbolic));
+            result.symbolic_result = Some(symbolic);
+        }
+
+        result
+    }
+
+    /// Extract mathematical expression from natural language
+    fn extract_expression(&self, input: &str) -> Result<Expr, String> {
+        // Try to parse simple mathematical expressions
+        let cleaned = input.trim().to_lowercase();
+
+        // Only try polish notation if it looks like polish (starts with operator/function)
+        let trimmed = cleaned.trim();
+        if trimmed.starts_with('+') || trimmed.starts_with('-') || trimmed.starts_with('*')
+            || trimmed.starts_with('/') || trimmed.starts_with('^')
+            || trimmed.starts_with("sin") || trimmed.starts_with("cos")
+            || trimmed.starts_with("exp") || trimmed.starts_with("ln")
+        {
+            let mut parser = grapheme_polish::PolishParser::new();
+            if let Ok(expr) = parser.parse(input) {
+                return Ok(expr);
+            }
+        }
+
+        // Handle "derivative of X" patterns
+        if cleaned.starts_with("derivative of ") || cleaned.starts_with("differentiate ") {
+            return self.parse_derivative_command(&cleaned);
+        }
+
+        // Handle "integrate X" patterns
+        if cleaned.starts_with("integrate ") || cleaned.starts_with("integral of ") {
+            return self.parse_integral_command(&cleaned);
+        }
+
+        // Handle "simplify X" patterns
+        if cleaned.starts_with("simplify ") {
+            let rest = cleaned.strip_prefix("simplify ").unwrap_or("");
+            return self.parse_math_expression(rest);
+        }
+
+        // Handle "what is X" patterns
+        if cleaned.starts_with("what is ") || cleaned.starts_with("what's ") {
+            let rest = if cleaned.starts_with("what is ") {
+                cleaned.strip_prefix("what is ").unwrap_or("")
+            } else {
+                cleaned.strip_prefix("what's ").unwrap_or("")
+            };
+            return self.parse_math_expression(rest);
+        }
+
+        // Handle "calculate X" patterns
+        if cleaned.starts_with("calculate ") || cleaned.starts_with("compute ") || cleaned.starts_with("evaluate ") {
+            let rest = cleaned
+                .strip_prefix("calculate ")
+                .or_else(|| cleaned.strip_prefix("compute "))
+                .or_else(|| cleaned.strip_prefix("evaluate "))
+                .unwrap_or("");
+            return self.parse_math_expression(rest);
+        }
+
+        // Try direct math expression parsing
+        self.parse_math_expression(&cleaned)
+    }
+
+    /// Parse derivative command
+    fn parse_derivative_command(&self, input: &str) -> Result<Expr, String> {
+        // Extract "derivative of X [with respect to Y]"
+        let rest = input
+            .strip_prefix("derivative of ")
+            .or_else(|| input.strip_prefix("differentiate "))
+            .unwrap_or(input);
+
+        // Check for "with respect to" pattern
+        let (expr_str, var) = if let Some(idx) = rest.find(" with respect to ") {
+            let expr_part = &rest[..idx];
+            let var_part = rest[idx + 18..].trim();
+            (expr_part, var_part.chars().next().unwrap_or('x'))
+        } else {
+            (rest, 'x')
+        };
+
+        // Parse the expression
+        let expr = self.parse_math_expression(expr_str)?;
+
+        // Return the derivative result directly (symbolic engine will compute it)
+        Ok(self.symbolic.differentiate(&expr, &var.to_string()))
+    }
+
+    /// Parse integral command
+    fn parse_integral_command(&self, input: &str) -> Result<Expr, String> {
+        let rest = input
+            .strip_prefix("integrate ")
+            .or_else(|| input.strip_prefix("integral of "))
+            .unwrap_or(input);
+
+        // Check for "from A to B" pattern
+        if let Some(from_idx) = rest.find(" from ") {
+            let expr_str = &rest[..from_idx];
+            let bounds_str = &rest[from_idx + 6..];
+
+            if let Some(to_idx) = bounds_str.find(" to ") {
+                let lower: f64 = bounds_str[..to_idx].trim().parse().map_err(|_| "Invalid lower bound")?;
+                let upper: f64 = bounds_str[to_idx + 4..].trim().parse().map_err(|_| "Invalid upper bound")?;
+
+                let expr = self.parse_math_expression(expr_str)?;
+
+                // Compute definite integral if possible
+                match self.symbolic.integrate(&expr, "x") {
+                    Ok(antiderivative) => {
+                        // F(upper) - F(lower)
+                        let f_upper = self.symbolic.evaluate_at(&antiderivative, "x", upper);
+                        let f_lower = self.symbolic.evaluate_at(&antiderivative, "x", lower);
+                        return Ok(Expr::sub(f_upper, f_lower));
+                    }
+                    Err(_) => return Err("Cannot integrate expression".to_string()),
+                }
+            }
+        }
+
+        // Indefinite integral
+        let expr = self.parse_math_expression(rest)?;
+        self.symbolic.integrate(&expr, "x")
+            .map_err(|e| format!("Integration error: {:?}", e))
+    }
+
+    /// Parse a mathematical expression string
+    fn parse_math_expression(&self, input: &str) -> Result<Expr, String> {
+        // Handle common patterns
+        let s = input.trim();
+
+        // Handle "X squared" pattern
+        if s.ends_with(" squared") {
+            let base = s.strip_suffix(" squared").unwrap_or("");
+            let base_expr = self.parse_math_expression(base)?;
+            return Ok(Expr::pow(base_expr, Expr::int(2)));
+        }
+
+        // Handle "X cubed" pattern
+        if s.ends_with(" cubed") {
+            let base = s.strip_suffix(" cubed").unwrap_or("");
+            let base_expr = self.parse_math_expression(base)?;
+            return Ok(Expr::pow(base_expr, Expr::int(3)));
+        }
+
+        // Handle simple infix with spaces: "2 + 3"
+        if let Some(idx) = s.find(" + ") {
+            let left = self.parse_math_expression(&s[..idx])?;
+            let right = self.parse_math_expression(&s[idx + 3..])?;
+            return Ok(Expr::add(left, right));
+        }
+
+        if let Some(idx) = s.find(" - ") {
+            let left = self.parse_math_expression(&s[..idx])?;
+            let right = self.parse_math_expression(&s[idx + 3..])?;
+            return Ok(Expr::sub(left, right));
+        }
+
+        if let Some(idx) = s.find(" * ") {
+            let left = self.parse_math_expression(&s[..idx])?;
+            let right = self.parse_math_expression(&s[idx + 3..])?;
+            return Ok(Expr::mul(left, right));
+        }
+
+        if let Some(idx) = s.find(" / ") {
+            let left = self.parse_math_expression(&s[..idx])?;
+            let right = self.parse_math_expression(&s[idx + 3..])?;
+            return Ok(Expr::div(left, right));
+        }
+
+        // Try compact operators: "2+3"
+        for (i, c) in s.char_indices() {
+            if i > 0 && (c == '+' || c == '-' || c == '*' || c == '/') {
+                let left = &s[..i];
+                let right = &s[i + 1..];
+                if !left.is_empty() && !right.is_empty() {
+                    let l = self.parse_math_expression(left)?;
+                    let r = self.parse_math_expression(right)?;
+                    return Ok(match c {
+                        '+' => Expr::add(l, r),
+                        '-' => Expr::sub(l, r),
+                        '*' => Expr::mul(l, r),
+                        '/' => Expr::div(l, r),
+                        _ => unreachable!(),
+                    });
+                }
+            }
+        }
+
+        // Try parsing as number
+        if let Ok(n) = s.parse::<i64>() {
+            return Ok(Expr::int(n));
+        }
+        if let Ok(n) = s.parse::<f64>() {
+            return Ok(Expr::float(n));
+        }
+
+        // Try as symbol
+        if s.chars().all(|c| c.is_alphabetic()) && !s.is_empty() {
+            return Ok(Expr::symbol(s));
+        }
+
+        Err(format!("Cannot parse expression: {}", input))
+    }
+
+    /// Process a batch of inputs
+    pub fn process_batch(&mut self, inputs: &[&str]) -> Vec<PipelineResult> {
+        inputs.iter().map(|&input| self.process(input)).collect()
+    }
+
+    /// Run training mode on a dataset
+    pub fn train(&mut self, dataset: &Dataset, config: &TrainingConfig) -> TrainingResult<TrainingMetrics> {
+        self.mode = PipelineMode::Training;
+
+        let mut metrics = TrainingMetrics::default();
+        let mut training_loop = TrainingLoop::new(config.clone());
+
+        for _epoch in 0..config.epochs {
+            let mut _epoch_loss = 0.0;
+            let mut batch_count = 0;
+
+            // Process each example in the dataset
+            for example in &dataset.examples {
+                // Get input expression in polish notation
+                let input = &example.input_polish;
+
+                // Forward pass: process input through pipeline
+                let result = self.process(input);
+
+                // Compute loss using graph edit distance
+                if let Some(ref predicted_graph) = result.nl_graph {
+                    // Create expected graph from expected result
+                    let expected_polish = if let Some(ref sym) = example.expected_symbolic {
+                        expr_to_polish(sym)
+                    } else if let Some(n) = example.expected_result {
+                        format!("{}", n)
+                    } else {
+                        continue;
+                    };
+
+                    // Create expected graph
+                    let expected_graph = GraphemeGraph::from_text(&expected_polish);
+
+                    // Compute GED loss
+                    let ged = GraphEditDistance::compute(predicted_graph, &expected_graph);
+                    let loss = ged.total();
+
+                    _epoch_loss += loss as f64;
+                    batch_count += 1;
+                    training_loop.record_batch(loss);
+                }
+            }
+
+            // Complete epoch
+            if batch_count > 0 {
+                let avg_loss = training_loop.complete_epoch();
+                metrics.epoch_losses.push(avg_loss);
+            }
+
+            // Early stopping check
+            if training_loop.should_stop() {
+                break;
+            }
+        }
+
+        self.mode = PipelineMode::Inference;
+        Ok(metrics)
+    }
+
+    /// Get the current mode
+    pub fn get_mode(&self) -> PipelineMode {
+        self.mode
+    }
+
+    /// Check if in training mode
+    pub fn is_training(&self) -> bool {
+        self.mode == PipelineMode::Training
+    }
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Quick evaluation function for simple expressions
+pub fn quick_eval(input: &str) -> Option<f64> {
+    let mut pipeline = Pipeline::new();
+    let result = pipeline.process(input);
+    result.numeric_result
+}
+
+/// Quick symbolic evaluation
+pub fn quick_symbolic(input: &str) -> Option<String> {
+    let mut pipeline = Pipeline::new();
+    let result = pipeline.process(input);
+    if result.symbolic_result.is_some() {
+        result.symbolic_result
+    } else if let Some(n) = result.numeric_result {
+        Some(format!("{}", n))
+    } else {
+        None
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2974,5 +3472,217 @@ mod tests {
 
         loop_state.state.epoch = 50;
         assert!((loop_state.progress() - 50.0).abs() < 1e-6);
+    }
+
+    // ========================================================================
+    // Pipeline Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pipeline_creation() {
+        let pipeline = Pipeline::new();
+        assert_eq!(pipeline.mode, PipelineMode::Inference);
+        assert!(!pipeline.cache_enabled);
+        assert!(pipeline.transform_net.is_none());
+    }
+
+    #[test]
+    fn test_pipeline_simple_addition() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("2 + 3");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(5.0));
+    }
+
+    #[test]
+    fn test_pipeline_subtraction() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("10 - 4");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(6.0));
+    }
+
+    #[test]
+    fn test_pipeline_multiplication() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("3 * 4");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(12.0));
+    }
+
+    #[test]
+    fn test_pipeline_division() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("8 / 2");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(4.0));
+    }
+
+    #[test]
+    fn test_pipeline_what_is() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("what is 5 + 7");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(12.0));
+    }
+
+    #[test]
+    fn test_pipeline_calculate() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("calculate 9 - 3");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(6.0));
+    }
+
+    #[test]
+    fn test_pipeline_symbolic() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("x + 0");
+
+        // Optimizer should simplify x + 0 to x
+        assert!(result.success());
+        assert!(result.symbolic_result.is_some());
+    }
+
+    #[test]
+    fn test_pipeline_derivative() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("derivative of x squared");
+
+        // d/dx(x^2) = 2x
+        assert!(result.success());
+        assert!(result.symbolic_result.is_some());
+    }
+
+    #[test]
+    fn test_pipeline_integrate_definite() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("integrate x from 0 to 1");
+
+        // ∫x dx from 0 to 1 = 0.5
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(0.5));
+    }
+
+    #[test]
+    fn test_pipeline_result_string() {
+        let mut pipeline = Pipeline::new();
+
+        let result = pipeline.process("2 + 3");
+        assert_eq!(result.result_string(), "5");
+
+        let result = pipeline.process("x");
+        assert_eq!(result.result_string(), "x");
+    }
+
+    #[test]
+    fn test_pipeline_mode() {
+        let pipeline = Pipeline::new()
+            .with_mode(PipelineMode::Training);
+
+        assert_eq!(pipeline.mode, PipelineMode::Training);
+        assert!(pipeline.is_training());
+    }
+
+    #[test]
+    fn test_pipeline_with_cache() {
+        let pipeline = Pipeline::new()
+            .with_cache(true);
+
+        assert!(pipeline.cache_enabled);
+    }
+
+    #[test]
+    fn test_pipeline_batch_processing() {
+        let mut pipeline = Pipeline::new();
+        let inputs = vec!["1 + 1", "2 + 2", "3 + 3"];
+        let results = pipeline.process_batch(&inputs);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].numeric_result, Some(2.0));
+        assert_eq!(results[1].numeric_result, Some(4.0));
+        assert_eq!(results[2].numeric_result, Some(6.0));
+    }
+
+    #[test]
+    fn test_pipeline_variable_binding() {
+        let mut pipeline = Pipeline::new();
+        pipeline.bind("x", 5.0);
+
+        let result = pipeline.process("x + 1");
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(6.0));
+    }
+
+    #[test]
+    fn test_pipeline_steps_recorded() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("2 + 3");
+
+        assert!(!result.steps.is_empty());
+        assert!(result.steps.iter().any(|s| s.contains("Layer 4")));
+        assert!(result.steps.iter().any(|s| s.contains("Layer 3")));
+        assert!(result.steps.iter().any(|s| s.contains("Layer 2")));
+        assert!(result.steps.iter().any(|s| s.contains("Layer 1")));
+    }
+
+    #[test]
+    fn test_pipeline_graphs_created() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("2 + 3");
+
+        assert!(result.nl_graph.is_some());
+        assert!(result.math_graph.is_some());
+        assert!(result.optimized_expr.is_some());
+    }
+
+    #[test]
+    fn test_quick_eval() {
+        assert_eq!(quick_eval("2 + 3"), Some(5.0));
+        assert_eq!(quick_eval("10 - 5"), Some(5.0));
+        assert_eq!(quick_eval("4 * 3"), Some(12.0));
+        assert_eq!(quick_eval("8 / 2"), Some(4.0));
+    }
+
+    #[test]
+    fn test_quick_symbolic() {
+        let result = quick_symbolic("x + 0");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "x");
+    }
+
+    #[test]
+    fn test_pipeline_compact_operators() {
+        let mut pipeline = Pipeline::new();
+
+        let result = pipeline.process("2+3");
+        assert_eq!(result.numeric_result, Some(5.0));
+
+        let result = pipeline.process("10-4");
+        assert_eq!(result.numeric_result, Some(6.0));
+    }
+
+    #[test]
+    fn test_pipeline_squared() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("3 squared");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(9.0));
+    }
+
+    #[test]
+    fn test_pipeline_cubed() {
+        let mut pipeline = Pipeline::new();
+        let result = pipeline.process("2 cubed");
+
+        assert!(result.success());
+        assert_eq!(result.numeric_result, Some(8.0));
     }
 }
