@@ -3986,19 +3986,26 @@ impl GraphTransformNet {
     }
 
     /// Zero all gradients
+    ///
+    /// Uses parallel iteration for message passing layers.
     pub fn zero_grad(&mut self) {
         self.embedding.zero_grad();
-        for layer in &mut self.mp_layers {
+        // Process layers in parallel - each layer is independent
+        self.mp_layers.par_iter_mut().for_each(|layer| {
             layer.zero_grad();
-        }
+        });
     }
 
     /// Update all weights
+    ///
+    /// Uses parallel iteration for message passing layers.
+    /// Each layer's weight update is independent and can proceed concurrently.
     pub fn step(&mut self, lr: f32) {
         self.embedding.step(lr);
-        for layer in &mut self.mp_layers {
+        // Process layers in parallel - each layer is independent
+        self.mp_layers.par_iter_mut().for_each(|layer| {
             layer.step(lr);
-        }
+        });
     }
 }
 
