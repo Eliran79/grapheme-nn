@@ -111,4 +111,4 @@ Brief description of what needs to be done and why.
 - **WARNING**: `transfer()` is a NO-OP - returns target unchanged
 - SimpleAnalogy uses greedy positional matching (O(n)), not structure-based
 - Real implementation would use Hungarian algorithm O(n³) or feature matching
-- See backend-026 for implementing real reasoning algorithms
+- These tasks need real implementations (currently stubs)

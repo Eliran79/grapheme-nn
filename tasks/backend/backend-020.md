@@ -113,4 +113,4 @@ Brief description of what needs to be done and why.
 - **WARNING**: ALL methods are STUBS - `intervene()` and `counterfactual()` return input unchanged
 - `causes()` always returns false
 - Real implementation would use PC algorithm, do-calculus
-- See backend-026 for implementing real reasoning algorithms
+- These tasks need real implementations (currently stubs)

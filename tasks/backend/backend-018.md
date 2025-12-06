@@ -112,5 +112,5 @@ Brief description of what needs to be done and why.
 ### Context for Next Task
 - **WARNING**: SimpleDeduction is a STUB - pattern matching only compares node/edge counts
 - Real deduction needs proper graph pattern matching or WL-based similarity
-- See backend-026 for implementing real reasoning algorithms
+- These tasks need real implementations (currently stubs)
 - Depth-bounded to prevent infinite loops
