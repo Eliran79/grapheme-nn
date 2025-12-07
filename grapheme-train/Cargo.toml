@@ -14,6 +14,8 @@ serde_json.workspace = true
 rayon.workspace = true
 petgraph.workspace = true
 ndarray.workspace = true
+clap = { version = "4.4", features = ["derive"] }
+toml = "0.8"
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }
@@ -25,3 +27,19 @@ criterion.workspace = true
 [[bench]]
 name = "train_bench"
 harness = false
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+
+[[bin]]
+name = "train"
+path = "src/bin/train.rs"
+
+[[bin]]
+name = "validate"
+path = "src/bin/validate.rs"
+
+[[bin]]
+name = "repl"
+path = "src/bin/repl.rs"

@@ -24,7 +24,7 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam,
+    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
@@ -620,7 +620,7 @@ pub fn create_default_embodied_agent() -> SimpleEmbodiedAgent {
 ///
 /// This module learns to ground symbols to referents by adjusting
 /// binding thresholds and exploration behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableGrounding {
     /// Threshold for grounding confidence
     pub grounding_threshold: LearnableParam,
@@ -722,6 +722,26 @@ impl Learnable for LearnableGrounding {
             + self.exploration_bonus.grad.powi(2)
             + self.cooccurrence_rate.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableGrounding {
+    fn persist_type_id() -> &'static str {
+        "LearnableGrounding"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate grounding threshold is in valid range
+        if self.grounding_threshold.value < 0.0 || self.grounding_threshold.value > 1.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Grounding threshold must be between 0 and 1".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

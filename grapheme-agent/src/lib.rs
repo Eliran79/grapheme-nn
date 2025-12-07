@@ -27,7 +27,7 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam,
+    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_meta::UncertaintyEstimate;
 use grapheme_world::WorldModeling;
@@ -716,7 +716,7 @@ pub fn create_default_agent() -> SimpleAgency {
 ///
 /// This module learns to prioritize goals, balance exploration/exploitation,
 /// and allocate resources for planning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableAgency {
     /// Bias for goal importance estimation
     pub goal_importance_bias: LearnableParam,
@@ -827,6 +827,31 @@ impl Learnable for LearnableAgency {
             + self.explore_temperature.grad.powi(2)
             + self.discount_factor.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableAgency {
+    fn persist_type_id() -> &'static str {
+        "LearnableAgency"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate temperature and discount factor are in valid ranges
+        if self.explore_temperature.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Explore temperature must be positive".to_string(),
+            ));
+        }
+        if self.discount_factor.value < 0.0 || self.discount_factor.value > 1.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Discount factor must be between 0 and 1".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -21,7 +21,7 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam,
+    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_reason::ReasoningStep;
 use serde::{Deserialize, Serialize};
@@ -607,7 +607,7 @@ pub fn create_default_metacognition() -> SimpleMetaCognition {
 ///
 /// This module learns to estimate uncertainty and allocate computation
 /// more accurately based on experience.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableMetaCognition {
     /// Bias for calibrating confidence predictions
     pub calibration_bias: LearnableParam,
@@ -707,6 +707,26 @@ impl Learnable for LearnableMetaCognition {
             + self.compute_bias.grad.powi(2)
             + self.early_stop_threshold.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableMetaCognition {
+    fn persist_type_id() -> &'static str {
+        "LearnableMetaCognition"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate uncertainty_scale is positive
+        if self.uncertainty_scale.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Uncertainty scale must be positive".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -17,7 +17,7 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, TransformRule,
+    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError, TransformRule,
 };
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
@@ -594,7 +594,7 @@ pub fn create_default_world_model() -> SimpleWorldModel {
 ///
 /// This module learns to predict state transitions and adjust
 /// uncertainty estimates based on experience.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableWorldModel {
     /// Bias for transition probability estimation
     pub transition_bias: LearnableParam,
@@ -704,6 +704,26 @@ impl Learnable for LearnableWorldModel {
             + self.relation_weight.grad.powi(2)
             + self.uncertainty_scale.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableWorldModel {
+    fn persist_type_id() -> &'static str {
+        "LearnableWorldModel"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate uncertainty_scale is positive
+        if self.uncertainty_scale.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Uncertainty scale must be positive".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

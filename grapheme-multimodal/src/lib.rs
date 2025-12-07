@@ -18,7 +18,7 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam,
+    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
 };
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
@@ -578,7 +578,7 @@ pub fn create_default_multimodal() -> SimpleMultiModal {
 ///
 /// This module learns to weight different modalities and adjust
 /// binding strength for cross-modal associations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableMultimodal {
     /// Weight for visual modality
     pub visual_weight: LearnableParam,
@@ -700,6 +700,26 @@ impl Learnable for LearnableMultimodal {
             + self.binding_strength.grad.powi(2)
             + self.fusion_temperature.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableMultimodal {
+    fn persist_type_id() -> &'static str {
+        "LearnableMultimodal"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate temperature is positive
+        if self.fusion_temperature.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Fusion temperature must be positive".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

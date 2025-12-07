@@ -1037,7 +1037,7 @@ pub trait Learnable {
 ///
 /// Use this for simple scalar parameters that need gradient-based learning.
 /// For vector/matrix parameters, use ndarray-based structures instead.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableParam {
     /// Current parameter value
     pub value: f32,
@@ -2553,6 +2553,10 @@ pub enum PersistenceError {
     ChecksumMismatch,
     #[error("Corrupted data")]
     CorruptedData,
+    #[error("Module not found in checkpoint: {0}")]
+    ModuleNotFound(String),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
 }
 
 /// Result type for persistence operations
@@ -2607,6 +2611,231 @@ impl GraphHeader {
     pub fn verify(&self, node_count: usize, edge_count: usize) -> bool {
         self.checksum == (node_count + edge_count) as u64
     }
+}
+
+/// Current model persistence format version
+pub const MODEL_PERSISTENCE_VERSION: u32 = 1;
+
+/// Current checkpoint format version
+pub const CHECKPOINT_VERSION: u32 = 1;
+
+// ============================================================================
+// Unified Persistence Infrastructure
+// ============================================================================
+
+/// Trait for types that can be persisted in unified checkpoints
+///
+/// All learnable cognitive modules should implement this trait to enable
+/// unified checkpoint saving/loading across the entire GRAPHEME system.
+pub trait Persistable: Serialize + for<'de> Deserialize<'de> {
+    /// Unique type identifier for this persistable type
+    fn persist_type_id() -> &'static str;
+
+    /// Version number for migration support
+    fn persist_version() -> u32;
+
+    /// Optional validation after deserialization
+    fn validate(&self) -> Result<(), PersistenceError> {
+        Ok(())
+    }
+}
+
+/// A unified checkpoint containing multiple module states
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnifiedCheckpoint {
+    /// Checkpoint format version
+    pub version: u32,
+    /// Creation timestamp
+    pub created: String,
+    /// GRAPHEME version that created this checkpoint
+    pub grapheme_version: String,
+    /// Module states keyed by type_id
+    pub modules: std::collections::HashMap<String, ModuleCheckpoint>,
+}
+
+/// Individual module checkpoint within a unified checkpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleCheckpoint {
+    /// Module version (for migration)
+    pub version: u32,
+    /// Serialized module data as JSON value
+    pub data: serde_json::Value,
+}
+
+impl UnifiedCheckpoint {
+    /// Create a new empty checkpoint
+    pub fn new() -> Self {
+        Self {
+            version: CHECKPOINT_VERSION,
+            created: chrono_lite_now(),
+            grapheme_version: env!("CARGO_PKG_VERSION").to_string(),
+            modules: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add a module to the checkpoint
+    pub fn add_module<T: Persistable>(&mut self, module: &T) -> PersistenceResult<()> {
+        let data = serde_json::to_value(module)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))?;
+        self.modules.insert(
+            T::persist_type_id().to_string(),
+            ModuleCheckpoint {
+                version: T::persist_version(),
+                data,
+            },
+        );
+        Ok(())
+    }
+
+    /// Load a module from the checkpoint
+    pub fn load_module<T: Persistable>(&self) -> PersistenceResult<T> {
+        let type_id = T::persist_type_id();
+        let checkpoint = self
+            .modules
+            .get(type_id)
+            .ok_or_else(|| PersistenceError::ModuleNotFound(type_id.to_string()))?;
+
+        let module: T = serde_json::from_value(checkpoint.data.clone())
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))?;
+
+        module.validate()?;
+        Ok(module)
+    }
+
+    /// Check if a module type is present in the checkpoint
+    pub fn has_module<T: Persistable>(&self) -> bool {
+        self.modules.contains_key(T::persist_type_id())
+    }
+
+    /// Get list of module type IDs in this checkpoint
+    pub fn module_ids(&self) -> Vec<&str> {
+        self.modules.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Save checkpoint to JSON string
+    pub fn save_json(&self) -> PersistenceResult<String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))
+    }
+
+    /// Load checkpoint from JSON string
+    pub fn load_json(json: &str) -> PersistenceResult<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+    }
+
+    /// Save checkpoint to file
+    pub fn save_to_file(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        let json = self.save_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load checkpoint from file
+    pub fn load_from_file(path: &std::path::Path) -> PersistenceResult<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::load_json(&json)
+    }
+}
+
+impl Default for UnifiedCheckpoint {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Persistable implementations for core types
+// ============================================================================
+
+impl Persistable for LearnableParam {
+    fn persist_type_id() -> &'static str {
+        "LearnableParam"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+}
+
+impl Persistable for GraphTransformNet {
+    fn persist_type_id() -> &'static str {
+        "GraphTransformNet"
+    }
+
+    fn persist_version() -> u32 {
+        MODEL_PERSISTENCE_VERSION
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Verify model dimensions are consistent
+        if self.embedding.embed_dim != self.mp_layers[0].input_dim {
+            return Err(PersistenceError::ValidationFailed(
+                "Embedding dimension mismatch with message layers".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Header for serialized neural network model data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelHeader {
+    /// Format version for migrations
+    pub version: u32,
+    /// Model type identifier
+    pub model_type: String,
+    /// Vocabulary size (number of unique input characters)
+    pub vocab_size: usize,
+    /// Embedding dimension
+    pub embed_dim: usize,
+    /// Hidden dimension for message passing layers
+    pub hidden_dim: usize,
+    /// Number of message passing layers
+    pub num_layers: usize,
+    /// Creation timestamp (ISO 8601 format)
+    pub created: String,
+}
+
+impl ModelHeader {
+    /// Create a header for a GraphTransformNet
+    pub fn for_graph_transform_net(net: &GraphTransformNet) -> Self {
+        Self {
+            version: MODEL_PERSISTENCE_VERSION,
+            model_type: "GraphTransformNet".to_string(),
+            vocab_size: net.embedding.vocab_size,
+            embed_dim: net.embedding.embed_dim,
+            hidden_dim: net.hidden_dim,
+            num_layers: net.num_layers,
+            created: chrono_lite_now(),
+        }
+    }
+
+    /// Verify that header matches the model architecture
+    pub fn verify(&self, net: &GraphTransformNet) -> bool {
+        self.vocab_size == net.embedding.vocab_size
+            && self.embed_dim == net.embedding.embed_dim
+            && self.hidden_dim == net.hidden_dim
+            && self.num_layers == net.num_layers
+    }
+}
+
+/// Simple timestamp generator (no chrono dependency)
+fn chrono_lite_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}s", duration.as_secs())
+}
+
+/// Serializable wrapper for GraphTransformNet with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializedModel {
+    /// Model header with metadata
+    pub header: ModelHeader,
+    /// The neural network model
+    pub model: GraphTransformNet,
 }
 
 impl DagNN {
@@ -2700,19 +2929,26 @@ pub enum InitStrategy {
 ///
 /// This is the foundation for neural graph processing - each character
 /// gets a learnable d-dimensional embedding vector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Embedding {
     /// Weight matrix: (vocab_size x embed_dim)
     /// Each row is the embedding for one character
     pub weights: Array2<f32>,
     /// Gradient accumulator (same shape as weights)
+    #[serde(skip)]
     pub grad: Option<Array2<f32>>,
     /// Whether to compute gradients
+    #[serde(skip, default = "default_requires_grad")]
     pub requires_grad: bool,
     /// Embedding dimension
     pub embed_dim: usize,
     /// Vocabulary size (typically 256 for ASCII or larger for Unicode)
     pub vocab_size: usize,
+}
+
+/// Default value for requires_grad (true for training)
+fn default_requires_grad() -> bool {
+    true
 }
 
 impl Embedding {
@@ -3699,15 +3935,17 @@ pub enum EditOp {
 }
 
 /// Message passing layer for graph neural networks
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePassingLayer {
     /// Weight matrix for transforming neighbor features
     pub weight: Array2<f32>,
     /// Bias vector
     pub bias: Array1<f32>,
     /// Weight gradient
+    #[serde(skip)]
     pub weight_grad: Option<Array2<f32>>,
     /// Bias gradient
+    #[serde(skip)]
     pub bias_grad: Option<Array1<f32>>,
     /// Input dimension
     pub input_dim: usize,
@@ -3812,7 +4050,7 @@ impl MessagePassingLayer {
 }
 
 /// Attention mechanism for edit localization
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttentionLayer {
     /// Query projection
     pub query_proj: Array2<f32>,
@@ -3901,7 +4139,7 @@ impl AttentionLayer {
 }
 
 /// Prediction head for node-level operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodePredictionHead {
     /// Weight matrix for edit operation prediction
     pub weight: Array2<f32>,
@@ -3965,14 +4203,14 @@ impl NodePredictionHead {
 }
 
 /// Graph pooling for global features
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphPooling {
     /// Pooling type
     pub pooling_type: PoolingType,
 }
 
 /// Type of graph pooling
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PoolingType {
     /// Mean pooling
     Mean,
@@ -4038,7 +4276,7 @@ impl GraphPooling {
 /// This is the "brain" that learns to transform graphs based on training examples.
 /// It combines message passing, attention, and prediction heads to predict
 /// graph edit operations.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphTransformNet {
     /// Input embedding layer
     pub embedding: Embedding,
@@ -4196,6 +4434,72 @@ impl GraphTransformNet {
         self.mp_layers.par_iter_mut().for_each(|layer| {
             layer.step(lr);
         });
+    }
+
+    // ========================================================================
+    // Model Persistence (backend-090)
+    // ========================================================================
+
+    /// Save model to JSON format with metadata header
+    ///
+    /// Returns a JSON string containing the model header and all weights.
+    /// Gradient fields are excluded (they are runtime-only).
+    pub fn save_json(&self) -> PersistenceResult<String> {
+        let serialized = SerializedModel {
+            header: ModelHeader::for_graph_transform_net(self),
+            model: self.clone(),
+        };
+        serde_json::to_string_pretty(&serialized)
+            .map_err(|e| PersistenceError::Serialization(e.to_string()))
+    }
+
+    /// Load model from JSON format
+    ///
+    /// Deserializes the model and verifies the header metadata.
+    pub fn load_json(json: &str) -> PersistenceResult<Self> {
+        let serialized: SerializedModel = serde_json::from_str(json)
+            .map_err(|e| PersistenceError::Deserialization(e.to_string()))?;
+
+        // Verify version compatibility
+        if serialized.header.version > MODEL_PERSISTENCE_VERSION {
+            return Err(PersistenceError::VersionMismatch {
+                expected: MODEL_PERSISTENCE_VERSION,
+                actual: serialized.header.version,
+            });
+        }
+
+        // Verify header matches model
+        if !serialized.header.verify(&serialized.model) {
+            return Err(PersistenceError::Deserialization(
+                "Model header does not match model architecture".to_string(),
+            ));
+        }
+
+        Ok(serialized.model)
+    }
+
+    /// Save model to a file (JSON format)
+    ///
+    /// # Arguments
+    /// * `path` - File path to save to (will be created or overwritten)
+    pub fn save_to_file(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        let json = self.save_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load model from a file (JSON format)
+    ///
+    /// # Arguments
+    /// * `path` - File path to load from
+    pub fn load_from_file(path: &std::path::Path) -> PersistenceResult<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::load_json(&json)
+    }
+
+    /// Get model metadata header
+    pub fn header(&self) -> ModelHeader {
+        ModelHeader::for_graph_transform_net(self)
     }
 }
 
@@ -6770,5 +7074,313 @@ mod tests {
         assert_eq!(PoolingType::Mean, PoolingType::Mean);
         assert_ne!(PoolingType::Mean, PoolingType::Max);
         assert_ne!(PoolingType::Max, PoolingType::Sum);
+    }
+
+    // ========================================================================
+    // Model Persistence Tests (backend-090)
+    // ========================================================================
+
+    #[test]
+    fn test_graph_transform_net_json_roundtrip() {
+        let original = GraphTransformNet::new(256, 32, 64, 2);
+
+        // Save to JSON
+        let json = original.save_json().unwrap();
+
+        // Load back
+        let loaded = GraphTransformNet::load_json(&json).unwrap();
+
+        // Verify architecture matches
+        assert_eq!(original.hidden_dim, loaded.hidden_dim);
+        assert_eq!(original.num_layers, loaded.num_layers);
+        assert_eq!(original.embedding.vocab_size, loaded.embedding.vocab_size);
+        assert_eq!(original.embedding.embed_dim, loaded.embedding.embed_dim);
+        assert_eq!(original.mp_layers.len(), loaded.mp_layers.len());
+    }
+
+    #[test]
+    fn test_graph_transform_net_weights_preserved() {
+        let original = GraphTransformNet::new(256, 16, 32, 1);
+
+        // Save and load
+        let json = original.save_json().unwrap();
+        let loaded = GraphTransformNet::load_json(&json).unwrap();
+
+        // Verify embedding weights are identical
+        assert_eq!(original.embedding.weights.shape(), loaded.embedding.weights.shape());
+        for i in 0..original.embedding.weights.shape()[0] {
+            for j in 0..original.embedding.weights.shape()[1] {
+                assert!(
+                    (original.embedding.weights[[i, j]] - loaded.embedding.weights[[i, j]]).abs() < 1e-10,
+                    "Embedding weight mismatch at [{}, {}]", i, j
+                );
+            }
+        }
+
+        // Verify message passing layer weights
+        for (orig_layer, loaded_layer) in original.mp_layers.iter().zip(loaded.mp_layers.iter()) {
+            assert_eq!(orig_layer.weight.shape(), loaded_layer.weight.shape());
+            for i in 0..orig_layer.weight.shape()[0] {
+                for j in 0..orig_layer.weight.shape()[1] {
+                    assert!(
+                        (orig_layer.weight[[i, j]] - loaded_layer.weight[[i, j]]).abs() < 1e-10,
+                        "MP layer weight mismatch"
+                    );
+                }
+            }
+        }
+
+        // Verify attention weights
+        assert_eq!(original.attention.query_proj.shape(), loaded.attention.query_proj.shape());
+        assert_eq!(original.attention.key_proj.shape(), loaded.attention.key_proj.shape());
+        assert_eq!(original.attention.value_proj.shape(), loaded.attention.value_proj.shape());
+    }
+
+    #[test]
+    fn test_graph_transform_net_file_roundtrip() {
+        let original = GraphTransformNet::new(256, 16, 32, 1);
+
+        // Use a temp file
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_graph_transform_net.json");
+
+        // Save to file
+        original.save_to_file(&temp_file).unwrap();
+
+        // Load from file
+        let loaded = GraphTransformNet::load_from_file(&temp_file).unwrap();
+
+        // Verify
+        assert_eq!(original.hidden_dim, loaded.hidden_dim);
+        assert_eq!(original.num_layers, loaded.num_layers);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_model_header_verification() {
+        let net = GraphTransformNet::new(256, 32, 64, 2);
+        let header = ModelHeader::for_graph_transform_net(&net);
+
+        // Header should verify against same model
+        assert!(header.verify(&net));
+
+        // Different model should fail verification
+        let different = GraphTransformNet::new(128, 16, 32, 1);
+        assert!(!header.verify(&different));
+    }
+
+    #[test]
+    fn test_model_header_fields() {
+        let net = GraphTransformNet::new(256, 32, 64, 3);
+        let header = net.header();
+
+        assert_eq!(header.version, MODEL_PERSISTENCE_VERSION);
+        assert_eq!(header.model_type, "GraphTransformNet");
+        assert_eq!(header.vocab_size, 256);
+        assert_eq!(header.embed_dim, 32);
+        assert_eq!(header.hidden_dim, 64);
+        assert_eq!(header.num_layers, 3);
+    }
+
+    #[test]
+    fn test_gradients_not_serialized() {
+        let mut original = GraphTransformNet::new(256, 16, 32, 1);
+
+        // Accumulate some gradients
+        original.embedding.grad = Some(ndarray::Array2::ones((256, 16)));
+
+        // Save and load
+        let json = original.save_json().unwrap();
+        let loaded = GraphTransformNet::load_json(&json).unwrap();
+
+        // Gradients should be None after loading (they are skipped)
+        assert!(loaded.embedding.grad.is_none());
+        for layer in &loaded.mp_layers {
+            assert!(layer.weight_grad.is_none());
+            assert!(layer.bias_grad.is_none());
+        }
+    }
+
+    #[test]
+    fn test_loaded_model_can_forward() {
+        let original = GraphTransformNet::new(256, 16, 32, 1);
+
+        // Save and load
+        let json = original.save_json().unwrap();
+        let loaded = GraphTransformNet::load_json(&json).unwrap();
+
+        // Should be able to do forward pass on loaded model
+        let dag = DagNN::from_text("test").unwrap();
+        let features = loaded.encode(&dag);
+
+        assert_eq!(features.len(), 4);
+        assert_eq!(features[0].len(), 32);
+    }
+
+    #[test]
+    fn test_serialized_model_struct() {
+        let net = GraphTransformNet::new(256, 16, 32, 1);
+        let serialized = SerializedModel {
+            header: ModelHeader::for_graph_transform_net(&net),
+            model: net.clone(),
+        };
+
+        // Round-trip through JSON
+        let json = serde_json::to_string(&serialized).unwrap();
+        let loaded: SerializedModel = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.header.vocab_size, 256);
+        assert_eq!(loaded.model.hidden_dim, 32);
+    }
+
+    // ========================================================================
+    // Unified Checkpoint Tests
+    // ========================================================================
+
+    #[test]
+    fn test_unified_checkpoint_creation() {
+        let checkpoint = UnifiedCheckpoint::new();
+        assert_eq!(checkpoint.version, CHECKPOINT_VERSION);
+        assert!(checkpoint.modules.is_empty());
+    }
+
+    #[test]
+    fn test_learnable_param_persistable() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+        let param = LearnableParam::new(0.5);
+
+        // Add and load
+        checkpoint.add_module(&param).unwrap();
+        let loaded: LearnableParam = checkpoint.load_module().unwrap();
+
+        assert!((loaded.value - 0.5).abs() < f32::EPSILON);
+        assert!((loaded.grad - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_graph_transform_net_persistable() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+        let net = GraphTransformNet::new(256, 16, 32, 2);
+
+        // Add to checkpoint
+        checkpoint.add_module(&net).unwrap();
+
+        // Verify module is present
+        assert!(checkpoint.has_module::<GraphTransformNet>());
+
+        // Load and verify
+        let loaded: GraphTransformNet = checkpoint.load_module().unwrap();
+        assert_eq!(loaded.embedding.vocab_size, 256);
+        assert_eq!(loaded.embedding.embed_dim, 16);
+        assert_eq!(loaded.hidden_dim, 32);
+        assert_eq!(loaded.num_layers, 2);
+    }
+
+    #[test]
+    fn test_unified_checkpoint_multiple_modules() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+
+        let net = GraphTransformNet::new(256, 16, 32, 1);
+        let param = LearnableParam::new(0.42);
+
+        checkpoint.add_module(&net).unwrap();
+        checkpoint.add_module(&param).unwrap();
+
+        // Both should be present
+        assert!(checkpoint.has_module::<GraphTransformNet>());
+        assert!(checkpoint.has_module::<LearnableParam>());
+
+        // Load both
+        let loaded_net: GraphTransformNet = checkpoint.load_module().unwrap();
+        let loaded_param: LearnableParam = checkpoint.load_module().unwrap();
+
+        assert_eq!(loaded_net.embedding.vocab_size, 256);
+        assert!((loaded_param.value - 0.42).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_unified_checkpoint_roundtrip_json() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+        let net = GraphTransformNet::new(128, 8, 16, 1);
+
+        checkpoint.add_module(&net).unwrap();
+
+        // Serialize to JSON
+        let json = checkpoint.save_json().unwrap();
+
+        // Deserialize
+        let loaded_checkpoint = UnifiedCheckpoint::load_json(&json).unwrap();
+
+        // Load module from loaded checkpoint
+        let loaded_net: GraphTransformNet = loaded_checkpoint.load_module().unwrap();
+        assert_eq!(loaded_net.embedding.vocab_size, 128);
+        assert_eq!(loaded_net.embedding.embed_dim, 8);
+    }
+
+    #[test]
+    fn test_unified_checkpoint_file_roundtrip() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+        let net = GraphTransformNet::new(64, 8, 16, 1);
+        checkpoint.add_module(&net).unwrap();
+
+        // Save to temp file
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("test_unified_checkpoint.json");
+
+        checkpoint.save_to_file(&path).unwrap();
+
+        // Load from file
+        let loaded = UnifiedCheckpoint::load_from_file(&path).unwrap();
+        let loaded_net: GraphTransformNet = loaded.load_module().unwrap();
+
+        assert_eq!(loaded_net.embedding.vocab_size, 64);
+
+        // Cleanup
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_unified_checkpoint_module_not_found() {
+        let checkpoint = UnifiedCheckpoint::new();
+
+        // Try to load a module that doesn't exist
+        let result: PersistenceResult<GraphTransformNet> = checkpoint.load_module();
+        assert!(result.is_err());
+
+        if let Err(PersistenceError::ModuleNotFound(type_id)) = result {
+            assert_eq!(type_id, "GraphTransformNet");
+        } else {
+            panic!("Expected ModuleNotFound error");
+        }
+    }
+
+    #[test]
+    fn test_unified_checkpoint_module_ids() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+
+        let net = GraphTransformNet::new(64, 8, 16, 1);
+        let param = LearnableParam::new(0.5);
+
+        checkpoint.add_module(&net).unwrap();
+        checkpoint.add_module(&param).unwrap();
+
+        let ids = checkpoint.module_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"GraphTransformNet"));
+        assert!(ids.contains(&"LearnableParam"));
+    }
+
+    #[test]
+    fn test_persistable_version_tracking() {
+        let mut checkpoint = UnifiedCheckpoint::new();
+        let net = GraphTransformNet::new(64, 8, 16, 1);
+
+        checkpoint.add_module(&net).unwrap();
+
+        // Check version is tracked
+        let module_checkpoint = checkpoint.modules.get("GraphTransformNet").unwrap();
+        assert_eq!(module_checkpoint.version, MODEL_PERSISTENCE_VERSION);
     }
 }

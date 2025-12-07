@@ -1794,6 +1794,255 @@ impl Default for TrainingConfig {
     }
 }
 
+// ============================================================================
+// TOML Configuration File Support
+// ============================================================================
+
+/// Complete training configuration from TOML file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConfigFile {
+    /// Training parameters
+    pub training: TrainingSection,
+    /// Optimizer configuration
+    #[serde(default)]
+    pub optimizer: OptimizerSection,
+    /// Loss function weights
+    #[serde(default)]
+    pub loss: LossSection,
+    /// Curriculum learning settings
+    #[serde(default)]
+    pub curriculum: CurriculumSection,
+    /// File paths
+    #[serde(default)]
+    pub paths: PathsSection,
+    /// Hardware settings
+    #[serde(default)]
+    pub hardware: HardwareSection,
+}
+
+/// Training section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrainingSection {
+    /// Batch size
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    /// Number of epochs per curriculum level
+    #[serde(default = "default_epochs_per_level")]
+    pub epochs_per_level: usize,
+    /// Learning rate
+    #[serde(default = "default_learning_rate")]
+    pub learning_rate: f64,
+    /// Early stopping patience (epochs without improvement)
+    #[serde(default = "default_patience")]
+    pub patience: usize,
+    /// Checkpoint save frequency (epochs)
+    #[serde(default = "default_checkpoint_every")]
+    pub checkpoint_every: usize,
+}
+
+/// Optimizer section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OptimizerSection {
+    /// Optimizer type: "sgd", "adam", "adamw"
+    #[serde(rename = "type", default = "default_optimizer_type")]
+    pub optimizer_type: String,
+    /// Adam beta1
+    #[serde(default = "default_beta1")]
+    pub beta1: f64,
+    /// Adam beta2
+    #[serde(default = "default_beta2")]
+    pub beta2: f64,
+    /// Adam epsilon
+    #[serde(default = "default_epsilon")]
+    pub epsilon: f64,
+    /// Weight decay (L2 regularization)
+    #[serde(default = "default_weight_decay")]
+    pub weight_decay: f64,
+}
+
+/// Loss function section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LossSection {
+    /// Cost for inserting a node
+    #[serde(default = "default_node_cost")]
+    pub node_insertion_cost: f64,
+    /// Cost for deleting a node
+    #[serde(default = "default_node_cost")]
+    pub node_deletion_cost: f64,
+    /// Cost for inserting an edge
+    #[serde(default = "default_edge_cost")]
+    pub edge_insertion_cost: f64,
+    /// Cost for deleting an edge
+    #[serde(default = "default_edge_cost")]
+    pub edge_deletion_cost: f64,
+    /// Weight for clique mismatch penalty
+    #[serde(default = "default_clique_weight")]
+    pub clique_weight: f64,
+}
+
+/// Curriculum learning section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CurriculumSection {
+    /// Starting curriculum level (1-7)
+    #[serde(default = "default_start_level")]
+    pub start_level: u8,
+    /// Ending curriculum level (1-7)
+    #[serde(default = "default_end_level")]
+    pub end_level: u8,
+    /// Accuracy threshold to advance to next level
+    #[serde(default = "default_advance_threshold")]
+    pub advance_threshold: f64,
+    /// Minimum epochs at each level before advancing
+    #[serde(default = "default_min_epochs")]
+    pub min_epochs_per_level: usize,
+}
+
+/// File paths section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PathsSection {
+    /// Path to training data directory
+    #[serde(default = "default_train_data")]
+    pub train_data: String,
+    /// Path to output/checkpoint directory
+    #[serde(default = "default_output_dir")]
+    pub output_dir: String,
+    /// Path to log file
+    #[serde(default = "default_log_file")]
+    pub log_file: String,
+}
+
+/// Hardware configuration section of config file
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HardwareSection {
+    /// Number of threads (0 = auto-detect)
+    #[serde(default)]
+    pub num_threads: usize,
+    /// Enable parallel batch processing
+    #[serde(default = "default_parallel")]
+    pub parallel_batches: bool,
+}
+
+// Default value functions for serde
+fn default_batch_size() -> usize { 64 }
+fn default_epochs_per_level() -> usize { 10 }
+fn default_learning_rate() -> f64 { 0.001 }
+fn default_patience() -> usize { 5 }
+fn default_checkpoint_every() -> usize { 2 }
+fn default_optimizer_type() -> String { "adam".to_string() }
+fn default_beta1() -> f64 { 0.9 }
+fn default_beta2() -> f64 { 0.999 }
+fn default_epsilon() -> f64 { 1e-8 }
+fn default_weight_decay() -> f64 { 0.0001 }
+fn default_node_cost() -> f64 { 1.0 }
+fn default_edge_cost() -> f64 { 0.5 }
+fn default_clique_weight() -> f64 { 2.0 }
+fn default_start_level() -> u8 { 1 }
+fn default_end_level() -> u8 { 7 }
+fn default_advance_threshold() -> f64 { 0.95 }
+fn default_min_epochs() -> usize { 5 }
+fn default_train_data() -> String { "data/generated".to_string() }
+fn default_output_dir() -> String { "checkpoints".to_string() }
+fn default_log_file() -> String { "training.log".to_string() }
+fn default_parallel() -> bool { true }
+
+impl Default for TrainingSection {
+    fn default() -> Self {
+        Self {
+            batch_size: default_batch_size(),
+            epochs_per_level: default_epochs_per_level(),
+            learning_rate: default_learning_rate(),
+            patience: default_patience(),
+            checkpoint_every: default_checkpoint_every(),
+        }
+    }
+}
+
+impl Default for OptimizerSection {
+    fn default() -> Self {
+        Self {
+            optimizer_type: default_optimizer_type(),
+            beta1: default_beta1(),
+            beta2: default_beta2(),
+            epsilon: default_epsilon(),
+            weight_decay: default_weight_decay(),
+        }
+    }
+}
+
+impl Default for LossSection {
+    fn default() -> Self {
+        Self {
+            node_insertion_cost: default_node_cost(),
+            node_deletion_cost: default_node_cost(),
+            edge_insertion_cost: default_edge_cost(),
+            edge_deletion_cost: default_edge_cost(),
+            clique_weight: default_clique_weight(),
+        }
+    }
+}
+
+impl Default for CurriculumSection {
+    fn default() -> Self {
+        Self {
+            start_level: default_start_level(),
+            end_level: default_end_level(),
+            advance_threshold: default_advance_threshold(),
+            min_epochs_per_level: default_min_epochs(),
+        }
+    }
+}
+
+impl Default for PathsSection {
+    fn default() -> Self {
+        Self {
+            train_data: default_train_data(),
+            output_dir: default_output_dir(),
+            log_file: default_log_file(),
+        }
+    }
+}
+
+impl Default for HardwareSection {
+    fn default() -> Self {
+        Self {
+            num_threads: 0,
+            parallel_batches: default_parallel(),
+        }
+    }
+}
+
+impl ConfigFile {
+    /// Load configuration from a TOML file
+    pub fn load<P: AsRef<Path>>(path: P) -> TrainingResult<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let config: ConfigFile = toml::from_str(&content)
+            .map_err(|e| TrainingError::ValidationError(format!("TOML parse error: {}", e)))?;
+        Ok(config)
+    }
+
+    /// Save configuration to a TOML file
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> TrainingResult<()> {
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| TrainingError::ValidationError(format!("TOML serialize error: {}", e)))?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Convert to the internal TrainingConfig format
+    pub fn to_training_config(&self) -> TrainingConfig {
+        TrainingConfig {
+            learning_rate: self.training.learning_rate as f32,
+            epochs: self.training.epochs_per_level,
+            batch_size: self.training.batch_size,
+            alpha: self.loss.node_insertion_cost as f32,
+            beta: self.loss.edge_insertion_cost as f32,
+            gamma: self.loss.clique_weight as f32,
+            val_frequency: self.training.checkpoint_every,
+            patience: self.training.patience,
+        }
+    }
+}
+
 /// Training metrics for a single epoch
 #[derive(Debug, Clone, Default)]
 pub struct EpochMetrics {

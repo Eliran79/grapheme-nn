@@ -44,7 +44,7 @@ rayon = "1.10"
 
 # Numeric
 num-traits = "0.2"
-ndarray = "0.15"
+ndarray = { version = "0.15", features = ["serde"] }
 rand = "0.8"
 
 # Testing

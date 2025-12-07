@@ -28,7 +28,8 @@
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, MultiBrainResult, TransformRule,
+    DomainBrain, Learnable, LearnableParam, MultiBrainResult, Persistable,
+    PersistenceError, TransformRule,
 };
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
@@ -1100,7 +1101,7 @@ pub fn create_default_memory_system() -> MemorySystem {
 ///
 /// This module learns to weight different aspects of graph similarity
 /// for memory retrieval (node count, edge count, degree distribution, type distribution).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableMemoryRetrieval {
     /// Weight for node count similarity
     pub node_weight: LearnableParam,
@@ -1237,6 +1238,26 @@ impl Learnable for LearnableMemoryRetrieval {
             + self.importance_bias.grad.powi(2)
             + self.temperature.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableMemoryRetrieval {
+    fn persist_type_id() -> &'static str {
+        "LearnableMemoryRetrieval"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate temperature is positive
+        if self.temperature.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Temperature must be positive".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

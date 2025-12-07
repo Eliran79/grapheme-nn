@@ -20,7 +20,8 @@
 
 use grapheme_core::{
     BrainRegistry, BrainRoutingResult, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, DomainResult, Learnable, LearnableParam, MultiBrainResult, TransformRule,
+    DomainBrain, DomainResult, Learnable, LearnableParam, MultiBrainResult, Persistable,
+    PersistenceError, TransformRule,
 };
 use grapheme_memory::{GraphFingerprint, SemanticGraph};
 use petgraph::graph::NodeIndex;
@@ -1096,7 +1097,7 @@ pub enum ReasoningMode {
 ///
 /// This module learns to weight different reasoning modes and adjust
 /// rule confidence based on feedback.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearnableReasoning {
     /// Confidence weight for deductive reasoning
     pub deduction_confidence: LearnableParam,
@@ -1238,6 +1239,26 @@ impl Learnable for LearnableReasoning {
             + self.causal_strength_weight.grad.powi(2)
             + self.rule_temperature.grad.powi(2))
         .sqrt()
+    }
+}
+
+impl Persistable for LearnableReasoning {
+    fn persist_type_id() -> &'static str {
+        "LearnableReasoning"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate temperature is positive
+        if self.rule_temperature.value <= 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Rule temperature must be positive".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
