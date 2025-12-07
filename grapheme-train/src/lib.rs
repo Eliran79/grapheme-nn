@@ -18,7 +18,7 @@
 // Allow &self in recursive methods for API consistency
 #![allow(clippy::only_used_in_recursion)]
 
-use grapheme_core::{GraphemeGraph, NodeType};
+use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value};
 use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
@@ -2156,7 +2156,7 @@ pub trait Optimizer {
 }
 
 /// Stochastic Gradient Descent with optional momentum
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SGD {
     /// Learning rate
     pub lr: f32,
@@ -2231,7 +2231,7 @@ impl Optimizer for SGD {
 }
 
 /// Adam optimizer
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Adam {
     /// Learning rate
     pub lr: f32,
@@ -2282,6 +2282,11 @@ impl Adam {
     pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
         self.weight_decay = weight_decay;
         self
+    }
+
+    /// Get the current timestep (number of optimizer steps taken)
+    pub fn timestep(&self) -> usize {
+        self.t
     }
 }
 
@@ -2409,7 +2414,7 @@ impl LRScheduler {
 // ============================================================================
 
 /// Training state for a training run
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingState {
     /// Current epoch
     pub epoch: usize,
@@ -2445,7 +2450,7 @@ impl Default for TrainingState {
 }
 
 /// Metrics logged during training
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrainingMetrics {
     /// Loss values per epoch
     pub epoch_losses: Vec<f32>,
@@ -2488,6 +2493,93 @@ impl TrainingMetrics {
         let prev_avg: f32 = prev.iter().sum::<f32>() / prev.len() as f32;
 
         recent_avg < prev_avg
+    }
+}
+
+// ============================================================================
+// Persistable Implementations for Training Types
+// ============================================================================
+
+impl Persistable for TrainingState {
+    fn persist_type_id() -> &'static str {
+        "TrainingState"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate state consistency
+        if self.current_lr < 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Learning rate cannot be negative".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Persistable for TrainingMetrics {
+    fn persist_type_id() -> &'static str {
+        "TrainingMetrics"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+}
+
+impl Persistable for SGD {
+    fn persist_type_id() -> &'static str {
+        "SGD"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        if self.lr < 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Learning rate cannot be negative".to_string(),
+            ));
+        }
+        if self.momentum < 0.0 || self.momentum > 1.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Momentum must be in [0, 1]".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Persistable for Adam {
+    fn persist_type_id() -> &'static str {
+        "Adam"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        if self.lr < 0.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Learning rate cannot be negative".to_string(),
+            ));
+        }
+        if self.beta1 < 0.0 || self.beta1 >= 1.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Beta1 must be in [0, 1)".to_string(),
+            ));
+        }
+        if self.beta2 < 0.0 || self.beta2 >= 1.0 {
+            return Err(PersistenceError::ValidationFailed(
+                "Beta2 must be in [0, 1)".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -4421,5 +4513,205 @@ mod tests {
         // Function with multiple args
         let result = pipeline.extract_expression("(exp (+ x 1))");
         assert!(result.is_ok(), "Failed to parse exp with nested arg");
+    }
+
+    // ========================================================================
+    // Persistence tests
+    // ========================================================================
+
+    #[test]
+    fn test_training_state_persistable() {
+        use grapheme_core::UnifiedCheckpoint;
+
+        let state = TrainingState {
+            epoch: 10,
+            step: 5,
+            total_steps: 100,
+            current_lr: 0.001,
+            best_val_loss: 0.5,
+            epochs_without_improvement: 2,
+            running_loss: 0.1,
+            batches_in_epoch: 20,
+        };
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&state).unwrap();
+
+        let loaded: TrainingState = checkpoint.load_module().unwrap();
+        assert_eq!(loaded.epoch, 10);
+        assert_eq!(loaded.total_steps, 100);
+        assert!((loaded.current_lr - 0.001).abs() < 1e-6);
+        assert!((loaded.best_val_loss - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_training_metrics_persistable() {
+        use grapheme_core::UnifiedCheckpoint;
+
+        let mut metrics = TrainingMetrics::default();
+        metrics.record_epoch(0.5, 0.01);
+        metrics.record_epoch(0.4, 0.01);
+        metrics.record_validation(0.45, 0.8);
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&metrics).unwrap();
+
+        let loaded: TrainingMetrics = checkpoint.load_module().unwrap();
+        assert_eq!(loaded.epoch_losses.len(), 2);
+        assert_eq!(loaded.val_losses.len(), 1);
+        assert!((loaded.epoch_losses[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_sgd_persistable() {
+        use grapheme_core::UnifiedCheckpoint;
+
+        let sgd = SGD::new(0.01).with_momentum(0.9).with_weight_decay(1e-4);
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&sgd).unwrap();
+
+        let loaded: SGD = checkpoint.load_module().unwrap();
+        assert!((loaded.lr - 0.01).abs() < 1e-6);
+        assert!((loaded.momentum - 0.9).abs() < 1e-6);
+        assert!((loaded.weight_decay - 1e-4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_adam_persistable() {
+        use grapheme_core::UnifiedCheckpoint;
+
+        let adam = Adam::new(0.001)
+            .with_beta1(0.9)
+            .with_beta2(0.999)
+            .with_weight_decay(1e-5);
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&adam).unwrap();
+
+        let loaded: Adam = checkpoint.load_module().unwrap();
+        assert!((loaded.lr - 0.001).abs() < 1e-6);
+        assert!((loaded.beta1 - 0.9).abs() < 1e-6);
+        assert!((loaded.beta2 - 0.999).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_training_state_validation() {
+        let mut state = TrainingState::default();
+        state.current_lr = -0.001; // Invalid
+
+        let result = state.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sgd_validation() {
+        let mut sgd = SGD::new(0.01);
+        sgd.momentum = 1.5; // Invalid
+
+        let result = sgd.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adam_validation() {
+        let mut adam = Adam::new(0.001);
+        adam.beta1 = 1.0; // Invalid (must be < 1)
+
+        let result = adam.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unified_checkpoint_roundtrip() {
+        use grapheme_core::UnifiedCheckpoint;
+
+        // Create all training components
+        let state = TrainingState {
+            epoch: 5,
+            step: 10,
+            total_steps: 50,
+            current_lr: 0.001,
+            best_val_loss: 0.3,
+            epochs_without_improvement: 0,
+            running_loss: 0.05,
+            batches_in_epoch: 10,
+        };
+
+        let mut metrics = TrainingMetrics::default();
+        metrics.record_epoch(0.5, 0.01);
+        metrics.record_epoch(0.4, 0.009);
+        metrics.record_epoch(0.35, 0.008);
+
+        let sgd = SGD::new(0.01).with_momentum(0.9);
+        let adam = Adam::new(0.001).with_beta1(0.9).with_beta2(0.999);
+
+        // Save all to unified checkpoint
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&state).unwrap();
+        checkpoint.add_module(&metrics).unwrap();
+        checkpoint.add_module(&sgd).unwrap();
+        checkpoint.add_module(&adam).unwrap();
+
+        // Serialize to JSON
+        let json = checkpoint.save_json().unwrap();
+        assert!(!json.is_empty());
+
+        // Parse back
+        let loaded_checkpoint = UnifiedCheckpoint::load_json(&json).unwrap();
+
+        // Verify all modules
+        let loaded_state: TrainingState = loaded_checkpoint.load_module().unwrap();
+        assert_eq!(loaded_state.epoch, 5);
+        assert_eq!(loaded_state.total_steps, 50);
+
+        let loaded_metrics: TrainingMetrics = loaded_checkpoint.load_module().unwrap();
+        assert_eq!(loaded_metrics.epoch_losses.len(), 3);
+
+        let loaded_sgd: SGD = loaded_checkpoint.load_module().unwrap();
+        assert!((loaded_sgd.momentum - 0.9).abs() < 1e-6);
+
+        let loaded_adam: Adam = loaded_checkpoint.load_module().unwrap();
+        assert!((loaded_adam.beta2 - 0.999).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unified_checkpoint_file_roundtrip() {
+        use grapheme_core::UnifiedCheckpoint;
+        use std::fs;
+
+        let state = TrainingState {
+            epoch: 3,
+            step: 0,
+            total_steps: 30,
+            current_lr: 0.005,
+            best_val_loss: 0.2,
+            epochs_without_improvement: 1,
+            running_loss: 0.0,
+            batches_in_epoch: 0,
+        };
+
+        let adam = Adam::new(0.001);
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&state).unwrap();
+        checkpoint.add_module(&adam).unwrap();
+
+        // Save to temp file
+        let temp_path = std::path::PathBuf::from("/tmp/test_checkpoint.json");
+        checkpoint.save_to_file(&temp_path).unwrap();
+
+        // Load from file
+        let loaded = UnifiedCheckpoint::load_from_file(&temp_path).unwrap();
+
+        let loaded_state: TrainingState = loaded.load_module().unwrap();
+        assert_eq!(loaded_state.epoch, 3);
+        assert!((loaded_state.current_lr - 0.005).abs() < 1e-6);
+
+        let loaded_adam: Adam = loaded.load_module().unwrap();
+        assert!((loaded_adam.lr - 0.001).abs() < 1e-6);
+
+        // Cleanup
+        fs::remove_file(&temp_path).ok();
     }
 }

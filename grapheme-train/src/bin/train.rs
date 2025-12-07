@@ -3,14 +3,46 @@
 //! Runs the training loop with curriculum learning.
 
 use clap::Parser;
-use grapheme_core::GraphTransformNet;
+use grapheme_core::{GraphTransformNet, UnifiedCheckpoint};
 use grapheme_polish::expr_to_polish;
 use grapheme_train::{
     compute_ged_loss, Adam, ConfigFile, Dataset, LRScheduler, Optimizer, TrainingLoop,
+    TrainingMetrics, TrainingState,
 };
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
+
+/// Save a unified checkpoint containing model, training state, metrics, and optimizer
+fn save_unified_checkpoint(
+    path: &PathBuf,
+    model: &GraphTransformNet,
+    training_state: &TrainingState,
+    metrics: &TrainingMetrics,
+    optimizer: &Adam,
+) -> anyhow::Result<()> {
+    let mut checkpoint = UnifiedCheckpoint::new();
+    checkpoint.add_module(model)?;
+    checkpoint.add_module(training_state)?;
+    checkpoint.add_module(metrics)?;
+    checkpoint.add_module(optimizer)?;
+    checkpoint.save_to_file(path)?;
+    Ok(())
+}
+
+/// Load a unified checkpoint and return components
+fn load_unified_checkpoint(
+    path: &PathBuf,
+) -> anyhow::Result<(GraphTransformNet, TrainingState, TrainingMetrics, Adam)> {
+    let checkpoint = UnifiedCheckpoint::load_from_file(path)?;
+
+    let model: GraphTransformNet = checkpoint.load_module()?;
+    let training_state: TrainingState = checkpoint.load_module()?;
+    let metrics: TrainingMetrics = checkpoint.load_module()?;
+    let optimizer: Adam = checkpoint.load_module()?;
+
+    Ok((model, training_state, metrics, optimizer))
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "train")]
@@ -135,27 +167,56 @@ fn main() -> anyhow::Result<()> {
     const HIDDEN_DIM: usize = 128;
     const NUM_LAYERS: usize = 3;
 
-    // Initialize or resume model
-    let model = if let Some(resume_path) = &args.resume {
-        println!("\nResuming from checkpoint: {:?}", resume_path);
-        GraphTransformNet::load_from_file(resume_path)?
+    // Initialize or resume model, optimizer, and training state
+    let (model, mut optimizer, mut training_loop) = if let Some(resume_path) = &args.resume {
+        println!("\nResuming from unified checkpoint: {:?}", resume_path);
+
+        // Try unified checkpoint first, fall back to model-only for backwards compatibility
+        if let Ok((model, state, metrics, opt)) = load_unified_checkpoint(resume_path) {
+            println!("  Loaded unified checkpoint:");
+            println!("    Epoch: {}", state.epoch);
+            println!("    Total steps: {}", state.total_steps);
+            println!("    Best val loss: {:.4}", state.best_val_loss);
+            println!("    Optimizer timestep: {}", opt.timestep());
+
+            let mut loop_state = TrainingLoop::new(training_config.clone())
+                .with_scheduler(LRScheduler::CosineAnnealingLR {
+                    t_max: training_config.epochs,
+                    eta_min: training_config.learning_rate * 0.01,
+                });
+            loop_state.state = state;
+            loop_state.metrics = metrics;
+
+            (model, opt, loop_state)
+        } else {
+            // Fall back to model-only checkpoint (backwards compatibility)
+            println!("  Note: Loading legacy model-only checkpoint");
+            let model = GraphTransformNet::load_from_file(resume_path)?;
+            let optimizer = Adam::new(training_config.learning_rate)
+                .with_beta1(config.optimizer.beta1 as f32)
+                .with_beta2(config.optimizer.beta2 as f32)
+                .with_weight_decay(config.optimizer.weight_decay as f32);
+            let training_loop = TrainingLoop::new(training_config.clone())
+                .with_scheduler(LRScheduler::CosineAnnealingLR {
+                    t_max: training_config.epochs,
+                    eta_min: training_config.learning_rate * 0.01,
+                });
+            (model, optimizer, training_loop)
+        }
     } else {
         println!("\nInitializing new model...");
-        GraphTransformNet::new(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS)
+        let model = GraphTransformNet::new(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS);
+        let optimizer = Adam::new(training_config.learning_rate)
+            .with_beta1(config.optimizer.beta1 as f32)
+            .with_beta2(config.optimizer.beta2 as f32)
+            .with_weight_decay(config.optimizer.weight_decay as f32);
+        let training_loop = TrainingLoop::new(training_config.clone())
+            .with_scheduler(LRScheduler::CosineAnnealingLR {
+                t_max: training_config.epochs,
+                eta_min: training_config.learning_rate * 0.01,
+            });
+        (model, optimizer, training_loop)
     };
-
-    // Initialize optimizer
-    let mut optimizer = Adam::new(training_config.learning_rate)
-        .with_beta1(config.optimizer.beta1 as f32)
-        .with_beta2(config.optimizer.beta2 as f32)
-        .with_weight_decay(config.optimizer.weight_decay as f32);
-
-    // Initialize training loop
-    let mut training_loop = TrainingLoop::new(training_config.clone())
-        .with_scheduler(LRScheduler::CosineAnnealingLR {
-            t_max: training_config.epochs,
-            eta_min: training_config.learning_rate * 0.01,
-        });
 
     // Loss weights from config
     let alpha = config.loss.node_insertion_cost as f32;
@@ -314,13 +375,19 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
 
-            // Checkpoint every N epochs
+            // Checkpoint every N epochs (unified format)
             if (epoch + 1) % config.training.checkpoint_every == 0 {
                 let checkpoint_path = PathBuf::from(&config.paths.output_dir)
-                    .join(format!("model_level{}_epoch{}.json", level, epoch + 1));
-                model.save_to_file(&checkpoint_path)?;
+                    .join(format!("checkpoint_level{}_epoch{}.json", level, epoch + 1));
+                save_unified_checkpoint(
+                    &checkpoint_path,
+                    &model,
+                    &training_loop.state,
+                    &training_loop.metrics,
+                    &optimizer,
+                )?;
                 if args.verbose {
-                    println!("    Saved checkpoint: {:?}", checkpoint_path);
+                    println!("    Saved unified checkpoint: {:?}", checkpoint_path);
                 }
             }
         }
@@ -332,18 +399,35 @@ fn main() -> anyhow::Result<()> {
             level_elapsed.as_secs_f64()
         );
 
-        // Save end-of-level checkpoint
+        // Save end-of-level checkpoint (unified format)
         let level_checkpoint = PathBuf::from(&config.paths.output_dir)
-            .join(format!("model_level{}_final.json", level));
-        model.save_to_file(&level_checkpoint)?;
+            .join(format!("checkpoint_level{}_final.json", level));
+        save_unified_checkpoint(
+            &level_checkpoint,
+            &model,
+            &training_loop.state,
+            &training_loop.metrics,
+            &optimizer,
+        )?;
         println!("  Saved level checkpoint: {:?}", level_checkpoint);
     }
 
-    // Save final model
-    let final_path = PathBuf::from(&config.paths.output_dir).join("model_final.json");
-    model.save_to_file(&final_path)?;
+    // Save final unified checkpoint
+    let final_path = PathBuf::from(&config.paths.output_dir).join("checkpoint_final.json");
+    save_unified_checkpoint(
+        &final_path,
+        &model,
+        &training_loop.state,
+        &training_loop.metrics,
+        &optimizer,
+    )?;
     println!("\nTraining complete!");
-    println!("Final model saved to: {:?}", final_path);
+    println!("Final checkpoint saved to: {:?}", final_path);
+
+    // Also save model-only for inference convenience
+    let model_path = PathBuf::from(&config.paths.output_dir).join("model_final.json");
+    model.save_to_file(&model_path)?;
+    println!("Model-only saved to: {:?}", model_path);
 
     // Print training summary
     println!("\nTraining Summary:");

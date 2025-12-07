@@ -137,10 +137,10 @@ Backend-090 implemented persistence for `GraphTransformNet` in grapheme-core. Ho
 
 ### Phase 4: Integration
 
-- [ ] Update grapheme-train to use unified checkpointing
-- [ ] Add checkpoint save/resume to training pipeline
-- [ ] Add full GRAPHEME state save/load
-- [ ] Add tests for cross-module checkpoint roundtrip
+- [x] Update grapheme-train to use unified checkpointing
+- [x] Add checkpoint save/resume to training pipeline
+- [x] Add full GRAPHEME state save/load
+- [x] Add tests for cross-module checkpoint roundtrip
 
 ## Design Decisions
 
@@ -184,12 +184,12 @@ Backend-090 implemented persistence for `GraphTransformNet` in grapheme-core. Ho
 
 ## Acceptance Criteria
 
-- [ ] All modules with learnable state have persistence
-- [ ] Single checkpoint file can save/load entire GRAPHEME state
-- [ ] No code duplication across modules
-- [ ] Binary format available for production use
-- [ ] All existing tests still pass
-- [ ] New tests for unified checkpoint system
+- [x] All modules with learnable state have persistence
+- [x] Single checkpoint file can save/load entire GRAPHEME state
+- [x] No code duplication across modules
+- [ ] Binary format available for production use (deferred - JSON sufficient for now)
+- [x] All existing tests still pass (569 tests pass)
+- [x] New tests for unified checkpoint system (9 new tests added)
 
 ## Dependencies
 
@@ -221,15 +221,40 @@ Backend-090 implemented persistence for `GraphTransformNet` in grapheme-core. Ho
   - LearnableGrounding (grapheme-ground)
   - LearnableMultimodal (grapheme-multimodal)
   - All with validation methods for parameter constraints
+- 2025-12-07: **Phase 4 Complete** - Integrated unified checkpointing into training:
+  - Added Persistable impls for TrainingState, TrainingMetrics, SGD, Adam
+  - Updated train.rs to use UnifiedCheckpoint for all checkpoint saves
+  - Added backward-compatible resume from unified or legacy checkpoints
+  - Added 9 new tests for training state persistence
+  - Total tests: 569 (all passing)
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [To be filled on completion]
+- `grapheme-train/src/lib.rs`: Added `Persistable` implementations for `TrainingState`, `TrainingMetrics`, `SGD`, `Adam`
+- `grapheme-train/src/lib.rs`: Added `Adam::timestep()` getter method
+- `grapheme-train/src/bin/train.rs`: Updated to use `UnifiedCheckpoint` for all checkpoint saves
+- Checkpoint files now include: model + training state + metrics + optimizer state
+- Checkpoint files renamed: `model_*.json` → `checkpoint_*.json` (unified), `model_final.json` retained for inference
 
-### Audit Results
-- [Document which modules need persistence and what state they hold]
+### Causality Impact
+- Training can now be resumed with full state (optimizer momentum, LR scheduler state, best_val_loss)
+- Old model-only checkpoints can still be loaded (backwards compatibility)
+- New unified checkpoints contain all information needed for seamless resume
 
-### Architecture Decisions
-- [Document final architecture choice and rationale]
+### Dependencies & Integration
+- Uses `UnifiedCheckpoint` and `Persistable` from grapheme-core
+- No new crate dependencies added
+- Training binaries (train.rs) now produce unified checkpoints
+
+### Verification & Testing
+- Run `cargo test -p grapheme-train` to verify persistence tests
+- Test checkpoint roundtrip: `test_unified_checkpoint_roundtrip`, `test_unified_checkpoint_file_roundtrip`
+- Test individual modules: `test_training_state_persistable`, `test_adam_persistable`, etc.
+- Test validation: `test_training_state_validation`, `test_sgd_validation`, `test_adam_validation`
+
+### Context for Next Task
+- Binary format (bincode/zstd) deferred - JSON sufficient for current scale
+- To add binary format: implement `save_binary()`/`load_binary()` on `UnifiedCheckpoint`
+- Cross-module checkpoint (model + all cognitive modules) available via `UnifiedCheckpoint::add_module()`
