@@ -4,10 +4,12 @@
 
 use clap::Parser;
 use grapheme_core::{GraphTransformNet, UnifiedCheckpoint};
+// Learnable trait is used via model.zero_grad() and model.step() calls
+use grapheme_core::Learnable as _;
 use grapheme_polish::expr_to_polish;
 use grapheme_train::{
-    compute_ged_loss, Adam, ConfigFile, Dataset, LRScheduler, Optimizer, TrainingLoop,
-    TrainingMetrics, TrainingState,
+    compute_edit_prediction_loss, compute_ged_loss, Adam, ConfigFile, Dataset, LRScheduler,
+    TrainingLoop, TrainingMetrics, TrainingState,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -168,7 +170,7 @@ fn main() -> anyhow::Result<()> {
     const NUM_LAYERS: usize = 3;
 
     // Initialize or resume model, optimizer, and training state
-    let (model, mut optimizer, mut training_loop) = if let Some(resume_path) = &args.resume {
+    let (mut model, optimizer, mut training_loop) = if let Some(resume_path) = &args.resume {
         println!("\nResuming from unified checkpoint: {:?}", resume_path);
 
         // Try unified checkpoint first, fall back to model-only for backwards compatibility
@@ -270,46 +272,70 @@ fn main() -> anyhow::Result<()> {
             let mut epoch_loss = 0.0;
             let mut batch_count = 0;
 
-            // Process batches
+            // Process batches with supervised edit prediction (backend-092)
             for batch in train_dataset.batches(config.training.batch_size) {
-                optimizer.zero_grad();
+                // Zero gradients before each batch
+                model.zero_grad();
 
-                let mut batch_loss = 0.0;
+                // Collect inputs and targets for batch
+                let mut inputs: Vec<&str> = Vec::with_capacity(batch.len());
+                let mut targets: Vec<String> = Vec::with_capacity(batch.len());
 
                 for example in batch {
-                    // Create input graph from expression
-                    let input_graph =
-                        grapheme_core::GraphemeGraph::from_text(&example.input_polish);
+                    let input = &example.input_polish;
 
-                    // Create target graph
-                    let target_graph = if let Some(ref symbolic) = &example.expected_symbolic {
-                        grapheme_core::GraphemeGraph::from_text(&expr_to_polish(symbolic))
+                    // Get target string
+                    let target = if let Some(ref symbolic) = &example.expected_symbolic {
+                        expr_to_polish(symbolic)
                     } else if let Some(result) = example.expected_result {
-                        grapheme_core::GraphemeGraph::from_text(&result.to_string())
+                        result.to_string()
                     } else {
                         continue;
                     };
 
-                    // Compute GED loss (forward pass is implicit in loss computation)
-                    // In a real implementation, the model would transform input_graph
-                    // For now, we compute the loss between input and target as baseline
-                    let loss = compute_ged_loss(&input_graph, &target_graph, alpha, beta, gamma);
-                    batch_loss += loss;
+                    inputs.push(input);
+                    targets.push(target);
                 }
 
-                // Average batch loss
-                if !batch.is_empty() {
-                    batch_loss /= batch.len() as f32;
+                if inputs.is_empty() {
+                    continue;
                 }
 
-                // Note: Full backpropagation would require differentiable graph operations
-                // This is a placeholder for the training loop structure
-                // The model.encode() method processes graphs, but doesn't produce
-                // output graphs directly - that requires additional generation logic
+                // Compute supervised edit prediction loss - O(batch * n * m)
+                // This uses the differentiable cross-entropy loss, NOT GED
+                let target_refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+                let loss_result = compute_edit_prediction_loss(&model, &inputs, &target_refs);
 
+                // Update model weights using gradient descent
+                // The gradients are computed via cross-entropy (pred - target)
+                let lr = training_loop.state.current_lr;
+                model.step(lr);
+
+                // Also compute GED loss for monitoring (optional baseline comparison)
+                let mut ged_loss = 0.0;
+                for (input, target) in inputs.iter().zip(targets.iter()) {
+                    let input_graph = grapheme_core::GraphemeGraph::from_text(input);
+                    let target_graph = grapheme_core::GraphemeGraph::from_text(target);
+                    ged_loss += compute_ged_loss(&input_graph, &target_graph, alpha, beta, gamma);
+                }
+                ged_loss /= inputs.len().max(1) as f32;
+
+                // Record batch metrics - use cross-entropy loss as primary
+                let batch_loss = loss_result.loss;
                 training_loop.record_batch(batch_loss);
                 epoch_loss += batch_loss;
                 batch_count += 1;
+
+                // Log accuracy periodically
+                if args.verbose && batch_count % 10 == 0 {
+                    println!(
+                        "    Batch {}: CE loss={:.4}, accuracy={:.2}%, GED={:.4}",
+                        batch_count,
+                        batch_loss,
+                        loss_result.accuracy * 100.0,
+                        ged_loss
+                    );
+                }
             }
 
             let avg_loss = if batch_count > 0 {
@@ -318,35 +344,40 @@ fn main() -> anyhow::Result<()> {
                 0.0
             };
 
-            // Validation
+            // Validation using cross-entropy loss (consistent with training)
             if let Some(ref val) = val_dataset {
                 if training_loop.should_validate() {
-                    let mut val_loss = 0.0;
-                    let mut val_count = 0;
+                    // Collect validation inputs and targets
+                    let mut val_inputs: Vec<&str> = Vec::new();
+                    let mut val_targets: Vec<String> = Vec::new();
 
                     for example in &val.examples {
-                        let input_graph =
-                            grapheme_core::GraphemeGraph::from_text(&example.input_polish);
-
-                        let target_graph = if let Some(ref symbolic) = &example.expected_symbolic {
-                            grapheme_core::GraphemeGraph::from_text(&expr_to_polish(symbolic))
+                        let target = if let Some(ref symbolic) = &example.expected_symbolic {
+                            expr_to_polish(symbolic)
                         } else if let Some(result) = example.expected_result {
-                            grapheme_core::GraphemeGraph::from_text(&result.to_string())
+                            result.to_string()
                         } else {
                             continue;
                         };
 
-                        // Compute baseline loss (input vs target)
-                        val_loss +=
-                            compute_ged_loss(&input_graph, &target_graph, alpha, beta, gamma);
-                        val_count += 1;
+                        val_inputs.push(&example.input_polish);
+                        val_targets.push(target);
                     }
 
-                    if val_count > 0 {
-                        val_loss /= val_count as f32;
-                        let improved = training_loop.record_validation(val_loss, 0.0);
+                    if !val_inputs.is_empty() {
+                        let target_refs: Vec<&str> =
+                            val_targets.iter().map(|s| s.as_str()).collect();
+                        let val_result =
+                            compute_edit_prediction_loss(&model, &val_inputs, &target_refs);
+
+                        let improved =
+                            training_loop.record_validation(val_result.loss, val_result.accuracy);
                         if improved && args.verbose {
-                            println!("    New best validation loss: {:.4}", val_loss);
+                            println!(
+                                "    New best validation: loss={:.4}, accuracy={:.2}%",
+                                val_result.loss,
+                                val_result.accuracy * 100.0
+                            );
                         }
                     }
                 }

@@ -1084,6 +1084,292 @@ impl GraphEditDistance {
 }
 
 // ============================================================================
+// Supervised Edit Prediction Training (backend-092)
+// ============================================================================
+
+/// Edit operation for supervised training
+///
+/// Maps to grapheme_core::EditOp indices:
+/// - Keep = 0
+/// - Delete = 1
+/// - Modify = 2
+/// - Insert = 3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditLabel {
+    /// Keep the character unchanged (index 0)
+    Keep = 0,
+    /// Delete the character (index 1)
+    Delete = 1,
+    /// Modify the character to something else (index 2)
+    Modify = 2,
+    /// Insert a character after this position (index 3)
+    Insert = 3,
+}
+
+impl EditLabel {
+    /// Convert to one-hot target vector
+    pub fn to_one_hot(&self) -> [f32; 4] {
+        let mut one_hot = [0.0; 4];
+        one_hot[*self as usize] = 1.0;
+        one_hot
+    }
+
+    /// Get the class index
+    pub fn index(&self) -> usize {
+        *self as usize
+    }
+}
+
+/// Result of edit sequence computation
+#[derive(Debug, Clone)]
+pub struct EditSequence {
+    /// Edit labels for each input character
+    pub labels: Vec<EditLabel>,
+    /// Characters to insert (for Insert operations)
+    pub insertions: Vec<Option<char>>,
+    /// Characters to modify to (for Modify operations)
+    pub modifications: Vec<Option<char>>,
+}
+
+/// Compute edit sequence from input to target string using O(nm) dynamic programming
+///
+/// This uses a modified Levenshtein algorithm to find the optimal edit sequence,
+/// then maps operations to per-character labels.
+///
+/// Complexity: O(n*m) where n=input length, m=target length
+/// This is polynomial time, NOT NP-hard.
+pub fn compute_edit_sequence(input: &str, target: &str) -> EditSequence {
+    let input_chars: Vec<char> = input.chars().collect();
+    let target_chars: Vec<char> = target.chars().collect();
+    let n = input_chars.len();
+    let m = target_chars.len();
+
+    // Handle edge cases
+    if n == 0 {
+        return EditSequence {
+            labels: vec![],
+            insertions: vec![],
+            modifications: vec![],
+        };
+    }
+
+    if m == 0 {
+        // Delete everything
+        return EditSequence {
+            labels: vec![EditLabel::Delete; n],
+            insertions: vec![None; n],
+            modifications: vec![None; n],
+        };
+    }
+
+    // DP table: dp[i][j] = min edits to transform input[0..i] to target[0..j]
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+
+    // Base cases
+    for i in 0..=n {
+        dp[i][0] = i; // delete all
+    }
+    for j in 0..=m {
+        dp[0][j] = j; // insert all
+    }
+
+    // Fill DP table
+    for i in 1..=n {
+        for j in 1..=m {
+            if input_chars[i - 1] == target_chars[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1]; // match, no cost
+            } else {
+                dp[i][j] = 1 + dp[i - 1][j - 1]  // substitute
+                    .min(dp[i - 1][j])            // delete
+                    .min(dp[i][j - 1]);           // insert
+            }
+        }
+    }
+
+    // Backtrack to find edit sequence
+    let mut labels = vec![EditLabel::Keep; n];
+    let mut insertions = vec![None; n];
+    let mut modifications = vec![None; n];
+
+    let mut i = n;
+    let mut j = m;
+
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && input_chars[i - 1] == target_chars[j - 1] {
+            // Match - keep
+            labels[i - 1] = EditLabel::Keep;
+            i -= 1;
+            j -= 1;
+        } else if i > 0 && j > 0 && dp[i][j] == dp[i - 1][j - 1] + 1 {
+            // Substitute - modify
+            labels[i - 1] = EditLabel::Modify;
+            modifications[i - 1] = Some(target_chars[j - 1]);
+            i -= 1;
+            j -= 1;
+        } else if i > 0 && dp[i][j] == dp[i - 1][j] + 1 {
+            // Delete
+            labels[i - 1] = EditLabel::Delete;
+            i -= 1;
+        } else if j > 0 {
+            // Insert - mark the previous input position
+            if i > 0 {
+                labels[i - 1] = EditLabel::Insert;
+                insertions[i - 1] = Some(target_chars[j - 1]);
+            }
+            j -= 1;
+        } else {
+            break;
+        }
+    }
+
+    EditSequence {
+        labels,
+        insertions,
+        modifications,
+    }
+}
+
+/// Compute cross-entropy loss between predicted probabilities and target label
+///
+/// loss = -sum(target_i * log(pred_i + epsilon))
+///
+/// For one-hot targets, this simplifies to -log(pred[target_class])
+///
+/// Complexity: O(num_classes) = O(4) = O(1)
+pub fn cross_entropy_loss(predicted_probs: &[f32], target: EditLabel) -> f32 {
+    let epsilon = 1e-7;
+    let target_idx = target.index();
+
+    // Clamp probability to avoid log(0)
+    let prob = predicted_probs.get(target_idx).copied().unwrap_or(0.25);
+    let clamped = prob.max(epsilon).min(1.0 - epsilon);
+
+    -clamped.ln()
+}
+
+/// Compute gradient of cross-entropy loss with respect to logits (pre-softmax)
+///
+/// For softmax + cross-entropy, the gradient is simply: pred - target
+/// This is the well-known result that makes training efficient.
+///
+/// Complexity: O(num_classes) = O(4) = O(1)
+pub fn cross_entropy_gradient(predicted_probs: &[f32], target: EditLabel) -> Vec<f32> {
+    let target_one_hot = target.to_one_hot();
+
+    predicted_probs
+        .iter()
+        .zip(target_one_hot.iter())
+        .map(|(&pred, &tgt)| pred - tgt)
+        .collect()
+}
+
+/// Result of computing edit prediction loss for a batch
+#[derive(Debug, Clone)]
+pub struct EditPredictionLoss {
+    /// Total cross-entropy loss (averaged over batch)
+    pub loss: f32,
+    /// Per-node gradients (outer: batch, inner: nodes, innermost: 4 classes)
+    pub gradients: Vec<Vec<Vec<f32>>>,
+    /// Accuracy: fraction of correctly predicted edits
+    pub accuracy: f32,
+}
+
+/// Compute supervised edit prediction loss for a batch of input-target pairs
+///
+/// This is the core training function that:
+/// 1. Computes ground-truth edit sequences (O(n*m) each)
+/// 2. Gets model predictions (forward pass)
+/// 3. Computes cross-entropy loss
+/// 4. Computes gradients for backpropagation
+///
+/// Total complexity: O(batch_size * max(n*m, n*hidden_dim))
+/// All operations are polynomial time.
+pub fn compute_edit_prediction_loss(
+    model: &grapheme_core::GraphTransformNet,
+    inputs: &[&str],
+    targets: &[&str],
+) -> EditPredictionLoss {
+    assert_eq!(inputs.len(), targets.len(), "Input/target count mismatch");
+
+    let batch_size = inputs.len();
+    if batch_size == 0 {
+        return EditPredictionLoss {
+            loss: 0.0,
+            gradients: vec![],
+            accuracy: 1.0,
+        };
+    }
+
+    let mut total_loss = 0.0;
+    let mut total_correct = 0;
+    let mut total_predictions = 0;
+    let mut all_gradients = Vec::with_capacity(batch_size);
+
+    for (input, target) in inputs.iter().zip(targets.iter()) {
+        // Compute ground truth edit sequence - O(n*m)
+        let edit_seq = compute_edit_sequence(input, target);
+
+        // Create graph and get predictions - O(n*hidden_dim)
+        let dag = match grapheme_core::DagNN::from_text(input) {
+            Ok(d) => d,
+            Err(_) => {
+                all_gradients.push(vec![]);
+                continue;
+            }
+        };
+
+        let predictions = model.predict_edits(&dag);
+
+        let mut node_gradients = Vec::with_capacity(predictions.len());
+
+        // Compute loss and gradients for each node
+        for (i, (_node_id, _predicted_op, probs)) in predictions.iter().enumerate() {
+            let target_label = edit_seq.labels.get(i).copied().unwrap_or(EditLabel::Keep);
+
+            // Cross-entropy loss - O(4)
+            total_loss += cross_entropy_loss(probs, target_label);
+
+            // Gradient - O(4)
+            let grad = cross_entropy_gradient(probs, target_label);
+            node_gradients.push(grad);
+
+            // Accuracy tracking
+            let predicted_idx = probs
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            if predicted_idx == target_label.index() {
+                total_correct += 1;
+            }
+            total_predictions += 1;
+        }
+
+        all_gradients.push(node_gradients);
+    }
+
+    let avg_loss = if total_predictions > 0 {
+        total_loss / total_predictions as f32
+    } else {
+        0.0
+    };
+
+    let accuracy = if total_predictions > 0 {
+        total_correct as f32 / total_predictions as f32
+    } else {
+        1.0
+    };
+
+    EditPredictionLoss {
+        loss: avg_loss,
+        gradients: all_gradients,
+        accuracy,
+    }
+}
+
+// ============================================================================
 // Weisfeiler-Leman Kernel (backend-006)
 // ============================================================================
 
@@ -4713,5 +4999,133 @@ mod tests {
 
         // Cleanup
         fs::remove_file(&temp_path).ok();
+    }
+
+    // ========================================================================
+    // Supervised Edit Prediction Tests (backend-092)
+    // ========================================================================
+
+    #[test]
+    fn test_compute_edit_sequence_identical() {
+        let seq = compute_edit_sequence("hello", "hello");
+        assert_eq!(seq.labels.len(), 5);
+        assert!(seq.labels.iter().all(|&l| l == EditLabel::Keep));
+    }
+
+    #[test]
+    fn test_compute_edit_sequence_delete_all() {
+        let seq = compute_edit_sequence("abc", "");
+        assert_eq!(seq.labels.len(), 3);
+        assert!(seq.labels.iter().all(|&l| l == EditLabel::Delete));
+    }
+
+    #[test]
+    fn test_compute_edit_sequence_simple_modify() {
+        let seq = compute_edit_sequence("cat", "bat");
+        assert_eq!(seq.labels.len(), 3);
+        // First char 'c' -> 'b' is a modify
+        assert_eq!(seq.labels[0], EditLabel::Modify);
+        assert_eq!(seq.modifications[0], Some('b'));
+        // Rest should be keep
+        assert_eq!(seq.labels[1], EditLabel::Keep);
+        assert_eq!(seq.labels[2], EditLabel::Keep);
+    }
+
+    #[test]
+    fn test_compute_edit_sequence_deletion() {
+        let seq = compute_edit_sequence("hello", "helo");
+        assert_eq!(seq.labels.len(), 5);
+        // One 'l' should be deleted
+        let delete_count = seq.labels.iter().filter(|&&l| l == EditLabel::Delete).count();
+        assert_eq!(delete_count, 1);
+    }
+
+    #[test]
+    fn test_compute_edit_sequence_empty_input() {
+        let seq = compute_edit_sequence("", "abc");
+        assert_eq!(seq.labels.len(), 0);
+    }
+
+    #[test]
+    fn test_edit_label_to_one_hot() {
+        assert_eq!(EditLabel::Keep.to_one_hot(), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(EditLabel::Delete.to_one_hot(), [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(EditLabel::Modify.to_one_hot(), [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(EditLabel::Insert.to_one_hot(), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_perfect_prediction() {
+        // Perfect prediction should give low loss
+        let probs = vec![0.99, 0.003, 0.003, 0.004];
+        let loss = cross_entropy_loss(&probs, EditLabel::Keep);
+        assert!(loss < 0.1);
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_wrong_prediction() {
+        // Wrong prediction should give high loss
+        let probs = vec![0.01, 0.97, 0.01, 0.01];
+        let loss = cross_entropy_loss(&probs, EditLabel::Keep);
+        assert!(loss > 3.0); // -ln(0.01) ≈ 4.6
+    }
+
+    #[test]
+    fn test_cross_entropy_gradient() {
+        let probs = vec![0.7, 0.1, 0.1, 0.1];
+        let grad = cross_entropy_gradient(&probs, EditLabel::Keep);
+        // Gradient should be pred - target = [0.7-1, 0.1-0, 0.1-0, 0.1-0]
+        assert!((grad[0] - (-0.3)).abs() < 1e-6);
+        assert!((grad[1] - 0.1).abs() < 1e-6);
+        assert!((grad[2] - 0.1).abs() < 1e-6);
+        assert!((grad[3] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_edit_prediction_loss_basic() {
+        use grapheme_core::GraphTransformNet;
+
+        let model = GraphTransformNet::new(256, 32, 64, 2);
+        let inputs = vec!["2+3"];
+        let targets = vec!["5"];
+
+        let result = compute_edit_prediction_loss(&model, &inputs, &targets);
+
+        // Should have computed some loss
+        assert!(result.loss >= 0.0);
+        // Should have gradients for the batch
+        assert_eq!(result.gradients.len(), 1);
+        // Accuracy should be between 0 and 1
+        assert!((0.0..=1.0).contains(&result.accuracy));
+    }
+
+    #[test]
+    fn test_compute_edit_prediction_loss_empty_batch() {
+        use grapheme_core::GraphTransformNet;
+
+        let model = GraphTransformNet::new(256, 32, 64, 2);
+        let inputs: Vec<&str> = vec![];
+        let targets: Vec<&str> = vec![];
+
+        let result = compute_edit_prediction_loss(&model, &inputs, &targets);
+
+        assert_eq!(result.loss, 0.0);
+        assert_eq!(result.accuracy, 1.0);
+        assert!(result.gradients.is_empty());
+    }
+
+    #[test]
+    fn test_edit_sequence_complexity_polynomial() {
+        // Verify the algorithm handles longer strings without exponential blowup
+        let long_input: String = "a".repeat(100);
+        let long_target: String = "b".repeat(100);
+
+        let start = std::time::Instant::now();
+        let seq = compute_edit_sequence(&long_input, &long_target);
+        let elapsed = start.elapsed();
+
+        // Should complete in under 100ms for O(n*m) = O(10000)
+        assert!(elapsed.as_millis() < 100);
+        assert_eq!(seq.labels.len(), 100);
     }
 }
