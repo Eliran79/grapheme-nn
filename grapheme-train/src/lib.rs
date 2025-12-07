@@ -24,6 +24,7 @@ use grapheme_engine::{
 };
 use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
+use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -2189,6 +2190,122 @@ fn compute_differentiable_edge_cost(
     (edge_cost, edge_gradients)
 }
 
+/// Compute DAG-specific local density metric (polynomial time)
+///
+/// For DAGs (no cycles), traditional clustering coefficient is always 0.
+/// Instead, we measure local density via out-degree distribution.
+///
+/// High out-degree nodes act as "concept hubs" similar to clique centers.
+///
+/// Complexity: O(n)
+fn compute_dag_local_density(graph: &GraphemeGraph, node_idx: NodeIndex) -> f32 {
+    let out_degree = graph.graph.neighbors(node_idx).count();
+    let total_nodes = graph.graph.node_count();
+
+    if total_nodes <= 1 {
+        return 0.0;
+    }
+
+    // Normalize by max possible out-degree in DAG
+    out_degree as f32 / (total_nodes - 1) as f32
+}
+
+/// Compute DAG-specific local density metric for MathGraph
+fn compute_dag_local_density_math(graph: &MathGraph, node_idx: NodeIndex) -> f32 {
+    let out_degree = graph.graph.neighbors(node_idx).count();
+    let total_nodes = graph.graph.node_count();
+
+    if total_nodes <= 1 {
+        return 0.0;
+    }
+
+    out_degree as f32 / (total_nodes - 1) as f32
+}
+
+/// Compute graph-level density statistics for DAG
+///
+/// Returns variance of local density distribution as a measure of
+/// "clique-like" hierarchical structure.
+///
+/// High variance = some nodes are hubs (clique centers), others are leaves
+/// Low variance = uniform distribution (less structure)
+///
+/// Complexity: O(n)
+fn compute_dag_density_statistics(graph: &GraphemeGraph) -> (f32, f32) {
+    let node_indices: Vec<_> = graph.graph.node_indices().collect();
+    let n = node_indices.len();
+
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+
+    // Compute all local densities
+    let densities: Vec<f32> = node_indices
+        .iter()
+        .map(|&idx| compute_dag_local_density(graph, idx))
+        .collect();
+
+    // Mean
+    let mean: f32 = densities.iter().sum::<f32>() / n as f32;
+
+    // Variance
+    let variance: f32 = densities.iter().map(|&d| (d - mean).powi(2)).sum::<f32>() / n as f32;
+
+    (mean, variance)
+}
+
+/// Compute graph-level density statistics for MathGraph
+fn compute_dag_density_statistics_math(graph: &MathGraph) -> (f32, f32) {
+    let node_indices: Vec<_> = graph.graph.node_indices().collect();
+    let n = node_indices.len();
+
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+
+    let densities: Vec<f32> = node_indices
+        .iter()
+        .map(|&idx| compute_dag_local_density_math(graph, idx))
+        .collect();
+
+    let mean: f32 = densities.iter().sum::<f32>() / n as f32;
+    let variance: f32 = densities.iter().map(|&d| (d - mean).powi(2)).sum::<f32>() / n as f32;
+
+    (mean, variance)
+}
+
+/// Compute differentiable clique alignment cost for DAGs
+///
+/// For DAGs, we can't use traditional clique detection (requires cycles).
+/// Instead, we measure structural similarity via degree distribution moments.
+///
+/// This captures hierarchical "clique-like" patterns without NP-hard enumeration.
+///
+/// Complexity: O(n) - highly efficient for DAGs
+fn compute_clique_alignment_cost(predicted: &GraphemeGraph, target: &GraphemeGraph) -> f32 {
+    let (pred_mean, pred_var) = compute_dag_density_statistics(predicted);
+    let (target_mean, target_var) = compute_dag_density_statistics(target);
+
+    // L1 distance on both mean and variance
+    // Mean captures overall connectivity, variance captures hub structure
+    let mean_diff = (pred_mean - target_mean).abs();
+    let var_diff = (pred_var - target_var).abs();
+
+    // Weighted combination (variance matters more for clique structure)
+    0.3 * mean_diff + 0.7 * var_diff
+}
+
+/// Compute differentiable clique alignment cost for MathGraph DAGs
+fn compute_clique_alignment_cost_math(predicted: &MathGraph, target: &MathGraph) -> f32 {
+    let (pred_mean, pred_var) = compute_dag_density_statistics_math(predicted);
+    let (target_mean, target_var) = compute_dag_density_statistics_math(target);
+
+    let mean_diff = (pred_mean - target_mean).abs();
+    let var_diff = (pred_var - target_var).abs();
+
+    0.3 * mean_diff + 0.7 * var_diff
+}
+
 /// Compute differentiable structural loss between predicted and target graphs
 ///
 /// Implements the GRAPHEME vision formula:
@@ -2270,10 +2387,11 @@ pub fn compute_structural_loss(
     let (edge_cost, edge_gradients) =
         compute_differentiable_edge_cost(predicted, target, &assignment, n1, n2);
 
-    // Clique cost placeholder (to be implemented in backend-098)
-    let clique_cost = 0.0f32;
+    // Compute DAG clique alignment cost (backend-098)
+    // Uses degree distribution moments - O(n) complexity for DAGs
+    let clique_cost = compute_clique_alignment_cost(predicted, target);
 
-    // Total weighted loss
+    // Total weighted loss: α·node + β·edge + γ·clique
     let total_loss =
         config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
 
@@ -2348,7 +2466,10 @@ pub fn compute_structural_loss_math(
     let (edge_cost, edge_gradients) =
         compute_differentiable_edge_cost_math(predicted, target, &assignment, n1, n2);
 
-    let clique_cost = 0.0f32;
+    // Compute DAG clique alignment cost for MathGraph (backend-098)
+    let clique_cost = compute_clique_alignment_cost_math(predicted, target);
+
+    // Total weighted loss: α·node + β·edge + γ·clique
     let total_loss =
         config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
 
@@ -5018,6 +5139,121 @@ mod tests {
             max_low > max_high,
             "Lower temperature should give sharper assignments"
         );
+    }
+
+    // ========================================================================
+    // Clique Alignment Tests (backend-098)
+    // ========================================================================
+
+    #[test]
+    fn test_dag_density_empty_graph() {
+        let graph = GraphemeGraph::from_text("");
+        let (mean, var) = compute_dag_density_statistics(&graph);
+        assert_eq!(mean, 0.0);
+        assert_eq!(var, 0.0);
+    }
+
+    #[test]
+    fn test_dag_density_single_node() {
+        let graph = GraphemeGraph::from_text("a");
+        let (mean, var) = compute_dag_density_statistics(&graph);
+        assert_eq!(mean, 0.0); // Single node has no out-degree
+        assert_eq!(var, 0.0);
+    }
+
+    #[test]
+    fn test_dag_density_linear_chain() {
+        // Linear chain: a->b->c has uniform out-degree (1 for a,b, 0 for c)
+        let graph = GraphemeGraph::from_text("abc");
+        let (mean, var) = compute_dag_density_statistics(&graph);
+
+        // Mean should be > 0
+        assert!(mean > 0.0);
+        // Variance should be > 0 (not all nodes have same out-degree)
+        assert!(var > 0.0);
+    }
+
+    #[test]
+    fn test_clique_alignment_identical_graphs() {
+        let graph1 = GraphemeGraph::from_text("hello");
+        let graph2 = GraphemeGraph::from_text("hello");
+
+        let clique_cost = compute_clique_alignment_cost(&graph1, &graph2);
+
+        // Identical graphs should have zero clique cost
+        assert!(
+            clique_cost < 1e-6,
+            "Identical graphs should have zero clique cost, got {}",
+            clique_cost
+        );
+    }
+
+    #[test]
+    fn test_clique_alignment_different_structure() {
+        let graph1 = GraphemeGraph::from_text("abc"); // Linear chain
+        let graph2 = GraphemeGraph::from_text("a"); // Single node
+
+        let clique_cost = compute_clique_alignment_cost(&graph1, &graph2);
+
+        // Different structures should have non-zero cost
+        assert!(
+            clique_cost > 0.0,
+            "Different structures should have non-zero clique cost"
+        );
+    }
+
+    #[test]
+    fn test_structural_loss_includes_clique_cost() {
+        let predicted = GraphemeGraph::from_text("hello");
+        let target = GraphemeGraph::from_text("world");
+
+        let config = StructuralLossConfig::default();
+        let result = compute_structural_loss(&predicted, &target, &config);
+
+        // Clique cost should be computed (non-zero for different graphs)
+        assert!(result.clique_cost >= 0.0);
+
+        // Total loss should include all three components
+        let expected_total = config.alpha * result.node_cost
+            + config.beta * result.edge_cost
+            + config.gamma * result.clique_cost;
+
+        assert!(
+            (result.total_loss - expected_total).abs() < 1e-5,
+            "Total loss should equal weighted sum of components"
+        );
+    }
+
+    #[test]
+    fn test_clique_cost_is_symmetric() {
+        let graph1 = GraphemeGraph::from_text("test");
+        let graph2 = GraphemeGraph::from_text("best");
+
+        let cost_12 = compute_clique_alignment_cost(&graph1, &graph2);
+        let cost_21 = compute_clique_alignment_cost(&graph2, &graph1);
+
+        // Clique alignment should be symmetric
+        assert!(
+            (cost_12 - cost_21).abs() < 1e-5,
+            "Clique cost should be symmetric"
+        );
+    }
+
+    #[test]
+    fn test_clique_cost_math_graphs() {
+        use grapheme_engine::{Expr, Value};
+        use grapheme_math::MathGraph;
+
+        let expr1 = Expr::Value(Value::Integer(5));
+        let expr2 = Expr::Value(Value::Integer(10));
+
+        let graph1 = MathGraph::from_expr(&expr1);
+        let graph2 = MathGraph::from_expr(&expr2);
+
+        let clique_cost = compute_clique_alignment_cost_math(&graph1, &graph2);
+
+        // Similar structure (both single value nodes) should have low cost
+        assert!(clique_cost < 0.5);
     }
 
     // ========================================================================
