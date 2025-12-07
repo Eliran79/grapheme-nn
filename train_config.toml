@@ -23,7 +23,7 @@ clique_weight = 2.0
 
 [curriculum]
 start_level = 1
-end_level = 7
+end_level = 1    # Test with Level 1 only
 advance_threshold = 0.95
 min_epochs_per_level = 5
 
