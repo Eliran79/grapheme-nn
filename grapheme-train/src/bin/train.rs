@@ -322,8 +322,11 @@ fn main() -> anyhow::Result<()> {
 
                 for (input, target) in inputs.iter().zip(targets.iter()) {
                     // Convert text to graph structures
-                    let predicted_graph = grapheme_core::GraphemeGraph::from_text(input);
+                    let input_graph = grapheme_core::GraphemeGraph::from_text(input);
                     let target_graph = grapheme_core::GraphemeGraph::from_text(target);
+
+                    // Forward pass: Transform using learned model (backend-099)
+                    let predicted_graph = model.forward(&input_graph);
 
                     // Compute structural loss: α·node + β·edge + γ·clique
                     let loss_result = compute_structural_loss(
@@ -345,9 +348,8 @@ fn main() -> anyhow::Result<()> {
                     };
                     total_accuracy += accuracy;
 
-                    // TODO: Backpropagate gradients through graph structure
-                    // For now, the structural loss gradients are computed but not yet
-                    // connected to model parameter updates
+                    // Backward pass: Backprop through model (backend-099)
+                    model.backward(&input_graph, &loss_result.node_gradients, EMBED_DIM);
                 }
 
                 batch_loss /= inputs.len() as f32;

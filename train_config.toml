@@ -2,10 +2,10 @@
 
 [training]
 batch_size = 64
-epochs_per_level = 10
+epochs_per_level = 50  # More epochs to see trend
 learning_rate = 0.001
-patience = 5
-checkpoint_every = 2
+patience = 25
+checkpoint_every = 10
 
 [optimizer]
 type = "adam"

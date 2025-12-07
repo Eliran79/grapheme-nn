@@ -1,7 +1,7 @@
 ---
 id: backend-103
 title: Generate small math curriculum test dataset
-status: todo
+status: done
 priority: high
 tags:
 - backend

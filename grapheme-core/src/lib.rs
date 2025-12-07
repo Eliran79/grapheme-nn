@@ -4507,6 +4507,152 @@ impl GraphTransformNet {
     }
 
     // ========================================================================
+    // Forward/Backward Pass for Training (backend-099)
+    // ========================================================================
+
+    /// Forward pass: MORPH input graph using learned transformations
+    ///
+    /// The graph structure evolves during forward pass:
+    /// - Nodes may be merged based on learned similarity
+    /// - Node activations updated with learned embeddings
+    /// - Graph morphs from input structure toward target structure
+    ///
+    /// This is the core of GRAPHEME: "Graph in everything" - structure evolves!
+    ///
+    /// Complexity: O(n²) for similarity computation (polynomial, not NP-hard)
+    ///
+    /// # Returns
+    /// A morphed GraphemeGraph with transformed structure
+    pub fn forward(&self, input_graph: &GraphemeGraph) -> GraphemeGraph {
+        let mut morphed_graph = input_graph.clone();
+
+        // Step 1: Compute learned embeddings for all nodes (O(n))
+        let mut node_embeddings = std::collections::HashMap::new();
+
+        for &node_id in &input_graph.input_nodes {
+            if let NodeType::Input(ch) = input_graph.graph[node_id].node_type {
+                let embedding = self.embedding.forward(ch);
+
+                // Update node activation with learned embedding
+                // Average embedding values as scalar activation
+                let activation = embedding.iter().sum::<f32>() / embedding.len() as f32;
+                morphed_graph.graph[node_id].activation = activation;
+
+                node_embeddings.insert(node_id, embedding);
+            }
+        }
+
+        // Step 2: Learn which nodes to merge (O(n²) similarity computation)
+        // This is polynomial time - we compute pairwise similarities
+        // NOT NP-hard (we don't search for optimal subset)
+
+        let merge_threshold = 0.8; // High similarity → merge nodes
+        let mut nodes_to_merge: Vec<(NodeId, NodeId, f32)> = Vec::new();
+
+        let input_nodes: Vec<_> = input_graph.input_nodes.iter().copied().collect();
+
+        for i in 0..input_nodes.len() {
+            for j in (i + 1)..input_nodes.len() {
+                let node_i = input_nodes[i];
+                let node_j = input_nodes[j];
+
+                // Compute cosine similarity between embeddings (O(embed_dim))
+                if let (Some(emb_i), Some(emb_j)) = (
+                    node_embeddings.get(&node_i),
+                    node_embeddings.get(&node_j),
+                ) {
+                    let similarity = Self::cosine_similarity(emb_i, emb_j);
+
+                    // If learned embeddings are very similar, merge nodes
+                    if similarity > merge_threshold {
+                        nodes_to_merge.push((node_i, node_j, similarity));
+                    }
+                }
+            }
+        }
+
+        // Sort by similarity (most similar first) - O(m log m) where m = pairs
+        nodes_to_merge.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+
+        // Step 3: Apply merges greedily (O(m))
+        // Greedy merge avoids NP-hard optimal partition problem
+        let mut merged_nodes = std::collections::HashSet::new();
+
+        for (node_i, node_j, _similarity) in nodes_to_merge {
+            // Skip if either already merged
+            if merged_nodes.contains(&node_i) || merged_nodes.contains(&node_j) {
+                continue;
+            }
+
+            // Merge node_j into node_i (keep node_i, remove node_j)
+            // Transfer edges from node_j to node_i
+            let edges_to_transfer: Vec<_> = morphed_graph
+                .graph
+                .edges(node_j)
+                .map(|e| (e.target(), e.weight().clone()))
+                .collect();
+
+            for (target, edge) in edges_to_transfer {
+                if target != node_i && !morphed_graph.graph.contains_edge(node_i, target) {
+                    morphed_graph.graph.add_edge(node_i, target, edge);
+                }
+            }
+
+            // Mark node_j as merged (will be removed later)
+            merged_nodes.insert(node_j);
+        }
+
+        // Step 4: Remove merged nodes (O(m))
+        for &node_id in &merged_nodes {
+            morphed_graph.graph.remove_node(node_id);
+            morphed_graph.input_nodes.retain(|&n| n != node_id);
+        }
+
+        morphed_graph
+    }
+
+    /// Helper: Compute cosine similarity between two embedding vectors
+    /// Complexity: O(d) where d = embedding dimension
+    fn cosine_similarity(a: &ndarray::Array1<f32>, b: &ndarray::Array1<f32>) -> f32 {
+        let dot = a.dot(b);
+        let norm_a = a.dot(a).sqrt();
+        let norm_b = b.dot(b).sqrt();
+
+        if norm_a == 0.0 || norm_b == 0.0 {
+            0.0
+        } else {
+            dot / (norm_a * norm_b)
+        }
+    }
+
+    /// Backward pass: Accumulate gradients from structural loss
+    ///
+    /// Takes gradients from structural loss and backprops through embedding layer.
+    ///
+    /// # Arguments
+    /// * `input_graph` - The input graph used in forward pass
+    /// * `node_gradients` - Gradients from structural loss (flattened)
+    /// * `embed_dim` - Dimension of embeddings
+    pub fn backward(&mut self, input_graph: &GraphemeGraph, node_gradients: &[f32], embed_dim: usize) {
+        // Map node gradients back to character embeddings
+        for (i, &node_id) in input_graph.input_nodes.iter().enumerate() {
+            if let NodeType::Input(ch) = input_graph.graph[node_id].node_type {
+                // Extract gradient slice for this node
+                let start = i * embed_dim;
+                let end = (start + embed_dim).min(node_gradients.len());
+
+                if end > start {
+                    let grad_slice = &node_gradients[start..end];
+                    let grad_array = ndarray::Array1::from_vec(grad_slice.to_vec());
+
+                    // Backprop through embedding layer
+                    self.embedding.backward(ch as usize, &grad_array);
+                }
+            }
+        }
+    }
+
+    // ========================================================================
     // Model Persistence (backend-090)
     // ========================================================================
 
