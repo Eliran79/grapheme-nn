@@ -1166,11 +1166,11 @@ pub fn compute_edit_sequence(input: &str, target: &str) -> EditSequence {
     let mut dp = vec![vec![0usize; m + 1]; n + 1];
 
     // Base cases
-    for i in 0..=n {
-        dp[i][0] = i; // delete all
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i; // delete all
     }
-    for j in 0..=m {
-        dp[0][j] = j; // insert all
+    for (j, val) in dp[0].iter_mut().enumerate() {
+        *val = j; // insert all
     }
 
     // Fill DP table

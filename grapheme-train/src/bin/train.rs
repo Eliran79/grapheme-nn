@@ -4,20 +4,18 @@
 
 use clap::Parser;
 use grapheme_core::{GraphTransformNet, UnifiedCheckpoint};
-// Learnable trait is used via model.zero_grad() and model.step() calls
-use grapheme_core::Learnable as _;
 use grapheme_polish::expr_to_polish;
 use grapheme_train::{
     compute_edit_prediction_loss, compute_ged_loss, Adam, ConfigFile, Dataset, LRScheduler,
     TrainingLoop, TrainingMetrics, TrainingState,
 };
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Save a unified checkpoint containing model, training state, metrics, and optimizer
 fn save_unified_checkpoint(
-    path: &PathBuf,
+    path: &Path,
     model: &GraphTransformNet,
     training_state: &TrainingState,
     metrics: &TrainingMetrics,
@@ -34,7 +32,7 @@ fn save_unified_checkpoint(
 
 /// Load a unified checkpoint and return components
 fn load_unified_checkpoint(
-    path: &PathBuf,
+    path: &Path,
 ) -> anyhow::Result<(GraphTransformNet, TrainingState, TrainingMetrics, Adam)> {
     let checkpoint = UnifiedCheckpoint::load_from_file(path)?;
 

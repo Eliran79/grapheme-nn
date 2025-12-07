@@ -1,7 +1,7 @@
 ---
 id: backend-095
 title: Fix clippy warnings in training binaries
-status: todo
+status: done
 priority: low
 tags:
 - backend
@@ -27,9 +27,11 @@ warning: writing `&PathBuf` instead of `&Path` involves a new object where a sli
 
 ## Tasks
 
-- [ ] Change `&PathBuf` parameters to `&Path` in `save_unified_checkpoint` and `load_unified_checkpoint`
-- [ ] Verify all clippy warnings are resolved
-- [ ] Run full test suite to ensure no regressions
+- [x] Change `&PathBuf` parameters to `&Path` in `save_unified_checkpoint` and `load_unified_checkpoint`
+- [x] Remove unused `Learnable` import (inherent methods used instead)
+- [x] Fix loop variable clippy warnings in `compute_edit_sequence()`
+- [x] Verify all clippy warnings are resolved
+- [x] Run full test suite to ensure no regressions
 
 ## Location
 
@@ -39,5 +41,5 @@ warning: writing `&PathBuf` instead of `&Path` involves a new object where a sli
 
 ## Acceptance Criteria
 
-- [ ] `cargo clippy --all` produces no warnings
-- [ ] All tests pass
+- [x] `cargo clippy --all` produces no warnings
+- [x] All tests pass (588 tests)
