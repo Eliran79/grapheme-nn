@@ -325,8 +325,9 @@ fn main() -> anyhow::Result<()> {
                     let input_graph = grapheme_core::GraphemeGraph::from_text(input);
                     let target_graph = grapheme_core::GraphemeGraph::from_text(target);
 
-                    // Forward pass: Transform using learned model (backend-099)
-                    let predicted_graph = model.forward(&input_graph);
+                    // Forward pass: Transform using learned model (backend-104)
+                    // Returns (graph, pooling_result) for gradient routing
+                    let (predicted_graph, pooling_result) = model.forward(&input_graph);
 
                     // Compute structural loss: α·node + β·edge + γ·clique
                     let loss_result = compute_structural_loss(
@@ -348,8 +349,8 @@ fn main() -> anyhow::Result<()> {
                     };
                     total_accuracy += accuracy;
 
-                    // Backward pass: Backprop through model (backend-099)
-                    model.backward(&input_graph, &loss_result.node_gradients, EMBED_DIM);
+                    // Backward pass: Route gradients through soft pooling (backend-104)
+                    model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
                 }
 
                 batch_loss /= inputs.len() as f32;
