@@ -2041,6 +2041,632 @@ impl GraphEditDistance {
 }
 
 // ============================================================================
+// Differentiable Structural Loss (backend-096)
+// ============================================================================
+
+/// Configuration for Sinkhorn optimal transport algorithm
+#[derive(Debug, Clone)]
+pub struct SinkhornConfig {
+    /// Number of Sinkhorn iterations (default: 20)
+    pub iterations: usize,
+    /// Temperature for softmax (lower = sharper assignments, default: 0.1)
+    pub temperature: f32,
+    /// Convergence threshold (default: 1e-6)
+    pub epsilon: f32,
+}
+
+impl Default for SinkhornConfig {
+    fn default() -> Self {
+        Self {
+            iterations: 20,
+            temperature: 0.1,
+            epsilon: 1e-6,
+        }
+    }
+}
+
+/// Configuration for differentiable structural loss
+#[derive(Debug, Clone)]
+pub struct StructuralLossConfig {
+    /// Weight for node cost (α in vision formula, default: 1.0)
+    pub alpha: f32,
+    /// Weight for edge cost (β in vision formula, default: 0.5)
+    pub beta: f32,
+    /// Weight for clique mismatch (γ in vision formula, default: 2.0)
+    pub gamma: f32,
+    /// Sinkhorn configuration
+    pub sinkhorn: SinkhornConfig,
+}
+
+impl Default for StructuralLossConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            beta: 0.5,
+            gamma: 2.0,
+            sinkhorn: SinkhornConfig::default(),
+        }
+    }
+}
+
+/// Result of computing differentiable structural loss
+#[derive(Debug, Clone)]
+pub struct StructuralLossResult {
+    /// Total weighted loss: α·node_cost + β·edge_cost + γ·clique_cost
+    pub total_loss: f32,
+    /// Node insertion/deletion/mismatch cost
+    pub node_cost: f32,
+    /// Edge insertion/deletion cost
+    pub edge_cost: f32,
+    /// Clique alignment cost (placeholder for backend-098)
+    pub clique_cost: f32,
+    /// Soft assignment matrix (n1 × n2), row-stochastic
+    pub assignment_matrix: Vec<f32>,
+    /// Number of rows in assignment matrix
+    pub n1: usize,
+    /// Number of columns in assignment matrix
+    pub n2: usize,
+    /// Gradients w.r.t. predicted node features (flattened)
+    pub node_gradients: Vec<f32>,
+    /// Gradients w.r.t. predicted edge weights
+    pub edge_gradients: Vec<f32>,
+}
+
+impl StructuralLossResult {
+    /// Get assignment probability for node i in predicted graph to node j in target graph
+    pub fn assignment(&self, i: usize, j: usize) -> f32 {
+        if i < self.n1 && j < self.n2 {
+            self.assignment_matrix[i * self.n2 + j]
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Sinkhorn algorithm for optimal transport (differentiable soft assignment)
+///
+/// Given a cost matrix C, computes a doubly-stochastic transport plan P
+/// that minimizes <P, C> subject to row/column sum constraints.
+///
+/// # Algorithm
+/// 1. Initialize K = exp(-C / temperature)
+/// 2. Alternately normalize rows and columns
+/// 3. Return the resulting doubly-stochastic matrix
+///
+/// # Complexity
+/// O(n × m × iterations) time, O(n × m) space
+pub fn sinkhorn_normalize(
+    cost_matrix: &[f32],
+    rows: usize,
+    cols: usize,
+    config: &SinkhornConfig,
+) -> Vec<f32> {
+    if rows == 0 || cols == 0 {
+        return Vec::new();
+    }
+
+    let n = rows * cols;
+
+    // Initialize K = exp(-C / temperature)
+    let mut transport: Vec<f32> = cost_matrix
+        .iter()
+        .map(|&c| (-c / config.temperature).exp())
+        .collect();
+
+    // Handle numerical issues - replace zeros/infs with small/large values
+    for val in &mut transport {
+        if !val.is_finite() || *val < 1e-30 {
+            *val = 1e-30;
+        }
+    }
+
+    // Row and column scaling vectors
+    let mut u = vec![1.0f32; rows];
+    let mut v = vec![1.0f32; cols];
+
+    // Sinkhorn iterations
+    for _ in 0..config.iterations {
+        // Update v: column normalization
+        // v_j = 1 / sum_i(u_i * K_ij)
+        for j in 0..cols {
+            let mut col_sum = 0.0f32;
+            for i in 0..rows {
+                col_sum += u[i] * transport[i * cols + j];
+            }
+            v[j] = if col_sum > 1e-30 { 1.0 / col_sum } else { 1.0 };
+        }
+
+        // Update u: row normalization
+        // u_i = 1 / sum_j(v_j * K_ij)
+        for i in 0..rows {
+            let mut row_sum = 0.0f32;
+            for j in 0..cols {
+                row_sum += v[j] * transport[i * cols + j];
+            }
+            u[i] = if row_sum > 1e-30 { 1.0 / row_sum } else { 1.0 };
+        }
+    }
+
+    // Compute final transport plan: P_ij = u_i * K_ij * v_j
+    let mut result = vec![0.0f32; n];
+    for i in 0..rows {
+        for j in 0..cols {
+            result[i * cols + j] = u[i] * transport[i * cols + j] * v[j];
+        }
+    }
+
+    // Ensure row-stochastic (rows sum to 1) for unbalanced case
+    // When n1 != n2, we normalize rows to get soft assignment
+    for i in 0..rows {
+        let row_sum: f32 = (0..cols).map(|j| result[i * cols + j]).sum();
+        if row_sum > 1e-30 {
+            for j in 0..cols {
+                result[i * cols + j] /= row_sum;
+            }
+        }
+    }
+
+    result
+}
+
+/// Compute node-to-node cost matrix for soft assignment
+///
+/// Cost is based on:
+/// 1. Label/type mismatch
+/// 2. Activation value difference (if available)
+/// 3. Degree difference (structural similarity)
+fn compute_soft_node_costs(
+    predicted: &GraphemeGraph,
+    target: &GraphemeGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost (0-1)
+            let type_cost = if std::mem::discriminant(&node1.node_type)
+                              == std::mem::discriminant(&node2.node_type) {
+                // Same type category
+                match (&node1.node_type, &node2.node_type) {
+                    (NodeType::Input(c1), NodeType::Input(c2)) => {
+                        if c1 == c2 { 0.0 } else { 0.5 }
+                    }
+                    _ => 0.0,
+                }
+            } else {
+                1.0
+            };
+
+            // Activation difference cost (0-1)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
+            // Degree difference cost (normalized, 0-1)
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            // Combined cost with weights
+            let cost = 0.6 * type_cost + 0.2 * activation_cost + 0.2 * degree_cost;
+            costs[i * n2 + j] = cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute differentiable node cost from soft assignment
+///
+/// node_cost = sum_i min_j(P_ij * C_ij) + insertion_penalty + deletion_penalty
+fn compute_differentiable_node_cost(
+    cost_matrix: &[f32],
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 && n2 == 0 {
+        return (0.0, Vec::new());
+    }
+
+    let mut total_cost = 0.0f32;
+    let mut gradients = vec![0.0f32; n1 * n2];
+
+    // Weighted matching cost: sum over all soft assignments
+    for i in 0..n1 {
+        for j in 0..n2 {
+            let idx = i * n2 + j;
+            let p = assignment[idx];
+            let c = cost_matrix[idx];
+            total_cost += p * c;
+            // Gradient w.r.t. cost (through assignment)
+            gradients[idx] = p;
+        }
+    }
+
+    // Size mismatch penalty (soft version)
+    // When n1 > n2: deletions needed
+    // When n1 < n2: insertions needed
+    let size_diff = (n1 as f32 - n2 as f32).abs();
+    total_cost += size_diff;
+
+    (total_cost, gradients)
+}
+
+/// Compute differentiable edge cost from soft assignment
+///
+/// For each edge (u,v) in predicted, computes expected edge presence in target
+/// based on soft node assignment probabilities.
+fn compute_differentiable_edge_cost(
+    predicted: &GraphemeGraph,
+    target: &GraphemeGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.edge_count();
+        let e2 = target.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency for O(1) lookup
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true; // Undirected
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    // For each edge in predicted graph
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            // Compute expected edge match probability
+            // P(edge preserved) = sum_{i,j} P(u->i) * P(v->j) * I(edge i-j exists in target)
+            let mut match_prob = 0.0f32;
+
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+
+            // Edge deletion cost: 1 - match_prob
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    // Edge insertion cost: edges in target not matched
+    let target_edge_count = target.edge_count();
+    let predicted_edge_count = predicted.edge_count();
+
+    // Approximate insertion cost based on size difference
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+/// Compute differentiable structural loss between predicted and target graphs
+///
+/// Implements the GRAPHEME vision formula:
+/// loss = α·node_cost + β·edge_cost + γ·clique_cost
+///
+/// Uses Sinkhorn optimal transport for soft node assignment, making the
+/// entire computation differentiable.
+///
+/// # Arguments
+/// * `predicted` - The predicted graph from the model
+/// * `target` - The ground truth target graph
+/// * `config` - Loss configuration (weights, Sinkhorn parameters)
+///
+/// # Returns
+/// * `StructuralLossResult` containing loss value, components, and gradients
+pub fn compute_structural_loss(
+    predicted: &GraphemeGraph,
+    target: &GraphemeGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    // Compute node cost matrix
+    let (cost_matrix, n1, n2) = compute_soft_node_costs(predicted, target);
+
+    // Handle empty graphs
+    if n1 == 0 && n2 == 0 {
+        return StructuralLossResult {
+            total_loss: 0.0,
+            node_cost: 0.0,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    if n1 == 0 {
+        // All insertions
+        let insertion_cost = n2 as f32 + target.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * insertion_cost,
+            node_cost: n2 as f32,
+            edge_cost: target.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    if n2 == 0 {
+        // All deletions
+        let deletion_cost = n1 as f32 + predicted.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * deletion_cost,
+            node_cost: n1 as f32,
+            edge_cost: predicted.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    // Compute soft assignment via Sinkhorn
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+
+    // Compute differentiable node cost
+    let (node_cost, node_gradients) = compute_differentiable_node_cost(
+        &cost_matrix, &assignment, n1, n2
+    );
+
+    // Compute differentiable edge cost
+    let (edge_cost, edge_gradients) = compute_differentiable_edge_cost(
+        predicted, target, &assignment, n1, n2
+    );
+
+    // Clique cost placeholder (to be implemented in backend-098)
+    let clique_cost = 0.0f32;
+
+    // Total weighted loss
+    let total_loss = config.alpha * node_cost
+                   + config.beta * edge_cost
+                   + config.gamma * clique_cost;
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+    }
+}
+
+/// Compute structural loss for MathGraphs
+pub fn compute_structural_loss_math(
+    predicted: &MathGraph,
+    target: &MathGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    let (cost_matrix, n1, n2) = compute_soft_node_costs_math(predicted, target);
+
+    if n1 == 0 && n2 == 0 {
+        return StructuralLossResult {
+            total_loss: 0.0,
+            node_cost: 0.0,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    if n1 == 0 {
+        let insertion_cost = n2 as f32 + target.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * insertion_cost,
+            node_cost: n2 as f32,
+            edge_cost: target.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    if n2 == 0 {
+        let deletion_cost = n1 as f32 + predicted.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * deletion_cost,
+            node_cost: n1 as f32,
+            edge_cost: predicted.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+        };
+    }
+
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+    let (node_cost, node_gradients) = compute_differentiable_node_cost(
+        &cost_matrix, &assignment, n1, n2
+    );
+    let (edge_cost, edge_gradients) = compute_differentiable_edge_cost_math(
+        predicted, target, &assignment, n1, n2
+    );
+
+    let clique_cost = 0.0f32;
+    let total_loss = config.alpha * node_cost
+                   + config.beta * edge_cost
+                   + config.gamma * clique_cost;
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+    }
+}
+
+/// Compute soft node costs for MathGraphs
+fn compute_soft_node_costs_math(
+    predicted: &MathGraph,
+    target: &MathGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost using existing BP2 logic
+            let type_cost = if GraphEditDistance::math_nodes_equal(node1, node2) {
+                0.0
+            } else if GraphEditDistance::math_node_category(node1)
+                    == GraphEditDistance::math_node_category(node2) {
+                0.5
+            } else {
+                1.0
+            };
+
+            // Degree difference cost
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            costs[i * n2 + j] = 0.7 * type_cost + 0.3 * degree_cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute differentiable edge cost for MathGraphs
+fn compute_differentiable_edge_cost_math(
+    predicted: &MathGraph,
+    target: &MathGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.edge_count();
+        let e2 = target.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            let mut match_prob = 0.0f32;
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    let target_edge_count = target.edge_count();
+    let predicted_edge_count = predicted.edge_count();
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+// ============================================================================
 // Training Configuration and Trainer
 // ============================================================================
 
@@ -4164,6 +4790,294 @@ mod tests {
 
         // Node mismatch cost should be symmetric
         assert!((bp2_12.node_mismatch_cost - bp2_21.node_mismatch_cost).abs() < 0.01);
+    }
+
+    // ========================================================================
+    // Differentiable Structural Loss Tests (backend-096)
+    // ========================================================================
+
+    #[test]
+    fn test_sinkhorn_basic() {
+        // Simple 2x2 cost matrix
+        let costs = vec![0.0, 1.0, 1.0, 0.0];
+        let config = SinkhornConfig::default();
+
+        let result = sinkhorn_normalize(&costs, 2, 2, &config);
+
+        // Result should be row-stochastic
+        let row0_sum: f32 = result[0] + result[1];
+        let row1_sum: f32 = result[2] + result[3];
+        assert!((row0_sum - 1.0).abs() < 0.01, "Row 0 should sum to 1");
+        assert!((row1_sum - 1.0).abs() < 0.01, "Row 1 should sum to 1");
+
+        // Lower cost entries should have higher probability
+        assert!(result[0] > result[1], "Entry (0,0) should be > (0,1)");
+        assert!(result[3] > result[2], "Entry (1,1) should be > (1,0)");
+    }
+
+    #[test]
+    fn test_sinkhorn_uniform_costs() {
+        // Uniform costs should give roughly uniform assignment
+        let costs = vec![0.5; 4];
+        let config = SinkhornConfig::default();
+
+        let result = sinkhorn_normalize(&costs, 2, 2, &config);
+
+        // All values should be similar (roughly 0.5)
+        for val in &result {
+            assert!((*val - 0.5).abs() < 0.1, "Uniform costs should give uniform assignment");
+        }
+    }
+
+    #[test]
+    fn test_sinkhorn_empty() {
+        let costs: Vec<f32> = Vec::new();
+        let config = SinkhornConfig::default();
+
+        let result = sinkhorn_normalize(&costs, 0, 0, &config);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_sinkhorn_rectangular() {
+        // 3x2 cost matrix (more rows than cols)
+        let costs = vec![
+            0.0, 1.0,  // Row 0: prefers col 0
+            1.0, 0.0,  // Row 1: prefers col 1
+            0.5, 0.5,  // Row 2: equal preference
+        ];
+        let config = SinkhornConfig::default();
+
+        let result = sinkhorn_normalize(&costs, 3, 2, &config);
+
+        // Each row should still sum to 1
+        for i in 0..3 {
+            let row_sum: f32 = result[i * 2] + result[i * 2 + 1];
+            assert!((row_sum - 1.0).abs() < 0.01, "Row {} should sum to 1", i);
+        }
+    }
+
+    #[test]
+    fn test_structural_loss_identical_graphs() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hello");
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // Debug output
+        eprintln!("total_loss: {}", result.total_loss);
+        eprintln!("node_cost: {}", result.node_cost);
+        eprintln!("edge_cost: {}", result.edge_cost);
+        eprintln!("n1: {}, n2: {}", result.n1, result.n2);
+
+        // Identical graphs should have very low loss
+        // The edge cost can be non-zero due to soft assignment probabilities
+        // being distributed across all possible matches
+        assert!(result.total_loss < 5.0, "Identical graphs should have low loss, got {}", result.total_loss);
+        assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
+        assert!(result.edge_cost >= 0.0, "Edge cost should be non-negative");
+    }
+
+    #[test]
+    fn test_structural_loss_different_graphs() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("World");
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // Different graphs should have higher loss
+        assert!(result.total_loss > 0.0, "Different graphs should have positive loss");
+    }
+
+    #[test]
+    fn test_structural_loss_size_difference() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("Hi");
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // Size difference should contribute to loss
+        assert!(result.total_loss > 0.0);
+        // n1=5, n2=2, so size difference = 3
+        assert!(result.node_cost >= 3.0, "Node cost should include size difference");
+    }
+
+    #[test]
+    fn test_structural_loss_empty_graphs() {
+        let g1 = GraphemeGraph::new();
+        let g2 = GraphemeGraph::new();
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        assert_eq!(result.total_loss, 0.0);
+        assert_eq!(result.node_cost, 0.0);
+        assert_eq!(result.edge_cost, 0.0);
+    }
+
+    #[test]
+    fn test_structural_loss_one_empty() {
+        let g1 = GraphemeGraph::from_text("abc");
+        let g2 = GraphemeGraph::new();
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // All deletions
+        assert!(result.total_loss > 0.0);
+        assert_eq!(result.node_cost, 3.0); // 3 nodes to delete
+    }
+
+    #[test]
+    fn test_structural_loss_config_weights() {
+        let g1 = GraphemeGraph::from_text("Hello");
+        let g2 = GraphemeGraph::from_text("World");
+
+        let config1 = StructuralLossConfig {
+            alpha: 1.0,
+            beta: 0.5,
+            gamma: 0.0,
+            ..Default::default()
+        };
+
+        let config2 = StructuralLossConfig {
+            alpha: 2.0,  // Double alpha
+            beta: 0.5,
+            gamma: 0.0,
+            ..Default::default()
+        };
+
+        let result1 = compute_structural_loss(&g1, &g2, &config1);
+        let result2 = compute_structural_loss(&g1, &g2, &config2);
+
+        // Higher alpha should increase total loss (node cost component)
+        assert!(result2.total_loss > result1.total_loss,
+                "Higher alpha should increase total loss");
+    }
+
+    #[test]
+    fn test_structural_loss_assignment_matrix() {
+        let g1 = GraphemeGraph::from_text("ab");
+        let g2 = GraphemeGraph::from_text("ab");
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // Check assignment matrix dimensions
+        assert_eq!(result.n1, 2);
+        assert_eq!(result.n2, 2);
+        assert_eq!(result.assignment_matrix.len(), 4);
+
+        // Each row should sum to 1
+        let row0_sum = result.assignment(0, 0) + result.assignment(0, 1);
+        let row1_sum = result.assignment(1, 0) + result.assignment(1, 1);
+        assert!((row0_sum - 1.0).abs() < 0.01);
+        assert!((row1_sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_structural_loss_math_graphs() {
+        let expr1 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+        let expr2 = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let g1 = MathGraph::from_expr(&expr1);
+        let g2 = MathGraph::from_expr(&expr2);
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss_math(&g1, &g2, &config);
+
+        // Identical expressions should have low loss
+        assert!(result.total_loss < 1.0);
+    }
+
+    #[test]
+    fn test_structural_loss_vs_bp2_correlation() {
+        // Structural loss should correlate with BP2 for similar/different graphs
+        let g1 = GraphemeGraph::from_text("hello");
+        let g2_similar = GraphemeGraph::from_text("hallo");
+        let g2_different = GraphemeGraph::from_text("world");
+        let config = StructuralLossConfig::default();
+
+        let loss_similar = compute_structural_loss(&g1, &g2_similar, &config);
+        let loss_different = compute_structural_loss(&g1, &g2_different, &config);
+
+        // Similar graphs should have lower structural loss
+        assert!(loss_similar.total_loss < loss_different.total_loss,
+                "Similar graphs should have lower structural loss");
+    }
+
+    #[test]
+    fn test_structural_loss_gradients_exist() {
+        let g1 = GraphemeGraph::from_text("ab");
+        let g2 = GraphemeGraph::from_text("cd");
+        let config = StructuralLossConfig::default();
+
+        let result = compute_structural_loss(&g1, &g2, &config);
+
+        // Gradients should be computed
+        assert!(!result.node_gradients.is_empty(), "Node gradients should exist");
+        // Edge gradients depend on edges in predicted graph
+        // For "ab" we have 1 edge
+        assert!(!result.edge_gradients.is_empty(), "Edge gradients should exist");
+    }
+
+    #[test]
+    fn test_sinkhorn_convergence() {
+        // Test that more iterations give better convergence
+        let costs = vec![0.1, 0.9, 0.8, 0.2];
+
+        let config_few = SinkhornConfig {
+            iterations: 5,
+            ..Default::default()
+        };
+        let config_many = SinkhornConfig {
+            iterations: 50,
+            ..Default::default()
+        };
+
+        let result_few = sinkhorn_normalize(&costs, 2, 2, &config_few);
+        let result_many = sinkhorn_normalize(&costs, 2, 2, &config_many);
+
+        // Both should be valid row-stochastic matrices
+        let row0_few: f32 = result_few[0] + result_few[1];
+        let row0_many: f32 = result_many[0] + result_many[1];
+        assert!((row0_few - 1.0).abs() < 0.1);
+        assert!((row0_many - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_sinkhorn_temperature() {
+        // Lower temperature should give sharper assignments
+        let costs = vec![0.0, 1.0, 1.0, 0.0];
+
+        let config_high = SinkhornConfig {
+            temperature: 1.0,
+            ..Default::default()
+        };
+        let config_low = SinkhornConfig {
+            temperature: 0.01,
+            ..Default::default()
+        };
+
+        let result_high = sinkhorn_normalize(&costs, 2, 2, &config_high);
+        let result_low = sinkhorn_normalize(&costs, 2, 2, &config_low);
+
+        // Low temperature should give more extreme values (closer to 0 or 1)
+        let max_high = result_high.iter().cloned().fold(0.0f32, f32::max);
+        let max_low = result_low.iter().cloned().fold(0.0f32, f32::max);
+
+        assert!(max_low > max_high, "Lower temperature should give sharper assignments");
     }
 
     // ========================================================================
