@@ -2938,23 +2938,21 @@ impl Pipeline {
         result
     }
 
-    /// Extract mathematical expression from natural language
+    /// Extract mathematical expression from natural language or Polish notation
     fn extract_expression(&self, input: &str) -> Result<Expr, String> {
-        // Try to parse simple mathematical expressions
-        let cleaned = input.trim().to_lowercase();
+        let trimmed = input.trim();
 
-        // Only try polish notation if it looks like polish (starts with operator/function)
-        let trimmed = cleaned.trim();
-        if trimmed.starts_with('+') || trimmed.starts_with('-') || trimmed.starts_with('*')
-            || trimmed.starts_with('/') || trimmed.starts_with('^')
-            || trimmed.starts_with("sin") || trimmed.starts_with("cos")
-            || trimmed.starts_with("exp") || trimmed.starts_with("ln")
-        {
+        // First, try Polish/S-expression notation parsing
+        // This handles: (+ 1 2), (sin x), + 1 2, sin x, etc.
+        if self.looks_like_polish(trimmed) {
             let mut parser = grapheme_polish::PolishParser::new();
-            if let Ok(expr) = parser.parse(input) {
+            if let Ok(expr) = parser.parse(trimmed) {
                 return Ok(expr);
             }
         }
+
+        // For natural language patterns, use lowercase for matching
+        let cleaned = trimmed.to_lowercase();
 
         // Handle "derivative of X" patterns
         if cleaned.starts_with("derivative of ") || cleaned.starts_with("differentiate ") {
@@ -2992,8 +2990,20 @@ impl Pipeline {
             return self.parse_math_expression(rest);
         }
 
-        // Try direct math expression parsing
+        // Try direct math expression parsing (for infix notation like "2 + 3")
         self.parse_math_expression(&cleaned)
+    }
+
+    /// Check if input looks like Polish notation (S-expression format)
+    ///
+    /// The PolishParser expects S-expression format: (op arg1 arg2)
+    /// Examples: (+ 1 2), (sin x), (* (+ 1 2) 3)
+    fn looks_like_polish(&self, input: &str) -> bool {
+        let trimmed = input.trim();
+
+        // S-expression: starts with '('
+        // This is the primary format supported by PolishParser
+        trimmed.starts_with('(')
     }
 
     /// Parse derivative command
@@ -4365,5 +4375,51 @@ mod tests {
         // Ratio should increase with input length due to O(n²) vs O(n)
         assert!(ratio_1000 > ratio_100);
         assert!(ratio_10000 > ratio_1000);
+    }
+
+    #[test]
+    fn test_looks_like_polish() {
+        let pipeline = Pipeline::new();
+
+        // S-expressions should be recognized (primary format)
+        assert!(pipeline.looks_like_polish("(+ 1 2)"));
+        assert!(pipeline.looks_like_polish("(sin x)"));
+        assert!(pipeline.looks_like_polish("(* (+ 1 2) 3)"));
+        assert!(pipeline.looks_like_polish("  (+ 1 2)  ")); // with whitespace
+
+        // Not Polish notation (should fall through to other parsers)
+        assert!(!pipeline.looks_like_polish("2 + 3")); // infix
+        assert!(!pipeline.looks_like_polish("what is 2 + 3")); // natural language
+        assert!(!pipeline.looks_like_polish("derivative of x^2")); // command
+        assert!(!pipeline.looks_like_polish("sinusoid")); // word starting with "sin"
+        assert!(!pipeline.looks_like_polish("123")); // just a number
+        assert!(!pipeline.looks_like_polish("x")); // just a symbol
+    }
+
+    #[test]
+    fn test_extract_expression_polish() {
+        let pipeline = Pipeline::new();
+
+        // S-expressions (primary Polish notation format)
+        let result = pipeline.extract_expression("(+ 1 2)");
+        assert!(result.is_ok(), "Failed to parse (+ 1 2)");
+
+        let result = pipeline.extract_expression("(* 3 4)");
+        assert!(result.is_ok(), "Failed to parse (* 3 4)");
+
+        let result = pipeline.extract_expression("(sin x)");
+        assert!(result.is_ok(), "Failed to parse (sin x)");
+
+        // Nested S-expressions
+        let result = pipeline.extract_expression("(+ (* 2 3) 4)");
+        assert!(result.is_ok(), "Failed to parse nested S-expr");
+
+        // Deeply nested
+        let result = pipeline.extract_expression("(* (+ 1 2) (- 5 3))");
+        assert!(result.is_ok(), "Failed to parse deeply nested S-expr");
+
+        // Function with multiple args
+        let result = pipeline.extract_expression("(exp (+ x 1))");
+        assert!(result.is_ok(), "Failed to parse exp with nested arg");
     }
 }

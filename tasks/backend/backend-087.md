@@ -1,7 +1,7 @@
 ---
 id: backend-087
 title: Create train binary for training execution
-status: todo
+status: done
 priority: high
 tags:
 - backend

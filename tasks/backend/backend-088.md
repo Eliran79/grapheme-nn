@@ -1,7 +1,7 @@
 ---
 id: backend-088
 title: Create validate binary for model validation
-status: todo
+status: done
 priority: medium
 tags:
 - backend

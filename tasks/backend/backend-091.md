@@ -1,7 +1,7 @@
 ---
 id: backend-091
 title: Implement unified persistence infrastructure for all cognitive modules
-status: todo
+status: done
 priority: high
 tags:
 - backend

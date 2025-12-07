@@ -1,7 +1,7 @@
 ---
 id: backend-089
 title: Create repl binary for interactive model testing
-status: todo
+status: done
 priority: low
 tags:
 - backend

@@ -1,7 +1,7 @@
 ---
 id: backend-086
 title: Create generate binary for training data generation
-status: todo
+status: done
 priority: high
 tags:
 - backend
