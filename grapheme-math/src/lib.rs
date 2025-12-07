@@ -14,7 +14,10 @@
 // Allow &self in recursive methods for API consistency
 #![allow(clippy::only_used_in_recursion)]
 
-use grapheme_core::{DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue, ValidationSeverity};
+use grapheme_core::{
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    ValidationSeverity,
+};
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -105,7 +108,8 @@ impl MathGraph {
                 let op_node = self.graph.add_node(MathNode::Operator(*op));
                 let left_node = self.add_expr(left);
                 let right_node = self.add_expr(right);
-                self.graph.add_edge(op_node, left_node, MathEdge::LeftOperand);
+                self.graph
+                    .add_edge(op_node, left_node, MathEdge::LeftOperand);
                 self.graph
                     .add_edge(op_node, right_node, MathEdge::RightOperand);
                 op_node
@@ -170,8 +174,9 @@ impl MathGraph {
                     }
                 }
 
-                let left =
-                    left.ok_or_else(|| MathGraphError::InvalidStructure("Missing left operand".into()))?;
+                let left = left.ok_or_else(|| {
+                    MathGraphError::InvalidStructure("Missing left operand".into())
+                })?;
 
                 if let Some(right) = right {
                     Ok(Expr::BinOp {
@@ -351,12 +356,14 @@ impl MathTransformer {
                     MathOp::Add => {
                         // x + 0 = x
                         if self.is_zero(&right_simplified) {
-                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::ADDITIVE_IDENTITY);
                             return left_simplified;
                         }
                         // 0 + x = x
                         if self.is_zero(&left_simplified) {
-                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::ADDITIVE_IDENTITY);
                             return right_simplified;
                         }
                     }
@@ -365,12 +372,14 @@ impl MathTransformer {
                     MathOp::Sub => {
                         // x - 0 = x
                         if self.is_zero(&right_simplified) {
-                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::ADDITIVE_IDENTITY);
                             return left_simplified;
                         }
                         // x - x = 0
                         if self.exprs_equal(&left_simplified, &right_simplified) {
-                            self.applied_rules.push(SimplificationRule::ADDITIVE_INVERSE);
+                            self.applied_rules
+                                .push(SimplificationRule::ADDITIVE_INVERSE);
                             return Expr::Value(Value::Integer(0));
                         }
                     }
@@ -384,12 +393,14 @@ impl MathTransformer {
                         }
                         // x * 1 = x
                         if self.is_one(&right_simplified) {
-                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
                             return left_simplified;
                         }
                         // 1 * x = x
                         if self.is_one(&left_simplified) {
-                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
                             return right_simplified;
                         }
                     }
@@ -398,7 +409,8 @@ impl MathTransformer {
                     MathOp::Div => {
                         // x / 1 = x
                         if self.is_one(&right_simplified) {
-                            self.applied_rules.push(SimplificationRule::DIVISION_IDENTITY);
+                            self.applied_rules
+                                .push(SimplificationRule::DIVISION_IDENTITY);
                             return left_simplified;
                         }
                         // 0 / x = 0 (when x != 0)
@@ -442,10 +454,8 @@ impl MathTransformer {
             }
 
             Expr::Function { func, args } => {
-                let args_simplified: Vec<Expr> = args
-                    .iter()
-                    .map(|a| self.simplify_recursive(a))
-                    .collect();
+                let args_simplified: Vec<Expr> =
+                    args.iter().map(|a| self.simplify_recursive(a)).collect();
                 Expr::Function {
                     func: *func,
                     args: args_simplified,
@@ -473,14 +483,12 @@ impl MathTransformer {
     fn exprs_equal(&self, a: &Expr, b: &Expr) -> bool {
         // Simple structural equality check
         match (a, b) {
-            (Expr::Value(va), Expr::Value(vb)) => {
-                match (va, vb) {
-                    (Value::Integer(ia), Value::Integer(ib)) => ia == ib,
-                    (Value::Float(fa), Value::Float(fb)) => (fa - fb).abs() < 1e-10,
-                    (Value::Symbol(sa), Value::Symbol(sb)) => sa == sb,
-                    _ => false,
-                }
-            }
+            (Expr::Value(va), Expr::Value(vb)) => match (va, vb) {
+                (Value::Integer(ia), Value::Integer(ib)) => ia == ib,
+                (Value::Float(fa), Value::Float(fb)) => (fa - fb).abs() < 1e-10,
+                (Value::Symbol(sa), Value::Symbol(sb)) => sa == sb,
+                _ => false,
+            },
             _ => false, // More complex equality would require deeper comparison
         }
     }
@@ -588,15 +596,20 @@ impl MathBrain {
     pub fn extract_intent(&self, expr: &Expr) -> MathIntent {
         // Analyze the expression structure to determine intent
         match expr {
-            Expr::Function { func, .. } => {
-                match func {
-                    MathFn::Sin | MathFn::Cos | MathFn::Tan |
-                    MathFn::Sqrt | MathFn::Abs | MathFn::Log | MathFn::Ln |
-                    MathFn::Exp | MathFn::Floor | MathFn::Ceil => MathIntent::Compute,
-                    MathFn::Derive => MathIntent::Differentiate,
-                    MathFn::Integrate => MathIntent::Integrate,
-                }
-            }
+            Expr::Function { func, .. } => match func {
+                MathFn::Sin
+                | MathFn::Cos
+                | MathFn::Tan
+                | MathFn::Sqrt
+                | MathFn::Abs
+                | MathFn::Log
+                | MathFn::Ln
+                | MathFn::Exp
+                | MathFn::Floor
+                | MathFn::Ceil => MathIntent::Compute,
+                MathFn::Derive => MathIntent::Differentiate,
+                MathFn::Integrate => MathIntent::Integrate,
+            },
             Expr::BinOp { .. } | Expr::UnaryOp { .. } => {
                 // Check if it contains symbols (needs evaluation/simplification)
                 if self.contains_symbol(expr) {
@@ -660,9 +673,7 @@ impl MathBrain {
             .replace(" / ", "/");
 
         // Normalize power notation
-        let normalized = normalized
-            .replace("**", "^")
-            .replace(" ^ ", "^");
+        let normalized = normalized.replace("**", "^").replace(" ^ ", "^");
 
         // Normalize common symbols
         let normalized = normalized
@@ -704,10 +715,27 @@ impl DomainBrain for MathBrain {
     fn can_process(&self, input: &str) -> bool {
         // Check for mathematical expressions
         let math_keywords = [
-            "calculate", "compute", "solve", "simplify", "evaluate",
-            "derive", "differentiate", "integrate", "factor",
-            "+", "-", "*", "/", "^", "=",
-            "sin", "cos", "tan", "sqrt", "log", "exp",
+            "calculate",
+            "compute",
+            "solve",
+            "simplify",
+            "evaluate",
+            "derive",
+            "differentiate",
+            "integrate",
+            "factor",
+            "+",
+            "-",
+            "*",
+            "/",
+            "^",
+            "=",
+            "sin",
+            "cos",
+            "tan",
+            "sqrt",
+            "log",
+            "exp",
         ];
         let lower = input.to_lowercase();
         math_keywords.iter().any(|kw| lower.contains(kw))
@@ -857,9 +885,10 @@ impl DomainBrain for MathBrain {
             3 => self.apply_power_zero(graph),
             4 => self.apply_power_one(graph),
             5 => self.apply_constant_folding(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(
-                format!("Unknown rule ID: {}", rule_id)
-            )),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
         }
     }
 
@@ -881,10 +910,9 @@ impl DomainBrain for MathBrain {
                 _ => unreachable!(),
             };
 
-            if let (Ok(input_graph), Ok(output_graph)) = (
-                DagNN::from_text(&input),
-                DagNN::from_text(&output),
-            ) {
+            if let (Ok(input_graph), Ok(output_graph)) =
+                (DagNN::from_text(&input), DagNN::from_text(&output))
+            {
                 examples.push(DomainExample {
                     input: input_graph,
                     output: output_graph,
@@ -926,8 +954,11 @@ impl MathBrain {
         let text = graph.to_text();
 
         // Check for multiplication by zero patterns
-        if text.contains(" * 0") || text.contains("* 0") ||
-           text.contains("0 * ") || text.contains("0 *") {
+        if text.contains(" * 0")
+            || text.contains("* 0")
+            || text.contains("0 * ")
+            || text.contains("0 *")
+        {
             DagNN::from_text("0").map_err(|e| e.into())
         } else {
             Ok(graph.clone())
@@ -969,9 +1000,7 @@ impl MathBrain {
         let text = graph.to_text();
 
         // Remove power of one
-        let normalized = text
-            .replace("^1", "")
-            .replace("^ 1", "");
+        let normalized = text.replace("^1", "").replace("^ 1", "");
 
         if normalized != text {
             DagNN::from_text(&normalized).map_err(|e| e.into())
@@ -1009,7 +1038,12 @@ impl MathBrain {
         }
 
         // Try simple binary operations
-        for (op_str, op) in [("+", MathOp::Add), ("-", MathOp::Sub), ("*", MathOp::Mul), ("/", MathOp::Div)] {
+        for (op_str, op) in [
+            ("+", MathOp::Add),
+            ("-", MathOp::Sub),
+            ("*", MathOp::Mul),
+            ("/", MathOp::Div),
+        ] {
             if let Some(idx) = trimmed.rfind(op_str) {
                 if idx > 0 && idx < trimmed.len() - 1 {
                     let left = trimmed[..idx].trim().parse::<f64>();
@@ -1022,11 +1056,17 @@ impl MathBrain {
                             MathOp::Mul => l * r,
                             MathOp::Div => {
                                 if r == 0.0 {
-                                    return Err(MathGraphError::InvalidStructure("Division by zero".to_string()));
+                                    return Err(MathGraphError::InvalidStructure(
+                                        "Division by zero".to_string(),
+                                    ));
                                 }
                                 l / r
                             }
-                            _ => return Err(MathGraphError::InvalidStructure("Unsupported operation".to_string())),
+                            _ => {
+                                return Err(MathGraphError::InvalidStructure(
+                                    "Unsupported operation".to_string(),
+                                ))
+                            }
                         };
                         return Ok(result);
                     }
@@ -1034,7 +1074,10 @@ impl MathBrain {
             }
         }
 
-        Err(MathGraphError::InvalidStructure(format!("Cannot parse: {}", text)))
+        Err(MathGraphError::InvalidStructure(format!(
+            "Cannot parse: {}",
+            text
+        )))
     }
 }
 
@@ -1094,7 +1137,10 @@ impl MathBrain {
                     if binary_operators.contains(&prev) {
                         issues.push(ValidationIssue {
                             severity: ValidationSeverity::Error,
-                            message: format!("Invalid consecutive operators '{}{}' at position {}", prev, ch, i),
+                            message: format!(
+                                "Invalid consecutive operators '{}{}' at position {}",
+                                prev, ch, i
+                            ),
                             node: None,
                         });
                     }
@@ -1147,8 +1193,7 @@ impl MathBrain {
 
         // Check for literal division by zero patterns
         let patterns = [
-            "/0", "/ 0", "/0.0", "/ 0.0",
-            "/ (0)", "/(0)", "/ ( 0 )", "/( 0 )",
+            "/0", "/ 0", "/0.0", "/ 0.0", "/ (0)", "/(0)", "/ ( 0 )", "/( 0 )",
         ];
 
         for pattern in patterns {
@@ -1156,7 +1201,13 @@ impl MathBrain {
                 // Check if followed by more digits (would not be zero)
                 let idx = text.find(pattern).unwrap();
                 let after_pattern = idx + pattern.len();
-                if after_pattern >= text.len() || !text.chars().nth(after_pattern).map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if after_pattern >= text.len()
+                    || !text
+                        .chars()
+                        .nth(after_pattern)
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     issues.push(ValidationIssue {
                         severity: ValidationSeverity::Error,
                         message: "Division by zero detected".to_string(),
@@ -1175,8 +1226,10 @@ impl MathBrain {
         let mut issues = Vec::new();
 
         // Single-argument functions
-        let single_arg_fns = ["sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
-                              "sqrt", "cbrt", "exp", "log", "ln", "abs", "floor", "ceil", "round"];
+        let single_arg_fns = [
+            "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "sqrt", "cbrt",
+            "exp", "log", "ln", "abs", "floor", "ceil", "round",
+        ];
 
         // Two-argument functions
         let two_arg_fns = ["pow", "log_base", "max", "min", "atan2"];
@@ -1195,7 +1248,9 @@ impl MathBrain {
                         '(' => depth += 1,
                         ')' => {
                             depth -= 1;
-                            if depth == 0 { break; }
+                            if depth == 0 {
+                                break;
+                            }
                         }
                         ',' if depth == 1 => commas += 1,
                         _ => {}
@@ -1204,7 +1259,11 @@ impl MathBrain {
                 if commas > 0 {
                     issues.push(ValidationIssue {
                         severity: ValidationSeverity::Error,
-                        message: format!("Function '{}' expects 1 argument, got {}", func, commas + 1),
+                        message: format!(
+                            "Function '{}' expects 1 argument, got {}",
+                            func,
+                            commas + 1
+                        ),
                         node: None,
                     });
                 }
@@ -1223,7 +1282,9 @@ impl MathBrain {
                         '(' => depth += 1,
                         ')' => {
                             depth -= 1;
-                            if depth == 0 { break; }
+                            if depth == 0 {
+                                break;
+                            }
                         }
                         ',' if depth == 1 => commas += 1,
                         _ => {}
@@ -1232,7 +1293,11 @@ impl MathBrain {
                 if commas != 1 {
                     issues.push(ValidationIssue {
                         severity: ValidationSeverity::Error,
-                        message: format!("Function '{}' expects 2 arguments, got {}", func, commas + 1),
+                        message: format!(
+                            "Function '{}' expects 2 arguments, got {}",
+                            func,
+                            commas + 1
+                        ),
                         node: None,
                     });
                 }
@@ -1570,7 +1635,10 @@ mod tests {
         // Valid parentheses
         let graph = DagNN::from_text("(2 + 3) * 4").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let paren_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("parentheses")).collect();
+        let paren_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("parentheses"))
+            .collect();
         assert!(paren_errors.is_empty());
 
         // Unbalanced - unclosed paren
@@ -1591,7 +1659,10 @@ mod tests {
         // Valid operators
         let graph = DagNN::from_text("2 + 3 * 4").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let op_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("operator")).collect();
+        let op_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("operator"))
+            .collect();
         assert!(op_errors.is_empty());
 
         // Expression ending with operator
@@ -1612,13 +1683,18 @@ mod tests {
         // Valid division
         let graph = DagNN::from_text("10 / 2").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let div_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("Division by zero")).collect();
+        let div_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("Division by zero"))
+            .collect();
         assert!(div_errors.is_empty());
 
         // Division by zero
         let graph = DagNN::from_text("10 / 0").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("Division by zero")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("Division by zero")));
     }
 
     #[test]
@@ -1628,24 +1704,34 @@ mod tests {
         // Valid single-arg function
         let graph = DagNN::from_text("sin(x)").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let arity_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("expects")).collect();
+        let arity_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("expects"))
+            .collect();
         assert!(arity_errors.is_empty());
 
         // Invalid: sin with 2 args
         let graph = DagNN::from_text("sin(x, y)").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("sin") && i.message.contains("expects 1")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("sin") && i.message.contains("expects 1")));
 
         // Valid two-arg function
         let graph = DagNN::from_text("pow(x, 2)").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let arity_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("pow")).collect();
+        let arity_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("pow"))
+            .collect();
         assert!(arity_errors.is_empty());
 
         // Invalid: pow with 1 arg
         let graph = DagNN::from_text("pow(x)").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("pow") && i.message.contains("expects 2")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("pow") && i.message.contains("expects 2")));
     }
 
     #[test]
@@ -1655,13 +1741,18 @@ mod tests {
         // Valid literals
         let graph = DagNN::from_text("3.14").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let literal_errors: Vec<_> = issues.iter().filter(|i| i.message.contains("decimal")).collect();
+        let literal_errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("decimal"))
+            .collect();
         assert!(literal_errors.is_empty());
 
         // Invalid: multiple decimal points
         let graph = DagNN::from_text("3.14.15").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("multiple decimal")));
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("multiple decimal")));
     }
 
     #[test]
@@ -1680,7 +1771,10 @@ mod tests {
         let graph = DagNN::from_text("(2 + 3) * sin(x) / (y - 1)").unwrap();
         let issues = DomainBrain::validate(&brain, &graph).unwrap();
         // Should have no errors (only possible infos about leading zeros, which shouldn't be here)
-        let errors: Vec<_> = issues.iter().filter(|i| matches!(i.severity, ValidationSeverity::Error)).collect();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i.severity, ValidationSeverity::Error))
+            .collect();
         assert!(errors.is_empty(), "Unexpected errors: {:?}", errors);
     }
 }

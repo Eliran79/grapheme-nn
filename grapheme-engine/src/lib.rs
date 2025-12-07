@@ -109,10 +109,7 @@ pub enum Expr {
     /// Unary operation
     UnaryOp { op: MathOp, operand: Box<Expr> },
     /// Function application
-    Function {
-        func: MathFn,
-        args: Vec<Expr>,
-    },
+    Function { func: MathFn, args: Vec<Expr> },
 }
 
 /// The math engine for symbolic and numeric computation
@@ -378,9 +375,7 @@ impl Expr {
             Expr::Value(_) => 1,
             Expr::BinOp { left, right, .. } => 1 + left.depth().max(right.depth()),
             Expr::UnaryOp { operand, .. } => 1 + operand.depth(),
-            Expr::Function { args, .. } => {
-                1 + args.iter().map(|a| a.depth()).max().unwrap_or(0)
-            }
+            Expr::Function { args, .. } => 1 + args.iter().map(|a| a.depth()).max().unwrap_or(0),
         }
     }
 
@@ -498,7 +493,10 @@ impl SymbolicEngine {
                             Expr::mul(
                                 Expr::mul(
                                     (**right).clone(),
-                                    Expr::pow((**left).clone(), Expr::sub((**right).clone(), Expr::int(1))),
+                                    Expr::pow(
+                                        (**left).clone(),
+                                        Expr::sub((**right).clone(), Expr::int(1)),
+                                    ),
                                 ),
                                 dl,
                             )
@@ -508,7 +506,10 @@ impl SymbolicEngine {
                             Expr::mul(
                                 Expr::mul(
                                     (**right).clone(),
-                                    Expr::pow((**left).clone(), Expr::sub((**right).clone(), Expr::int(1))),
+                                    Expr::pow(
+                                        (**left).clone(),
+                                        Expr::sub((**right).clone(), Expr::int(1)),
+                                    ),
                                 ),
                                 dl,
                             )
@@ -543,7 +544,9 @@ impl SymbolicEngine {
                     MathFn::Sin => Expr::mul(Expr::func(MathFn::Cos, vec![u.clone()]), du),
 
                     // d/dx(cos(u)) = -sin(u) * du/dx
-                    MathFn::Cos => Expr::neg(Expr::mul(Expr::func(MathFn::Sin, vec![u.clone()]), du)),
+                    MathFn::Cos => {
+                        Expr::neg(Expr::mul(Expr::func(MathFn::Sin, vec![u.clone()]), du))
+                    }
 
                     // d/dx(tan(u)) = sec²(u) * du/dx = du/dx / cos²(u)
                     MathFn::Tan => Expr::div(
@@ -558,10 +561,7 @@ impl SymbolicEngine {
                     MathFn::Ln => Expr::div(du, u.clone()),
 
                     // d/dx(log(u)) = du/dx / (u * ln(10))
-                    MathFn::Log => Expr::div(
-                        du,
-                        Expr::mul(u.clone(), Expr::float(10.0_f64.ln())),
-                    ),
+                    MathFn::Log => Expr::div(du, Expr::mul(u.clone(), Expr::float(10.0_f64.ln()))),
 
                     // d/dx(sqrt(u)) = du/dx / (2 * sqrt(u))
                     MathFn::Sqrt => Expr::div(
@@ -603,18 +603,12 @@ impl SymbolicEngine {
     pub fn integrate(&self, expr: &Expr, var: &str) -> IntegrationResult<Expr> {
         match expr {
             // Constant: ∫k dx = kx
-            Expr::Value(Value::Integer(n)) => {
-                Ok(Expr::mul(Expr::int(*n), Expr::symbol(var)))
-            }
-            Expr::Value(Value::Float(f)) => {
-                Ok(Expr::mul(Expr::float(*f), Expr::symbol(var)))
-            }
-            Expr::Value(Value::Rational(n, d)) => {
-                Ok(Expr::mul(
-                    Expr::Value(Value::Rational(*n, *d)),
-                    Expr::symbol(var),
-                ))
-            }
+            Expr::Value(Value::Integer(n)) => Ok(Expr::mul(Expr::int(*n), Expr::symbol(var))),
+            Expr::Value(Value::Float(f)) => Ok(Expr::mul(Expr::float(*f), Expr::symbol(var))),
+            Expr::Value(Value::Rational(n, d)) => Ok(Expr::mul(
+                Expr::Value(Value::Rational(*n, *d)),
+                Expr::symbol(var),
+            )),
 
             // Variable: ∫x dx = x²/2, ∫y dx = yx (y is constant wrt x)
             Expr::Value(Value::Symbol(s)) => {
@@ -653,17 +647,11 @@ impl SymbolicEngine {
                         match (left_contains, right_contains) {
                             (false, true) => {
                                 // k * f where k is constant
-                                Ok(Expr::mul(
-                                    (**left).clone(),
-                                    self.integrate(right, var)?,
-                                ))
+                                Ok(Expr::mul((**left).clone(), self.integrate(right, var)?))
                             }
                             (true, false) => {
                                 // f * k where k is constant
-                                Ok(Expr::mul(
-                                    self.integrate(left, var)?,
-                                    (**right).clone(),
-                                ))
+                                Ok(Expr::mul(self.integrate(left, var)?, (**right).clone()))
                             }
                             (false, false) => {
                                 // Both constants: ∫(k1 * k2) dx = k1 * k2 * x
@@ -693,7 +681,8 @@ impl SymbolicEngine {
                                     }
                                 }
                                 Err(IntegrationError::CannotIntegrate(
-                                    "Product of two expressions containing the variable".to_string(),
+                                    "Product of two expressions containing the variable"
+                                        .to_string(),
                                 ))
                             }
                         }
@@ -705,19 +694,22 @@ impl SymbolicEngine {
 
                         if !right_contains {
                             // ∫(f/k) dx = (1/k) * ∫f dx
-                            Ok(Expr::div(
-                                self.integrate(left, var)?,
-                                (**right).clone(),
-                            ))
+                            Ok(Expr::div(self.integrate(left, var)?, (**right).clone()))
                         } else if !self.contains_var(left, var) && self.is_var(right, var) {
                             // ∫(k/x) dx = k * ln|x|
                             Ok(Expr::mul(
                                 (**left).clone(),
-                                Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]),
+                                Expr::func(
+                                    MathFn::Ln,
+                                    vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])],
+                                ),
                             ))
                         } else if self.is_int(left, 1) && self.is_var(right, var) {
                             // ∫(1/x) dx = ln|x|
-                            Ok(Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]))
+                            Ok(Expr::func(
+                                MathFn::Ln,
+                                vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])],
+                            ))
                         } else {
                             Err(IntegrationError::CannotIntegrate(
                                 "Division with variable in denominator".to_string(),
@@ -735,7 +727,10 @@ impl SymbolicEngine {
                             if let Some(n) = self.get_int_value(right) {
                                 if n == -1 {
                                     // Special case: ∫x^(-1) dx = ln|x|
-                                    Ok(Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])]))
+                                    Ok(Expr::func(
+                                        MathFn::Ln,
+                                        vec![Expr::func(MathFn::Abs, vec![Expr::symbol(var)])],
+                                    ))
                                 } else {
                                     // Power rule: ∫x^n dx = x^(n+1)/(n+1)
                                     let new_exp = n + 1;
@@ -752,7 +747,8 @@ impl SymbolicEngine {
                                     new_exp,
                                 ))
                             }
-                        } else if !is_base_var && !exp_contains_var && !self.contains_var(left, var) {
+                        } else if !is_base_var && !exp_contains_var && !self.contains_var(left, var)
+                        {
                             // Constant: ∫k dx = kx
                             Ok(Expr::mul(expr.clone(), Expr::symbol(var)))
                         } else {
@@ -768,9 +764,10 @@ impl SymbolicEngine {
             }
 
             // Unary negation: ∫(-f) dx = -∫f dx
-            Expr::UnaryOp { op: MathOp::Neg, operand } => {
-                Ok(Expr::neg(self.integrate(operand, var)?))
-            }
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => Ok(Expr::neg(self.integrate(operand, var)?)),
             Expr::UnaryOp { .. } => Err(IntegrationError::NotSupported),
 
             // Functions
@@ -787,7 +784,9 @@ impl SymbolicEngine {
                 if self.is_var(arg, var) {
                     match func {
                         // ∫sin(x) dx = -cos(x)
-                        MathFn::Sin => Ok(Expr::neg(Expr::func(MathFn::Cos, vec![Expr::symbol(var)]))),
+                        MathFn::Sin => {
+                            Ok(Expr::neg(Expr::func(MathFn::Cos, vec![Expr::symbol(var)])))
+                        }
 
                         // ∫cos(x) dx = sin(x)
                         MathFn::Cos => Ok(Expr::func(MathFn::Sin, vec![Expr::symbol(var)])),
@@ -798,15 +797,22 @@ impl SymbolicEngine {
                         // ∫tan(x) dx = -ln|cos(x)|
                         MathFn::Tan => Ok(Expr::neg(Expr::func(
                             MathFn::Ln,
-                            vec![Expr::func(MathFn::Abs, vec![Expr::func(MathFn::Cos, vec![Expr::symbol(var)])])],
+                            vec![Expr::func(
+                                MathFn::Abs,
+                                vec![Expr::func(MathFn::Cos, vec![Expr::symbol(var)])],
+                            )],
                         ))),
 
                         // ∫1/x dx = ln|x| (handled via Ln function of x)
-                        MathFn::Ln | MathFn::Log | MathFn::Sqrt | MathFn::Abs | MathFn::Floor | MathFn::Ceil => {
-                            Err(IntegrationError::CannotIntegrate(
-                                format!("Integration of {:?} not supported", func),
-                            ))
-                        }
+                        MathFn::Ln
+                        | MathFn::Log
+                        | MathFn::Sqrt
+                        | MathFn::Abs
+                        | MathFn::Floor
+                        | MathFn::Ceil => Err(IntegrationError::CannotIntegrate(format!(
+                            "Integration of {:?} not supported",
+                            func
+                        ))),
 
                         MathFn::Derive | MathFn::Integrate => {
                             Err(IntegrationError::CannotIntegrate(
@@ -870,7 +876,10 @@ impl SymbolicEngine {
                 let right_s = self.simplify(right);
 
                 // Try constant folding
-                if let (Some(l), Some(r)) = (self.evaluate_numeric(&left_s), self.evaluate_numeric(&right_s)) {
+                if let (Some(l), Some(r)) = (
+                    self.evaluate_numeric(&left_s),
+                    self.evaluate_numeric(&right_s),
+                ) {
                     let result = match op {
                         MathOp::Add => Some(l + r),
                         MathOp::Sub => Some(l - r),
@@ -955,10 +964,17 @@ impl SymbolicEngine {
                     right: Box::new(right_s),
                 }
             }
-            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => {
                 let operand_s = self.simplify(operand);
                 // -(-x) = x
-                if let Expr::UnaryOp { op: MathOp::Neg, operand: inner } = operand_s {
+                if let Expr::UnaryOp {
+                    op: MathOp::Neg,
+                    operand: inner,
+                } = operand_s
+                {
                     return *inner;
                 }
                 // -0 = 0
@@ -1023,17 +1039,29 @@ impl SymbolicEngine {
         match expr {
             Expr::Value(Value::Symbol(s)) if s == var => 1,
             Expr::Value(_) => 0,
-            Expr::BinOp { op: MathOp::Add | MathOp::Sub, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Add | MathOp::Sub,
+                left,
+                right,
+            } => {
                 let left_deg = self.polynomial_degree(left, var);
                 let right_deg = self.polynomial_degree(right, var);
                 left_deg.max(right_deg)
             }
-            Expr::BinOp { op: MathOp::Mul, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Mul,
+                left,
+                right,
+            } => {
                 let left_deg = self.polynomial_degree(left, var);
                 let right_deg = self.polynomial_degree(right, var);
                 left_deg + right_deg
             }
-            Expr::BinOp { op: MathOp::Pow, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Pow,
+                left,
+                right,
+            } => {
                 if self.is_var(left, var) {
                     if let Some(n) = self.get_int_value(right) {
                         n as usize
@@ -1044,14 +1072,21 @@ impl SymbolicEngine {
                     0
                 }
             }
-            Expr::BinOp { op: MathOp::Div, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Div,
+                left,
+                right,
+            } => {
                 if self.contains_var(right, var) {
                     usize::MAX // Variable in denominator
                 } else {
                     self.polynomial_degree(left, var)
                 }
             }
-            Expr::UnaryOp { op: MathOp::Neg, operand } => self.polynomial_degree(operand, var),
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => self.polynomial_degree(operand, var),
             _ => 0,
         }
     }
@@ -1088,17 +1123,35 @@ impl SymbolicEngine {
         match expr {
             Expr::Value(Value::Symbol(s)) if s == var => (Expr::int(1), Expr::int(0)),
             Expr::Value(_) => (Expr::int(0), expr.clone()),
-            Expr::BinOp { op: MathOp::Add, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Add,
+                left,
+                right,
+            } => {
                 let (lc, lt) = self.extract_linear_coefficients(left, var);
                 let (rc, rt) = self.extract_linear_coefficients(right, var);
-                (self.simplify(&Expr::add(lc, rc)), self.simplify(&Expr::add(lt, rt)))
+                (
+                    self.simplify(&Expr::add(lc, rc)),
+                    self.simplify(&Expr::add(lt, rt)),
+                )
             }
-            Expr::BinOp { op: MathOp::Sub, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Sub,
+                left,
+                right,
+            } => {
                 let (lc, lt) = self.extract_linear_coefficients(left, var);
                 let (rc, rt) = self.extract_linear_coefficients(right, var);
-                (self.simplify(&Expr::sub(lc, rc)), self.simplify(&Expr::sub(lt, rt)))
+                (
+                    self.simplify(&Expr::sub(lc, rc)),
+                    self.simplify(&Expr::sub(lt, rt)),
+                )
             }
-            Expr::BinOp { op: MathOp::Mul, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Mul,
+                left,
+                right,
+            } => {
                 if self.is_var(left, var) && !self.contains_var(right, var) {
                     (right.as_ref().clone(), Expr::int(0))
                 } else if self.is_var(right, var) && !self.contains_var(left, var) {
@@ -1110,7 +1163,10 @@ impl SymbolicEngine {
                     (Expr::int(0), expr.clone())
                 }
             }
-            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => {
                 let (c, t) = self.extract_linear_coefficients(operand, var);
                 (self.simplify(&Expr::neg(c)), self.simplify(&Expr::neg(t)))
             }
@@ -1152,7 +1208,10 @@ impl SymbolicEngine {
 
             // x1 = (-b + sqrt(d)) / 2a
             let neg_b = Expr::neg(b.clone());
-            let x1 = self.simplify(&Expr::div(Expr::add(neg_b.clone(), sqrt_d.clone()), two_a.clone()));
+            let x1 = self.simplify(&Expr::div(
+                Expr::add(neg_b.clone(), sqrt_d.clone()),
+                two_a.clone(),
+            ));
 
             // x2 = (-b - sqrt(d)) / 2a
             let x2 = self.simplify(&Expr::div(Expr::sub(neg_b, sqrt_d), two_a));
@@ -1171,10 +1230,20 @@ impl SymbolicEngine {
     fn extract_quadratic_coefficients(&self, expr: &Expr, var: &str) -> (Expr, Expr, Expr) {
         // Simplified extraction - handles basic cases
         match expr {
-            Expr::BinOp { op: MathOp::Add | MathOp::Sub, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Add | MathOp::Sub,
+                left,
+                right,
+            } => {
                 let (la, lb, lc) = self.extract_quadratic_coefficients(left, var);
                 let (ra, rb, rc) = self.extract_quadratic_coefficients(right, var);
-                if matches!(expr, Expr::BinOp { op: MathOp::Add, .. }) {
+                if matches!(
+                    expr,
+                    Expr::BinOp {
+                        op: MathOp::Add,
+                        ..
+                    }
+                ) {
                     (
                         self.simplify(&Expr::add(la, ra)),
                         self.simplify(&Expr::add(lb, rb)),
@@ -1188,7 +1257,11 @@ impl SymbolicEngine {
                     )
                 }
             }
-            Expr::BinOp { op: MathOp::Mul, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Mul,
+                left,
+                right,
+            } => {
                 // Check for x² or coefficient * x² or coefficient * x
                 if self.is_var(left, var) && self.is_var(right, var) {
                     // x * x = x²
@@ -1207,13 +1280,21 @@ impl SymbolicEngine {
                     let (la, lb, lc) = self.extract_quadratic_coefficients(left, var);
                     if !self.is_zero(&la) && !self.contains_var(right, var) {
                         // coeff * x²
-                        (Expr::mul(right.as_ref().clone(), la), Expr::mul(right.as_ref().clone(), lb), Expr::mul(right.as_ref().clone(), lc))
+                        (
+                            Expr::mul(right.as_ref().clone(), la),
+                            Expr::mul(right.as_ref().clone(), lb),
+                            Expr::mul(right.as_ref().clone(), lc),
+                        )
                     } else {
                         (Expr::int(0), Expr::int(0), expr.clone())
                     }
                 }
             }
-            Expr::BinOp { op: MathOp::Pow, left, right } => {
+            Expr::BinOp {
+                op: MathOp::Pow,
+                left,
+                right,
+            } => {
                 if self.is_var(left, var) && self.is_int(right, 2) {
                     // x²
                     (Expr::int(1), Expr::int(0), Expr::int(0))
@@ -1232,7 +1313,10 @@ impl SymbolicEngine {
                 // constant
                 (Expr::int(0), Expr::int(0), expr.clone())
             }
-            Expr::UnaryOp { op: MathOp::Neg, operand } => {
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => {
                 let (a, b, c) = self.extract_quadratic_coefficients(operand, var);
                 (
                     self.simplify(&Expr::neg(a)),
@@ -1263,9 +1347,10 @@ impl SymbolicEngine {
                     _ => None,
                 }
             }
-            Expr::UnaryOp { op: MathOp::Neg, operand } => {
-                self.evaluate_numeric(operand).map(|v| -v)
-            }
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                operand,
+            } => self.evaluate_numeric(operand).map(|v| -v),
             Expr::Function { func, args } => {
                 if args.len() != 1 {
                     return None;
@@ -1587,7 +1672,12 @@ impl ExprValidator {
         }
     }
 
-    fn validate_recursive(&self, expr: &Expr, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+    fn validate_recursive(
+        &self,
+        expr: &Expr,
+        errors: &mut Vec<String>,
+        warnings: &mut Vec<String>,
+    ) {
         match expr {
             Expr::Value(Value::Rational(_, d)) if *d == 0 => {
                 errors.push("Division by zero in rational number".to_string());
@@ -1624,8 +1714,16 @@ impl ExprValidator {
             Expr::Function { func, args } => {
                 // Check argument counts
                 match func {
-                    MathFn::Sin | MathFn::Cos | MathFn::Tan | MathFn::Log | MathFn::Ln
-                    | MathFn::Exp | MathFn::Sqrt | MathFn::Abs | MathFn::Floor | MathFn::Ceil => {
+                    MathFn::Sin
+                    | MathFn::Cos
+                    | MathFn::Tan
+                    | MathFn::Log
+                    | MathFn::Ln
+                    | MathFn::Exp
+                    | MathFn::Sqrt
+                    | MathFn::Abs
+                    | MathFn::Floor
+                    | MathFn::Ceil => {
                         if args.len() != 1 {
                             errors.push(format!(
                                 "Function {:?} expects 1 argument, got {}",
@@ -1717,7 +1815,10 @@ impl ExprValidator {
             ) => {
                 fa == fb
                     && argsa.len() == argsb.len()
-                    && argsa.iter().zip(argsb.iter()).all(|(a, b)| self.expr_equal(a, b))
+                    && argsa
+                        .iter()
+                        .zip(argsb.iter())
+                        .all(|(a, b)| self.expr_equal(a, b))
             }
             _ => false,
         }
@@ -1989,10 +2090,22 @@ mod tests {
 
         // Test operator builders
         let add = Expr::add(Expr::int(1), Expr::int(2));
-        assert!(matches!(add, Expr::BinOp { op: MathOp::Add, .. }));
+        assert!(matches!(
+            add,
+            Expr::BinOp {
+                op: MathOp::Add,
+                ..
+            }
+        ));
 
         let mul = Expr::mul(Expr::int(3), Expr::int(4));
-        assert!(matches!(mul, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            mul,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2128,7 +2241,13 @@ mod tests {
 
         // Result should involve 2 * x^1 * 1
         // The structure is (2 * (x ^ (2-1))) * 1
-        assert!(matches!(deriv, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            deriv,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2140,7 +2259,13 @@ mod tests {
         let deriv = symbolic.differentiate(&expr, "x");
 
         // Result should be cos(x) * 1
-        assert!(matches!(deriv, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            deriv,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2152,7 +2277,13 @@ mod tests {
         let deriv = symbolic.differentiate(&expr, "x");
 
         // Result should be exp(x) * 1
-        assert!(matches!(deriv, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            deriv,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2379,10 +2510,7 @@ mod tests {
         let integral = symbolic.integrate(&Expr::symbol("x"), "x").unwrap();
         assert_eq!(
             integral,
-            Expr::div(
-                Expr::pow(Expr::symbol("x"), Expr::int(2)),
-                Expr::int(2)
-            )
+            Expr::div(Expr::pow(Expr::symbol("x"), Expr::int(2)), Expr::int(2))
         );
     }
 
@@ -2404,10 +2532,7 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
         assert_eq!(
             integral,
-            Expr::div(
-                Expr::pow(Expr::symbol("x"), Expr::int(3)),
-                Expr::int(3)
-            )
+            Expr::div(Expr::pow(Expr::symbol("x"), Expr::int(3)), Expr::int(3))
         );
 
         // ∫x³ dx = x⁴/4
@@ -2415,10 +2540,7 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
         assert_eq!(
             integral,
-            Expr::div(
-                Expr::pow(Expr::symbol("x"), Expr::int(4)),
-                Expr::int(4)
-            )
+            Expr::div(Expr::pow(Expr::symbol("x"), Expr::int(4)), Expr::int(4))
         );
     }
 
@@ -2431,7 +2553,10 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
         assert_eq!(
             integral,
-            Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])])
+            Expr::func(
+                MathFn::Ln,
+                vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])]
+            )
         );
 
         // ∫x^(-2) dx = x^(-1)/(-1)
@@ -2439,10 +2564,7 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
         assert_eq!(
             integral,
-            Expr::div(
-                Expr::pow(Expr::symbol("x"), Expr::int(-1)),
-                Expr::int(-1)
-            )
+            Expr::div(Expr::pow(Expr::symbol("x"), Expr::int(-1)), Expr::int(-1))
         );
     }
 
@@ -2455,7 +2577,13 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
         // Should be (x²/2) + (1*x)
-        assert!(matches!(integral, Expr::BinOp { op: MathOp::Add, .. }));
+        assert!(matches!(
+            integral,
+            Expr::BinOp {
+                op: MathOp::Add,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2467,7 +2595,13 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
         // Should be (x²/2) - (1*x)
-        assert!(matches!(integral, Expr::BinOp { op: MathOp::Sub, .. }));
+        assert!(matches!(
+            integral,
+            Expr::BinOp {
+                op: MathOp::Sub,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2479,7 +2613,13 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
         // Should be 3 * (x²/2)
-        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            integral,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2505,10 +2645,7 @@ mod tests {
         let expr = Expr::func(MathFn::Cos, vec![Expr::symbol("x")]);
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
-        assert_eq!(
-            integral,
-            Expr::func(MathFn::Sin, vec![Expr::symbol("x")])
-        );
+        assert_eq!(integral, Expr::func(MathFn::Sin, vec![Expr::symbol("x")]));
     }
 
     #[test]
@@ -2519,10 +2656,7 @@ mod tests {
         let expr = Expr::func(MathFn::Exp, vec![Expr::symbol("x")]);
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
-        assert_eq!(
-            integral,
-            Expr::func(MathFn::Exp, vec![Expr::symbol("x")])
-        );
+        assert_eq!(integral, Expr::func(MathFn::Exp, vec![Expr::symbol("x")]));
     }
 
     #[test]
@@ -2535,7 +2669,10 @@ mod tests {
 
         // Should be 1 * ln|x| or just ln|x|
         // The implementation produces 1 * ln|x| which is mathematically equivalent
-        let ln_abs_x = Expr::func(MathFn::Ln, vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])]);
+        let ln_abs_x = Expr::func(
+            MathFn::Ln,
+            vec![Expr::func(MathFn::Abs, vec![Expr::symbol("x")])],
+        );
         let expected = Expr::mul(Expr::int(1), ln_abs_x.clone());
         assert!(integral == expected || integral == ln_abs_x);
     }
@@ -2548,7 +2685,13 @@ mod tests {
         let expr = Expr::div(Expr::int(5), Expr::symbol("x"));
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
-        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            integral,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2576,7 +2719,13 @@ mod tests {
         let expr = Expr::neg(Expr::symbol("x"));
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
-        assert!(matches!(integral, Expr::UnaryOp { op: MathOp::Neg, .. }));
+        assert!(matches!(
+            integral,
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2602,7 +2751,13 @@ mod tests {
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
         // Should be -ln|cos(x)|
-        assert!(matches!(integral, Expr::UnaryOp { op: MathOp::Neg, .. }));
+        assert!(matches!(
+            integral,
+            Expr::UnaryOp {
+                op: MathOp::Neg,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2613,7 +2768,13 @@ mod tests {
         let expr = Expr::func(MathFn::Sin, vec![Expr::int(2)]);
         let integral = symbolic.integrate(&expr, "x").unwrap();
 
-        assert!(matches!(integral, Expr::BinOp { op: MathOp::Mul, .. }));
+        assert!(matches!(
+            integral,
+            Expr::BinOp {
+                op: MathOp::Mul,
+                ..
+            }
+        ));
     }
 
     // ========================================================================
@@ -2638,10 +2799,7 @@ mod tests {
         let symbolic = SymbolicEngine::new();
 
         // x + 5 = 10 => x = 5
-        let eq = Equation::new(
-            Expr::add(Expr::symbol("x"), Expr::int(5)),
-            Expr::int(10),
-        );
+        let eq = Equation::new(Expr::add(Expr::symbol("x"), Expr::int(5)), Expr::int(10));
         let solution = symbolic.solve(&eq, "x").unwrap();
 
         // Should be Single(5)
@@ -2689,9 +2847,10 @@ mod tests {
         let symbolic = SymbolicEngine::new();
 
         // x² - 4 = 0 => x = ±2
-        let eq = Equation::equals_zero(
-            Expr::sub(Expr::pow(Expr::symbol("x"), Expr::int(2)), Expr::int(4)),
-        );
+        let eq = Equation::equals_zero(Expr::sub(
+            Expr::pow(Expr::symbol("x"), Expr::int(2)),
+            Expr::int(4),
+        ));
         let solution = symbolic.solve(&eq, "x").unwrap();
 
         assert!(matches!(solution, Solution::Multiple(ref v) if v.len() == 2));
@@ -2721,9 +2880,10 @@ mod tests {
         let symbolic = SymbolicEngine::new();
 
         // x² + 1 = 0 => no real solution
-        let eq = Equation::equals_zero(
-            Expr::add(Expr::pow(Expr::symbol("x"), Expr::int(2)), Expr::int(1)),
-        );
+        let eq = Equation::equals_zero(Expr::add(
+            Expr::pow(Expr::symbol("x"), Expr::int(2)),
+            Expr::int(1),
+        ));
         let solution = symbolic.solve(&eq, "x").unwrap();
 
         assert!(matches!(solution, Solution::NoSolution));

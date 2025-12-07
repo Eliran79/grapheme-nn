@@ -201,7 +201,7 @@ fn bench_generation_scaling(c: &mut Criterion) {
 // ============================================================================
 
 use grapheme_core::GraphemeGraph;
-use grapheme_train::{Pipeline, quick_eval};
+use grapheme_train::{quick_eval, Pipeline};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -324,13 +324,9 @@ fn bench_flops_comparison(c: &mut Criterion) {
         // Benchmark actual execution
         let text: String = "a".repeat(*input_len);
 
-        group.bench_with_input(
-            BenchmarkId::new("grapheme", input_len),
-            &text,
-            |b, text| {
-                b.iter(|| GraphemeGraph::from_text(black_box(text)))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("grapheme", input_len), &text, |b, text| {
+            b.iter(|| GraphemeGraph::from_text(black_box(text)))
+        });
 
         // Store the ratio info in the benchmark ID for documentation
         eprintln!(
@@ -431,9 +427,7 @@ fn bench_pipeline_throughput(c: &mut Criterion) {
     ];
 
     for (name, expr) in expressions.iter() {
-        group.bench_function(*name, |b| {
-            b.iter(|| quick_eval(black_box(*expr)))
-        });
+        group.bench_function(*name, |b| b.iter(|| quick_eval(black_box(*expr))));
     }
 
     group.finish();

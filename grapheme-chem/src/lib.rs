@@ -9,8 +9,8 @@
 //! - Chemical property analysis
 
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
-    ExecutionResult, ValidationIssue, ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -34,13 +34,33 @@ pub type ChemGraphResult<T> = Result<T, ChemGraphError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Element {
     // First row
-    H, He,
+    H,
+    He,
     // Second row
-    Li, Be, B, C, N, O, F, Ne,
+    Li,
+    Be,
+    B,
+    C,
+    N,
+    O,
+    F,
+    Ne,
     // Third row
-    Na, Mg, Al, Si, P, S, Cl, Ar,
+    Na,
+    Mg,
+    Al,
+    Si,
+    P,
+    S,
+    Cl,
+    Ar,
     // Fourth row (common)
-    K, Ca, Fe, Cu, Zn, Br,
+    K,
+    Ca,
+    Fe,
+    Cu,
+    Zn,
+    Br,
     // Generic placeholder
     Unknown,
 }
@@ -136,13 +156,19 @@ pub enum ChemNode {
     /// A functional group
     FunctionalGroup(FunctionalGroupType),
     /// A molecule (container)
-    Molecule { name: Option<String>, formula: Option<String> },
+    Molecule {
+        name: Option<String>,
+        formula: Option<String>,
+    },
     /// A reaction
     Reaction { name: Option<String> },
     /// A catalyst
     Catalyst(String),
     /// Reaction conditions
-    Conditions { temperature: Option<f32>, pressure: Option<f32> },
+    Conditions {
+        temperature: Option<f32>,
+        pressure: Option<f32>,
+    },
 }
 
 /// Bond types
@@ -161,16 +187,16 @@ pub enum BondType {
 /// Common functional groups
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FunctionalGroupType {
-    Hydroxyl,    // -OH
-    Carbonyl,    // C=O
-    Carboxyl,    // -COOH
-    Amino,       // -NH2
-    Methyl,      // -CH3
-    Phenyl,      // C6H5-
-    Aldehyde,    // -CHO
-    Ketone,      // R-CO-R
-    Ester,       // R-COO-R
-    Ether,       // R-O-R
+    Hydroxyl, // -OH
+    Carbonyl, // C=O
+    Carboxyl, // -COOH
+    Amino,    // -NH2
+    Methyl,   // -CH3
+    Phenyl,   // C6H5-
+    Aldehyde, // -CHO
+    Ketone,   // R-CO-R
+    Ester,    // R-COO-R
+    Ether,    // R-O-R
 }
 
 /// Edge types in chemistry graphs
@@ -314,13 +340,31 @@ impl ChemBrain {
     /// Check if text looks like chemistry content
     fn looks_like_chemistry(&self, input: &str) -> bool {
         let chem_patterns = [
-            "molecule", "atom", "bond", "element",
-            "reaction", "compound", "formula",
-            "acid", "base", "salt", "ion",
-            "carbon", "hydrogen", "oxygen", "nitrogen",
-            "organic", "inorganic", "polymer",
-            "catalyst", "enzyme", "solution",
-            "molar", "mol", "pH", "concentration",
+            "molecule",
+            "atom",
+            "bond",
+            "element",
+            "reaction",
+            "compound",
+            "formula",
+            "acid",
+            "base",
+            "salt",
+            "ion",
+            "carbon",
+            "hydrogen",
+            "oxygen",
+            "nitrogen",
+            "organic",
+            "inorganic",
+            "polymer",
+            "catalyst",
+            "enzyme",
+            "solution",
+            "molar",
+            "mol",
+            "pH",
+            "concentration",
         ];
         let lower = input.to_lowercase();
 
@@ -481,9 +525,10 @@ impl DomainBrain for ChemBrain {
             2 => self.apply_iupac_naming(graph),
             3 => self.apply_molecular_weight(graph),
             4 => self.apply_functional_group_detection(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(
-                format!("Unknown rule ID: {}", rule_id)
-            )),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
         }
     }
 
@@ -501,10 +546,9 @@ impl DomainBrain for ChemBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) = (
-                DagNN::from_text(input),
-                DagNN::from_text(output),
-            ) {
+            if let (Ok(input_graph), Ok(output_graph)) =
+                (DagNN::from_text(input), DagNN::from_text(output))
+            {
                 examples.push(DomainExample {
                     input: input_graph,
                     output: output_graph,

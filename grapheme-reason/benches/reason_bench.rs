@@ -2,8 +2,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use grapheme_reason::{
-    Analogy, ComplexityBounds, Deduction, Graph, Induction, LogicRules,
-    SimpleAnalogy, SimpleDeduction, SimpleInduction,
+    Analogy, ComplexityBounds, Deduction, Graph, Induction, LogicRules, SimpleAnalogy,
+    SimpleDeduction, SimpleInduction,
 };
 
 fn make_graph(text: &str) -> Graph {
@@ -46,11 +46,6 @@ fn bench_analogy(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_deduction,
-    bench_induction,
-    bench_analogy,
-);
+criterion_group!(benches, bench_deduction, bench_induction, bench_analogy,);
 
 criterion_main!(benches);

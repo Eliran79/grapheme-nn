@@ -412,7 +412,8 @@ impl CausalGraph {
 
     /// Set causal strength between nodes
     pub fn set_strength(&mut self, from: NodeId, to: NodeId, strength: f32) {
-        self.edge_strengths.insert((from, to), strength.clamp(0.0, 1.0));
+        self.edge_strengths
+            .insert((from, to), strength.clamp(0.0, 1.0));
     }
 
     /// Get causal strength
@@ -436,18 +437,32 @@ pub trait Deduction: Send + Sync + Debug {
     /// Forward chaining: derive all conclusions from premises
     ///
     /// Returns new graphs that can be derived from premises using rules.
-    fn deduce(&self, premises: Vec<Graph>, rules: &LogicRules, bounds: &ComplexityBounds)
-        -> ReasoningResult<Vec<Graph>>;
+    fn deduce(
+        &self,
+        premises: Vec<Graph>,
+        rules: &LogicRules,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Vec<Graph>>;
 
     /// Backward chaining: prove a goal from premises
     ///
     /// Returns a proof trace if the goal can be derived.
-    fn prove(&self, goal: &Graph, premises: &[Graph], rules: &LogicRules, bounds: &ComplexityBounds)
-        -> ReasoningResult<ReasoningTrace>;
+    fn prove(
+        &self,
+        goal: &Graph,
+        premises: &[Graph],
+        rules: &LogicRules,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<ReasoningTrace>;
 
     /// Check if premises entail conclusion
-    fn entails(&self, premises: &[Graph], conclusion: &Graph, rules: &LogicRules, bounds: &ComplexityBounds)
-        -> ReasoningResult<bool>;
+    fn entails(
+        &self,
+        premises: &[Graph],
+        conclusion: &Graph,
+        rules: &LogicRules,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<bool>;
 }
 
 // ============================================================================
@@ -463,16 +478,21 @@ pub trait Deduction: Send + Sync + Debug {
 /// Implementations MUST limit examples and graph sizes.
 pub trait Induction: Send + Sync + Debug {
     /// Induce a transformation rule from input-output examples
-    fn induce(&self, examples: Vec<(Graph, Graph)>, bounds: &ComplexityBounds)
-        -> ReasoningResult<TransformRule>;
+    fn induce(
+        &self,
+        examples: Vec<(Graph, Graph)>,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<TransformRule>;
 
     /// Find common structure across multiple graphs
-    fn common_structure(&self, examples: &[Graph], bounds: &ComplexityBounds)
-        -> ReasoningResult<Graph>;
+    fn common_structure(
+        &self,
+        examples: &[Graph],
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Graph>;
 
     /// Test rule confidence on new examples
-    fn confidence(&self, rule: &TransformRule, test_examples: &[(Graph, Graph)])
-        -> f32;
+    fn confidence(&self, rule: &TransformRule, test_examples: &[(Graph, Graph)]) -> f32;
 }
 
 // ============================================================================
@@ -484,12 +504,20 @@ pub trait Induction: Send + Sync + Debug {
 /// Given an observation, infer the most plausible explanation.
 pub trait Abduction: Send + Sync + Debug {
     /// Generate possible explanations for an observation
-    fn abduce(&self, observation: &Graph, background: &dyn SemanticGraph, bounds: &ComplexityBounds)
-        -> ReasoningResult<Vec<Explanation>>;
+    fn abduce(
+        &self,
+        observation: &Graph,
+        background: &dyn SemanticGraph,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Vec<Explanation>>;
 
     /// Find the simplest (Occam's Razor) explanation
-    fn simplest_explanation(&self, observation: &Graph, background: &dyn SemanticGraph, bounds: &ComplexityBounds)
-        -> ReasoningResult<Explanation>;
+    fn simplest_explanation(
+        &self,
+        observation: &Graph,
+        background: &dyn SemanticGraph,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Explanation>;
 
     /// Rank explanations by combined plausibility and simplicity
     fn rank_explanations<'a>(&self, explanations: &'a [Explanation]) -> Vec<&'a Explanation>;
@@ -508,12 +536,20 @@ pub trait Abduction: Send + Sync + Debug {
 /// Implementations MUST use approximate methods (Hungarian algorithm, feature matching).
 pub trait Analogy: Send + Sync + Debug {
     /// Find structural mapping from source to target
-    fn analogize(&self, source: &Graph, target: &Graph, bounds: &ComplexityBounds)
-        -> ReasoningResult<Mapping>;
+    fn analogize(
+        &self,
+        source: &Graph,
+        target: &Graph,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Mapping>;
 
     /// Transfer knowledge from source domain to target using mapping
-    fn transfer(&self, source_knowledge: &Graph, mapping: &Mapping, target: &Graph)
-        -> ReasoningResult<Graph>;
+    fn transfer(
+        &self,
+        source_knowledge: &Graph,
+        mapping: &Mapping,
+        target: &Graph,
+    ) -> ReasoningResult<Graph>;
 
     /// Compute analogy quality score
     fn analogy_score(&self, source: &Graph, target: &Graph, mapping: &Mapping) -> f32;
@@ -532,11 +568,15 @@ pub trait CausalReasoning: Send + Sync + Debug {
     fn intervene(&self, world: &Graph, do_action: &Graph) -> ReasoningResult<Graph>;
 
     /// Counterfactual: what would have happened if...?
-    fn counterfactual(&self, actual: &Graph, hypothetical_change: &Graph) -> ReasoningResult<Graph>;
+    fn counterfactual(&self, actual: &Graph, hypothetical_change: &Graph)
+        -> ReasoningResult<Graph>;
 
     /// Infer causal structure from observational data
-    fn infer_causal_graph(&self, observations: &[Graph], bounds: &ComplexityBounds)
-        -> ReasoningResult<CausalGraph>;
+    fn infer_causal_graph(
+        &self,
+        observations: &[Graph],
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<CausalGraph>;
 
     /// Test if cause → effect relationship exists
     fn causes(&self, cause: &Graph, effect: &Graph, causal_model: &CausalGraph) -> bool;
@@ -619,12 +659,15 @@ impl SimpleDeduction {
         let similarity = pattern_fp.similarity(&graph_fp);
         similarity >= Self::MATCH_THRESHOLD
     }
-
 }
 
 impl Deduction for SimpleDeduction {
-    fn deduce(&self, premises: Vec<Graph>, rules: &LogicRules, bounds: &ComplexityBounds)
-        -> ReasoningResult<Vec<Graph>> {
+    fn deduce(
+        &self,
+        premises: Vec<Graph>,
+        rules: &LogicRules,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Vec<Graph>> {
         let mut derived = Vec::new();
         let current: Vec<&Graph> = premises.iter().collect();
 
@@ -656,8 +699,13 @@ impl Deduction for SimpleDeduction {
         Ok(derived)
     }
 
-    fn prove(&self, goal: &Graph, premises: &[Graph], rules: &LogicRules, _bounds: &ComplexityBounds)
-        -> ReasoningResult<ReasoningTrace> {
+    fn prove(
+        &self,
+        goal: &Graph,
+        premises: &[Graph],
+        rules: &LogicRules,
+        _bounds: &ComplexityBounds,
+    ) -> ReasoningResult<ReasoningTrace> {
         // Simplified backward chaining
         let mut steps = Vec::new();
 
@@ -701,8 +749,13 @@ impl Deduction for SimpleDeduction {
         Ok(ReasoningTrace::failure(steps))
     }
 
-    fn entails(&self, premises: &[Graph], conclusion: &Graph, rules: &LogicRules, bounds: &ComplexityBounds)
-        -> ReasoningResult<bool> {
+    fn entails(
+        &self,
+        premises: &[Graph],
+        conclusion: &Graph,
+        rules: &LogicRules,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<bool> {
         let trace = self.prove(conclusion, premises, rules, bounds)?;
         Ok(trace.success)
     }
@@ -719,12 +772,17 @@ impl SimpleInduction {
 }
 
 impl Induction for SimpleInduction {
-    fn induce(&self, examples: Vec<(Graph, Graph)>, bounds: &ComplexityBounds)
-        -> ReasoningResult<TransformRule> {
+    fn induce(
+        &self,
+        examples: Vec<(Graph, Graph)>,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<TransformRule> {
         if examples.len() > bounds.max_induction_examples {
-            return Err(ReasoningError::ComplexityBoundExceeded(
-                format!("Too many examples: {} > {}", examples.len(), bounds.max_induction_examples)
-            ));
+            return Err(ReasoningError::ComplexityBoundExceeded(format!(
+                "Too many examples: {} > {}",
+                examples.len(),
+                bounds.max_induction_examples
+            )));
         }
 
         // Create a simple rule that captures the transformation
@@ -733,12 +791,17 @@ impl Induction for SimpleInduction {
         Ok(rule)
     }
 
-    fn common_structure(&self, examples: &[Graph], bounds: &ComplexityBounds)
-        -> ReasoningResult<Graph> {
+    fn common_structure(
+        &self,
+        examples: &[Graph],
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Graph> {
         if examples.len() > bounds.max_induction_examples {
-            return Err(ReasoningError::ComplexityBoundExceeded(
-                format!("Too many examples: {} > {}", examples.len(), bounds.max_induction_examples)
-            ));
+            return Err(ReasoningError::ComplexityBoundExceeded(format!(
+                "Too many examples: {} > {}",
+                examples.len(),
+                bounds.max_induction_examples
+            )));
         }
 
         if examples.is_empty() {
@@ -747,9 +810,7 @@ impl Induction for SimpleInduction {
 
         // Simplified: return the smallest example as "common"
         // Real implementation would compute actual MCS
-        let smallest = examples.iter()
-            .min_by_key(|g| g.node_count())
-            .unwrap();
+        let smallest = examples.iter().min_by_key(|g| g.node_count()).unwrap();
 
         Ok(smallest.clone_graph())
     }
@@ -775,17 +836,26 @@ impl SimpleAbduction {
 }
 
 impl Abduction for SimpleAbduction {
-    fn abduce(&self, observation: &Graph, _background: &dyn SemanticGraph, _bounds: &ComplexityBounds)
-        -> ReasoningResult<Vec<Explanation>> {
+    fn abduce(
+        &self,
+        observation: &Graph,
+        _background: &dyn SemanticGraph,
+        _bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Vec<Explanation>> {
         // Simplified: return the observation itself as the "explanation"
         let explanation = Explanation::new(observation.clone_graph(), 0.7);
         Ok(vec![explanation])
     }
 
-    fn simplest_explanation(&self, observation: &Graph, background: &dyn SemanticGraph, bounds: &ComplexityBounds)
-        -> ReasoningResult<Explanation> {
+    fn simplest_explanation(
+        &self,
+        observation: &Graph,
+        background: &dyn SemanticGraph,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Explanation> {
         let explanations = self.abduce(observation, background, bounds)?;
-        explanations.into_iter()
+        explanations
+            .into_iter()
             .max_by(|a, b| a.score().total_cmp(&b.score()))
             .ok_or(ReasoningError::NoExplanationFound)
     }
@@ -821,13 +891,18 @@ impl SimpleAnalogy {
 }
 
 impl Analogy for SimpleAnalogy {
-    fn analogize(&self, source: &Graph, target: &Graph, bounds: &ComplexityBounds)
-        -> ReasoningResult<Mapping> {
+    fn analogize(
+        &self,
+        source: &Graph,
+        target: &Graph,
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<Mapping> {
         // Check complexity bounds
         if source.node_count() > bounds.max_graph_nodes
-            || target.node_count() > bounds.max_graph_nodes {
+            || target.node_count() > bounds.max_graph_nodes
+        {
             return Err(ReasoningError::ComplexityBoundExceeded(
-                "Graph too large for analogy".to_string()
+                "Graph too large for analogy".to_string(),
             ));
         }
 
@@ -877,8 +952,12 @@ impl Analogy for SimpleAnalogy {
         Ok(mapping)
     }
 
-    fn transfer(&self, source_knowledge: &Graph, mapping: &Mapping, target: &Graph)
-        -> ReasoningResult<Graph> {
+    fn transfer(
+        &self,
+        source_knowledge: &Graph,
+        mapping: &Mapping,
+        target: &Graph,
+    ) -> ReasoningResult<Graph> {
         // Create a new graph based on target, enriched with source structure
         let result = target.clone_graph();
 
@@ -978,7 +1057,11 @@ impl CausalReasoning for SimpleCausalReasoning {
         Ok(result)
     }
 
-    fn counterfactual(&self, actual: &Graph, hypothetical_change: &Graph) -> ReasoningResult<Graph> {
+    fn counterfactual(
+        &self,
+        actual: &Graph,
+        hypothetical_change: &Graph,
+    ) -> ReasoningResult<Graph> {
         // Counterfactual: "What if X had been different?"
         // We apply the hypothetical change and compute new state
         let result = actual.clone_graph();
@@ -998,16 +1081,21 @@ impl CausalReasoning for SimpleCausalReasoning {
         Ok(result)
     }
 
-    fn infer_causal_graph(&self, observations: &[Graph], bounds: &ComplexityBounds)
-        -> ReasoningResult<CausalGraph> {
+    fn infer_causal_graph(
+        &self,
+        observations: &[Graph],
+        bounds: &ComplexityBounds,
+    ) -> ReasoningResult<CausalGraph> {
         if observations.is_empty() {
             return Ok(CausalGraph::new(DagNN::new()));
         }
 
         if observations.len() > bounds.max_induction_examples {
-            return Err(ReasoningError::ComplexityBoundExceeded(
-                format!("Too many observations: {} > {}", observations.len(), bounds.max_induction_examples)
-            ));
+            return Err(ReasoningError::ComplexityBoundExceeded(format!(
+                "Too many observations: {} > {}",
+                observations.len(),
+                bounds.max_induction_examples
+            )));
         }
 
         // Use first observation as base graph
@@ -1138,7 +1226,8 @@ impl LearnableReasoning {
         // Softmax selection with temperature
         let temp = self.rule_temperature.value.max(0.01);
         let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_scores: Vec<f32> = scores.iter()
+        let exp_scores: Vec<f32> = scores
+            .iter()
             .map(|&s| ((s - max_score) / temp).exp())
             .collect();
         let sum: f32 = exp_scores.iter().sum();
@@ -1298,13 +1387,21 @@ impl BrainAwareReasoningResult {
 
     /// Create a result from brain routing
     pub fn from_brain_results(brain_results: MultiBrainResult) -> Self {
-        let combined = brain_results.primary.as_ref()
+        let combined = brain_results
+            .primary
+            .as_ref()
             .map(|r| r.graph.clone_graph())
             .unwrap_or_default();
-        let confidence = brain_results.primary.as_ref()
+        let confidence = brain_results
+            .primary
+            .as_ref()
             .map(|r| r.confidence)
             .unwrap_or(0.0);
-        let domains = brain_results.domains().iter().map(|s| s.to_string()).collect();
+        let domains = brain_results
+            .domains()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         Self {
             reasoning_trace: None,
             brain_results,
@@ -1334,7 +1431,10 @@ impl Debug for BrainAwareReasoning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrainAwareReasoning")
             .field("consult_brains_first", &self.consult_brains_first)
-            .field("brain_confidence_threshold", &self.brain_confidence_threshold)
+            .field(
+                "brain_confidence_threshold",
+                &self.brain_confidence_threshold,
+            )
             .field("available_domains", &self.bridge.available_domains())
             .finish()
     }
@@ -1406,7 +1506,9 @@ impl BrainAwareReasoning {
                     if let Some(primary) = &brain_results.primary {
                         if primary.confidence >= self.brain_confidence_threshold {
                             // Domain brain handled it with high confidence
-                            return Ok(BrainAwareReasoningResult::from_brain_results(brain_results));
+                            return Ok(BrainAwareReasoningResult::from_brain_results(
+                                brain_results,
+                            ));
                         }
                     }
                 }
@@ -1414,7 +1516,10 @@ impl BrainAwareReasoning {
         }
 
         // Use the reasoning engine
-        let derived = self.reasoning.logic.deduce(premises, rules, &self.reasoning.bounds)?;
+        let derived = self
+            .reasoning
+            .logic
+            .deduce(premises, rules, &self.reasoning.bounds)?;
 
         // Create combined result
         let combined = if derived.is_empty() {
@@ -1450,7 +1555,9 @@ impl BrainAwareReasoning {
                     if let Some(primary) = &brain_results.primary {
                         if primary.confidence >= self.brain_confidence_threshold {
                             // Domain brain can help with this goal
-                            return Ok(BrainAwareReasoningResult::from_brain_results(brain_results));
+                            return Ok(BrainAwareReasoningResult::from_brain_results(
+                                brain_results,
+                            ));
                         }
                     }
                 }
@@ -1458,7 +1565,10 @@ impl BrainAwareReasoning {
         }
 
         // Use the reasoning engine
-        let trace = self.reasoning.logic.prove(goal, premises, rules, &self.reasoning.bounds)?;
+        let trace = self
+            .reasoning
+            .logic
+            .prove(goal, premises, rules, &self.reasoning.bounds)?;
         Ok(BrainAwareReasoningResult::from_trace(trace))
     }
 
@@ -1478,7 +1588,9 @@ impl BrainAwareReasoning {
             }
             combined_confidence /= brain_results.results.len() as f32;
 
-            let combined = brain_results.primary.as_ref()
+            let combined = brain_results
+                .primary
+                .as_ref()
                 .map(|r| r.graph.clone_graph())
                 .unwrap_or_default();
 
@@ -1557,8 +1669,7 @@ mod tests {
     fn test_implication_creation() {
         let ant = make_graph("A");
         let con = make_graph("B");
-        let rule = Implication::new(1, "A implies B", ant, con)
-            .with_confidence(0.9);
+        let rule = Implication::new(1, "A implies B", ant, con).with_confidence(0.9);
 
         assert_eq!(rule.id, 1);
         assert_eq!(rule.confidence, 0.9);
@@ -1576,12 +1687,7 @@ mod tests {
 
     #[test]
     fn test_reasoning_step() {
-        let step = ReasoningStep::new(
-            0,
-            StepType::Assumption,
-            "test step",
-            make_graph("result"),
-        );
+        let step = ReasoningStep::new(0, StepType::Assumption, "test step", make_graph("result"));
 
         assert_eq!(step.step, 0);
         assert_eq!(step.confidence, 1.0);
@@ -1591,7 +1697,12 @@ mod tests {
     fn test_reasoning_trace_success() {
         let steps = vec![
             ReasoningStep::new(0, StepType::Assumption, "step 1", make_graph("a")),
-            ReasoningStep::new(1, StepType::ModusPonens { rule_id: 1 }, "step 2", make_graph("b")),
+            ReasoningStep::new(
+                1,
+                StepType::ModusPonens { rule_id: 1 },
+                "step 2",
+                make_graph("b"),
+            ),
         ];
 
         let trace = ReasoningTrace::success(steps, make_graph("conclusion"));

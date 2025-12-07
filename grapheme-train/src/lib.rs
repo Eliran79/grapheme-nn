@@ -19,7 +19,9 @@
 #![allow(clippy::only_used_in_recursion)]
 
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
-use grapheme_engine::{Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value};
+use grapheme_engine::{
+    Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,
+};
 use grapheme_math::{MathGraph, MathNode};
 use grapheme_polish::expr_to_polish;
 use petgraph::visit::EdgeRef;
@@ -115,7 +117,13 @@ impl LevelSpec {
     pub fn level_3() -> Self {
         Self {
             level: 3,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Pow],
+            ops: vec![
+                MathOp::Add,
+                MathOp::Sub,
+                MathOp::Mul,
+                MathOp::Div,
+                MathOp::Pow,
+            ],
             functions: vec![],
             max_depth: 3,
             allow_symbols: true,
@@ -128,8 +136,21 @@ impl LevelSpec {
     pub fn level_4() -> Self {
         Self {
             level: 4,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Pow],
-            functions: vec![MathFn::Sin, MathFn::Cos, MathFn::Tan, MathFn::Log, MathFn::Exp, MathFn::Sqrt],
+            ops: vec![
+                MathOp::Add,
+                MathOp::Sub,
+                MathOp::Mul,
+                MathOp::Div,
+                MathOp::Pow,
+            ],
+            functions: vec![
+                MathFn::Sin,
+                MathFn::Cos,
+                MathFn::Tan,
+                MathFn::Log,
+                MathFn::Exp,
+                MathFn::Sqrt,
+            ],
             max_depth: 3,
             allow_symbols: true,
             output: OutputType::Numeric,
@@ -141,7 +162,13 @@ impl LevelSpec {
     pub fn level_5() -> Self {
         Self {
             level: 5,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Pow],
+            ops: vec![
+                MathOp::Add,
+                MathOp::Sub,
+                MathOp::Mul,
+                MathOp::Div,
+                MathOp::Pow,
+            ],
             functions: vec![MathFn::Derive],
             max_depth: 4,
             allow_symbols: true,
@@ -154,7 +181,13 @@ impl LevelSpec {
     pub fn level_6() -> Self {
         Self {
             level: 6,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Pow],
+            ops: vec![
+                MathOp::Add,
+                MathOp::Sub,
+                MathOp::Mul,
+                MathOp::Div,
+                MathOp::Pow,
+            ],
             functions: vec![MathFn::Integrate],
             max_depth: 4,
             allow_symbols: true,
@@ -167,7 +200,13 @@ impl LevelSpec {
     pub fn level_7() -> Self {
         Self {
             level: 7,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Pow],
+            ops: vec![
+                MathOp::Add,
+                MathOp::Sub,
+                MathOp::Mul,
+                MathOp::Div,
+                MathOp::Pow,
+            ],
             functions: vec![],
             max_depth: 4,
             allow_symbols: true,
@@ -615,10 +654,7 @@ impl DataGenerator {
                     // Linear: a*x + b
                     let a = self.rand_int(1, 10);
                     let b = self.rand_int(1, 10);
-                    let expr = Expr::add(
-                        Expr::mul(Expr::int(a), Expr::symbol(var)),
-                        Expr::int(b),
-                    );
+                    let expr = Expr::add(Expr::mul(Expr::int(a), Expr::symbol(var)), Expr::int(b));
                     let deriv = self.symbolic.differentiate(&expr, var);
                     (expr, deriv)
                 }
@@ -717,10 +753,7 @@ impl DataGenerator {
                     // Simple linear: x + a = b
                     let a = self.rand_int(1, 10);
                     let b = self.rand_int(1, 20);
-                    Equation::new(
-                        Expr::add(Expr::symbol(var), Expr::int(a)),
-                        Expr::int(b),
-                    )
+                    Equation::new(Expr::add(Expr::symbol(var), Expr::int(a)), Expr::int(b))
                 }
                 _ => {
                     // Quadratic with integer roots: x^2 - (a+b)x + ab = 0 has roots a and b
@@ -750,7 +783,12 @@ impl DataGenerator {
                         _ => continue, // Skip infinite or no-solution cases
                     };
                     let id = self.next_id(7);
-                    examples.push(TrainingExample::symbolic(id, equation.lhs.clone(), solution_expr, 7));
+                    examples.push(TrainingExample::symbolic(
+                        id,
+                        equation.lhs.clone(),
+                        solution_expr,
+                        7,
+                    ));
                     self.stats.generated += 1;
                 }
                 Err(_) => {
@@ -834,7 +872,12 @@ impl Dataset {
 
     /// Create a dataset from examples
     pub fn from_examples(name: &str, examples: Vec<TrainingExample>) -> Self {
-        let levels: Vec<u8> = examples.iter().map(|e| e.level).collect::<std::collections::HashSet<_>>().into_iter().collect();
+        let levels: Vec<u8> = examples
+            .iter()
+            .map(|e| e.level)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
         let total = examples.len();
 
         Self {
@@ -879,12 +922,18 @@ impl Dataset {
         let train_end = (n as f64 * train_ratio) as usize;
         let val_end = train_end + (n as f64 * val_ratio) as usize;
 
-        let train = Dataset::from_examples(&format!("{}_train", self.metadata.name),
-            self.examples[..train_end].to_vec());
-        let val = Dataset::from_examples(&format!("{}_val", self.metadata.name),
-            self.examples[train_end..val_end].to_vec());
-        let test = Dataset::from_examples(&format!("{}_test", self.metadata.name),
-            self.examples[val_end..].to_vec());
+        let train = Dataset::from_examples(
+            &format!("{}_train", self.metadata.name),
+            self.examples[..train_end].to_vec(),
+        );
+        let val = Dataset::from_examples(
+            &format!("{}_val", self.metadata.name),
+            self.examples[train_end..val_end].to_vec(),
+        );
+        let test = Dataset::from_examples(
+            &format!("{}_test", self.metadata.name),
+            self.examples[val_end..].to_vec(),
+        );
 
         (train, val, test)
     }
@@ -1034,10 +1083,14 @@ impl GraphEditDistance {
         // Also compare average clique sizes
         let pred_avg_size = if pred_cliques > 0 {
             predicted.cliques.iter().map(|c| c.len()).sum::<usize>() as f32 / pred_cliques as f32
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let target_avg_size = if target_cliques > 0 {
             target.cliques.iter().map(|c| c.len()).sum::<usize>() as f32 / target_cliques as f32
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let size_diff = (pred_avg_size - target_avg_size).abs();
 
         let clique_mismatch = (clique_count_diff * 0.3 + size_diff * 0.1).min(5.0);
@@ -1080,292 +1133,6 @@ impl GraphEditDistance {
         let edge_cost = (self.edge_insertion_cost + self.edge_deletion_cost) * config.beta;
         let mismatch_cost = (self.node_mismatch_cost + self.edge_mismatch_cost) * config.gamma;
         node_cost + edge_cost + mismatch_cost + self.clique_mismatch * config.gamma
-    }
-}
-
-// ============================================================================
-// Supervised Edit Prediction Training (backend-092)
-// ============================================================================
-
-/// Edit operation for supervised training
-///
-/// Maps to grapheme_core::EditOp indices:
-/// - Keep = 0
-/// - Delete = 1
-/// - Modify = 2
-/// - Insert = 3
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditLabel {
-    /// Keep the character unchanged (index 0)
-    Keep = 0,
-    /// Delete the character (index 1)
-    Delete = 1,
-    /// Modify the character to something else (index 2)
-    Modify = 2,
-    /// Insert a character after this position (index 3)
-    Insert = 3,
-}
-
-impl EditLabel {
-    /// Convert to one-hot target vector
-    pub fn to_one_hot(&self) -> [f32; 4] {
-        let mut one_hot = [0.0; 4];
-        one_hot[*self as usize] = 1.0;
-        one_hot
-    }
-
-    /// Get the class index
-    pub fn index(&self) -> usize {
-        *self as usize
-    }
-}
-
-/// Result of edit sequence computation
-#[derive(Debug, Clone)]
-pub struct EditSequence {
-    /// Edit labels for each input character
-    pub labels: Vec<EditLabel>,
-    /// Characters to insert (for Insert operations)
-    pub insertions: Vec<Option<char>>,
-    /// Characters to modify to (for Modify operations)
-    pub modifications: Vec<Option<char>>,
-}
-
-/// Compute edit sequence from input to target string using O(nm) dynamic programming
-///
-/// This uses a modified Levenshtein algorithm to find the optimal edit sequence,
-/// then maps operations to per-character labels.
-///
-/// Complexity: O(n*m) where n=input length, m=target length
-/// This is polynomial time, NOT NP-hard.
-pub fn compute_edit_sequence(input: &str, target: &str) -> EditSequence {
-    let input_chars: Vec<char> = input.chars().collect();
-    let target_chars: Vec<char> = target.chars().collect();
-    let n = input_chars.len();
-    let m = target_chars.len();
-
-    // Handle edge cases
-    if n == 0 {
-        return EditSequence {
-            labels: vec![],
-            insertions: vec![],
-            modifications: vec![],
-        };
-    }
-
-    if m == 0 {
-        // Delete everything
-        return EditSequence {
-            labels: vec![EditLabel::Delete; n],
-            insertions: vec![None; n],
-            modifications: vec![None; n],
-        };
-    }
-
-    // DP table: dp[i][j] = min edits to transform input[0..i] to target[0..j]
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-
-    // Base cases
-    for (i, row) in dp.iter_mut().enumerate() {
-        row[0] = i; // delete all
-    }
-    for (j, val) in dp[0].iter_mut().enumerate() {
-        *val = j; // insert all
-    }
-
-    // Fill DP table
-    for i in 1..=n {
-        for j in 1..=m {
-            if input_chars[i - 1] == target_chars[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1]; // match, no cost
-            } else {
-                dp[i][j] = 1 + dp[i - 1][j - 1]  // substitute
-                    .min(dp[i - 1][j])            // delete
-                    .min(dp[i][j - 1]);           // insert
-            }
-        }
-    }
-
-    // Backtrack to find edit sequence
-    let mut labels = vec![EditLabel::Keep; n];
-    let mut insertions = vec![None; n];
-    let mut modifications = vec![None; n];
-
-    let mut i = n;
-    let mut j = m;
-
-    while i > 0 || j > 0 {
-        if i > 0 && j > 0 && input_chars[i - 1] == target_chars[j - 1] {
-            // Match - keep
-            labels[i - 1] = EditLabel::Keep;
-            i -= 1;
-            j -= 1;
-        } else if i > 0 && j > 0 && dp[i][j] == dp[i - 1][j - 1] + 1 {
-            // Substitute - modify
-            labels[i - 1] = EditLabel::Modify;
-            modifications[i - 1] = Some(target_chars[j - 1]);
-            i -= 1;
-            j -= 1;
-        } else if i > 0 && dp[i][j] == dp[i - 1][j] + 1 {
-            // Delete
-            labels[i - 1] = EditLabel::Delete;
-            i -= 1;
-        } else if j > 0 {
-            // Insert - mark the previous input position
-            if i > 0 {
-                labels[i - 1] = EditLabel::Insert;
-                insertions[i - 1] = Some(target_chars[j - 1]);
-            }
-            j -= 1;
-        } else {
-            break;
-        }
-    }
-
-    EditSequence {
-        labels,
-        insertions,
-        modifications,
-    }
-}
-
-/// Compute cross-entropy loss between predicted probabilities and target label
-///
-/// loss = -sum(target_i * log(pred_i + epsilon))
-///
-/// For one-hot targets, this simplifies to -log(pred[target_class])
-///
-/// Complexity: O(num_classes) = O(4) = O(1)
-pub fn cross_entropy_loss(predicted_probs: &[f32], target: EditLabel) -> f32 {
-    let epsilon = 1e-7;
-    let target_idx = target.index();
-
-    // Clamp probability to avoid log(0)
-    let prob = predicted_probs.get(target_idx).copied().unwrap_or(0.25);
-    let clamped = prob.max(epsilon).min(1.0 - epsilon);
-
-    -clamped.ln()
-}
-
-/// Compute gradient of cross-entropy loss with respect to logits (pre-softmax)
-///
-/// For softmax + cross-entropy, the gradient is simply: pred - target
-/// This is the well-known result that makes training efficient.
-///
-/// Complexity: O(num_classes) = O(4) = O(1)
-pub fn cross_entropy_gradient(predicted_probs: &[f32], target: EditLabel) -> Vec<f32> {
-    let target_one_hot = target.to_one_hot();
-
-    predicted_probs
-        .iter()
-        .zip(target_one_hot.iter())
-        .map(|(&pred, &tgt)| pred - tgt)
-        .collect()
-}
-
-/// Result of computing edit prediction loss for a batch
-#[derive(Debug, Clone)]
-pub struct EditPredictionLoss {
-    /// Total cross-entropy loss (averaged over batch)
-    pub loss: f32,
-    /// Per-node gradients (outer: batch, inner: nodes, innermost: 4 classes)
-    pub gradients: Vec<Vec<Vec<f32>>>,
-    /// Accuracy: fraction of correctly predicted edits
-    pub accuracy: f32,
-}
-
-/// Compute supervised edit prediction loss for a batch of input-target pairs
-///
-/// This is the core training function that:
-/// 1. Computes ground-truth edit sequences (O(n*m) each)
-/// 2. Gets model predictions (forward pass)
-/// 3. Computes cross-entropy loss
-/// 4. Computes gradients for backpropagation
-///
-/// Total complexity: O(batch_size * max(n*m, n*hidden_dim))
-/// All operations are polynomial time.
-pub fn compute_edit_prediction_loss(
-    model: &grapheme_core::GraphTransformNet,
-    inputs: &[&str],
-    targets: &[&str],
-) -> EditPredictionLoss {
-    assert_eq!(inputs.len(), targets.len(), "Input/target count mismatch");
-
-    let batch_size = inputs.len();
-    if batch_size == 0 {
-        return EditPredictionLoss {
-            loss: 0.0,
-            gradients: vec![],
-            accuracy: 1.0,
-        };
-    }
-
-    let mut total_loss = 0.0;
-    let mut total_correct = 0;
-    let mut total_predictions = 0;
-    let mut all_gradients = Vec::with_capacity(batch_size);
-
-    for (input, target) in inputs.iter().zip(targets.iter()) {
-        // Compute ground truth edit sequence - O(n*m)
-        let edit_seq = compute_edit_sequence(input, target);
-
-        // Create graph and get predictions - O(n*hidden_dim)
-        let dag = match grapheme_core::DagNN::from_text(input) {
-            Ok(d) => d,
-            Err(_) => {
-                all_gradients.push(vec![]);
-                continue;
-            }
-        };
-
-        let predictions = model.predict_edits(&dag);
-
-        let mut node_gradients = Vec::with_capacity(predictions.len());
-
-        // Compute loss and gradients for each node
-        for (i, (_node_id, _predicted_op, probs)) in predictions.iter().enumerate() {
-            let target_label = edit_seq.labels.get(i).copied().unwrap_or(EditLabel::Keep);
-
-            // Cross-entropy loss - O(4)
-            total_loss += cross_entropy_loss(probs, target_label);
-
-            // Gradient - O(4)
-            let grad = cross_entropy_gradient(probs, target_label);
-            node_gradients.push(grad);
-
-            // Accuracy tracking
-            let predicted_idx = probs
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-
-            if predicted_idx == target_label.index() {
-                total_correct += 1;
-            }
-            total_predictions += 1;
-        }
-
-        all_gradients.push(node_gradients);
-    }
-
-    let avg_loss = if total_predictions > 0 {
-        total_loss / total_predictions as f32
-    } else {
-        0.0
-    };
-
-    let accuracy = if total_predictions > 0 {
-        total_correct as f32 / total_predictions as f32
-    } else {
-        1.0
-    };
-
-    EditPredictionLoss {
-        loss: avg_loss,
-        gradients: all_gradients,
-        accuracy,
     }
 }
 
@@ -1482,7 +1249,9 @@ impl WeisfeilerLehmanKernel {
 
     /// Initialize colors for a GRAPHEME graph based on node types
     fn init_colors_grapheme(&self, graph: &GraphemeGraph) -> Vec<u64> {
-        graph.graph.node_indices()
+        graph
+            .graph
+            .node_indices()
             .map(|idx| {
                 let node = &graph.graph[idx];
                 self.hash_node_type(&node.node_type)
@@ -1492,7 +1261,9 @@ impl WeisfeilerLehmanKernel {
 
     /// Initialize colors for a MathGraph based on node types
     fn init_colors_math(&self, graph: &MathGraph) -> Vec<u64> {
-        graph.graph.node_indices()
+        graph
+            .graph
+            .node_indices()
             .map(|idx| {
                 let node = &graph.graph[idx];
                 self.hash_math_node(node)
@@ -1565,61 +1336,73 @@ impl WeisfeilerLehmanKernel {
     fn refine_colors_grapheme(&self, graph: &GraphemeGraph, colors: &[u64]) -> Vec<u64> {
         let node_indices: Vec<_> = graph.graph.node_indices().collect();
 
-        node_indices.iter().map(|&idx| {
-            let own_color = colors[idx.index()];
+        node_indices
+            .iter()
+            .map(|&idx| {
+                let own_color = colors[idx.index()];
 
-            // Collect neighbor colors (both incoming and outgoing)
-            let mut neighbor_colors: Vec<u64> = Vec::new();
+                // Collect neighbor colors (both incoming and outgoing)
+                let mut neighbor_colors: Vec<u64> = Vec::new();
 
-            for edge in graph.graph.edges(idx) {
-                if let Some(&color) = colors.get(edge.target().index()) {
-                    neighbor_colors.push(color);
+                for edge in graph.graph.edges(idx) {
+                    if let Some(&color) = colors.get(edge.target().index()) {
+                        neighbor_colors.push(color);
+                    }
                 }
-            }
-            for edge in graph.graph.edges_directed(idx, petgraph::Direction::Incoming) {
-                if let Some(&color) = colors.get(edge.source().index()) {
-                    neighbor_colors.push(color);
+                for edge in graph
+                    .graph
+                    .edges_directed(idx, petgraph::Direction::Incoming)
+                {
+                    if let Some(&color) = colors.get(edge.source().index()) {
+                        neighbor_colors.push(color);
+                    }
                 }
-            }
 
-            // Sort neighbor colors for canonical ordering
-            neighbor_colors.sort();
+                // Sort neighbor colors for canonical ordering
+                neighbor_colors.sort();
 
-            // Hash own color with sorted neighbor colors
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            own_color.hash(&mut hasher);
-            neighbor_colors.hash(&mut hasher);
-            hasher.finish()
-        }).collect()
+                // Hash own color with sorted neighbor colors
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                own_color.hash(&mut hasher);
+                neighbor_colors.hash(&mut hasher);
+                hasher.finish()
+            })
+            .collect()
     }
 
     /// Refine colors for MathGraph (WL color refinement step)
     fn refine_colors_math(&self, graph: &MathGraph, colors: &[u64]) -> Vec<u64> {
         let node_indices: Vec<_> = graph.graph.node_indices().collect();
 
-        node_indices.iter().map(|&idx| {
-            let own_color = colors[idx.index()];
+        node_indices
+            .iter()
+            .map(|&idx| {
+                let own_color = colors[idx.index()];
 
-            let mut neighbor_colors: Vec<u64> = Vec::new();
+                let mut neighbor_colors: Vec<u64> = Vec::new();
 
-            for edge in graph.graph.edges(idx) {
-                if let Some(&color) = colors.get(edge.target().index()) {
-                    neighbor_colors.push(color);
+                for edge in graph.graph.edges(idx) {
+                    if let Some(&color) = colors.get(edge.target().index()) {
+                        neighbor_colors.push(color);
+                    }
                 }
-            }
-            for edge in graph.graph.edges_directed(idx, petgraph::Direction::Incoming) {
-                if let Some(&color) = colors.get(edge.source().index()) {
-                    neighbor_colors.push(color);
+                for edge in graph
+                    .graph
+                    .edges_directed(idx, petgraph::Direction::Incoming)
+                {
+                    if let Some(&color) = colors.get(edge.source().index()) {
+                        neighbor_colors.push(color);
+                    }
                 }
-            }
 
-            neighbor_colors.sort();
+                neighbor_colors.sort();
 
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            own_color.hash(&mut hasher);
-            neighbor_colors.hash(&mut hasher);
-            hasher.finish()
-        }).collect()
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                own_color.hash(&mut hasher);
+                neighbor_colors.hash(&mut hasher);
+                hasher.finish()
+            })
+            .collect()
     }
 
     /// Compute a histogram of colors
@@ -1634,7 +1417,11 @@ impl WeisfeilerLehmanKernel {
     /// Compute similarity between two color histograms
     ///
     /// Uses normalized histogram intersection (min-based Jaccard-like similarity)
-    fn histogram_similarity(&self, hist1: &HashMap<u64, usize>, hist2: &HashMap<u64, usize>) -> f32 {
+    fn histogram_similarity(
+        &self,
+        hist1: &HashMap<u64, usize>,
+        hist2: &HashMap<u64, usize>,
+    ) -> f32 {
         if hist1.is_empty() && hist2.is_empty() {
             return 1.0;
         }
@@ -1688,7 +1475,11 @@ impl GraphEditDistance {
     ///
     /// Returns a weighted combination of structural (count-based) and
     /// topological (WL-based) differences.
-    pub fn compute_combined(predicted: &GraphemeGraph, target: &GraphemeGraph, wl_weight: f32) -> Self {
+    pub fn compute_combined(
+        predicted: &GraphemeGraph,
+        target: &GraphemeGraph,
+        wl_weight: f32,
+    ) -> Self {
         let count_ged = Self::compute(predicted, target);
         let wl_similarity = Self::compute_wl(predicted, target);
 
@@ -1708,7 +1499,11 @@ impl GraphEditDistance {
     }
 
     /// Compute combined loss for MathGraphs
-    pub fn compute_combined_math(predicted: &MathGraph, target: &MathGraph, wl_weight: f32) -> Self {
+    pub fn compute_combined_math(
+        predicted: &MathGraph,
+        target: &MathGraph,
+        wl_weight: f32,
+    ) -> Self {
         let count_ged = Self::compute_math(predicted, target);
         let wl_similarity = Self::compute_wl_math(predicted, target);
         let wl_distance = 1.0 - wl_similarity;
@@ -1848,7 +1643,10 @@ impl GraphEditDistance {
                         let degree_cost = (degree1 as f32 - degree2 as f32).abs()
                             / (1 + degree1.max(degree2)) as f32;
 
-                        NodeCost { label_cost, degree_cost }
+                        NodeCost {
+                            label_cost,
+                            degree_cost,
+                        }
                     })
                     .collect()
             })
@@ -1879,17 +1677,23 @@ impl GraphEditDistance {
                         let label_cost = if Self::math_nodes_equal(node1, node2) {
                             0.0
                         } else {
-                            0.5 + 0.5 * if Self::math_node_category(node1) == Self::math_node_category(node2) {
-                                0.0
-                            } else {
-                                1.0
-                            }
+                            0.5 + 0.5
+                                * if Self::math_node_category(node1)
+                                    == Self::math_node_category(node2)
+                                {
+                                    0.0
+                                } else {
+                                    1.0
+                                }
                         };
 
                         let degree_cost = (degree1 as f32 - degree2 as f32).abs()
                             / (1 + degree1.max(degree2)) as f32;
 
-                        NodeCost { label_cost, degree_cost }
+                        NodeCost {
+                            label_cost,
+                            degree_cost,
+                        }
                     })
                     .collect()
             })
@@ -1913,10 +1717,10 @@ impl GraphEditDistance {
     fn math_node_category(node: &MathNode) -> u8 {
         match node {
             MathNode::Integer(_) | MathNode::Float(_) => 0, // Numeric
-            MathNode::Symbol(_) => 1, // Variable
-            MathNode::Operator(_) => 2, // Operator
-            MathNode::Function(_) => 3, // Function
-            MathNode::Result => 4, // Result
+            MathNode::Symbol(_) => 1,                       // Variable
+            MathNode::Operator(_) => 2,                     // Operator
+            MathNode::Function(_) => 3,                     // Function
+            MathNode::Result => 4,                          // Result
         }
     }
 
@@ -1977,7 +1781,8 @@ impl GraphEditDistance {
             let dst1 = indices1.iter().position(|&idx| idx == edge1.target());
 
             if let (Some(s1), Some(d1)) = (src1, dst1) {
-                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1]) {
+                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1])
+                {
                     // Check if edge exists in g2
                     if indices2.len() > s2.max(d2) {
                         let idx_s2 = indices2[s2];
@@ -2017,7 +1822,8 @@ impl GraphEditDistance {
             let dst1 = indices1.iter().position(|&idx| idx == edge1.target());
 
             if let (Some(s1), Some(d1)) = (src1, dst1) {
-                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1]) {
+                if let (Some(s2), Some(d2)) = (assignment.assignment[s1], assignment.assignment[d1])
+                {
                     if indices2.len() > s2.max(d2) {
                         let idx_s2 = indices2[s2];
                         let idx_d2 = indices2[d2];
@@ -2240,11 +2046,16 @@ fn compute_soft_node_costs(
 
             // Type mismatch cost (0-1)
             let type_cost = if std::mem::discriminant(&node1.node_type)
-                              == std::mem::discriminant(&node2.node_type) {
+                == std::mem::discriminant(&node2.node_type)
+            {
                 // Same type category
                 match (&node1.node_type, &node2.node_type) {
                     (NodeType::Input(c1), NodeType::Input(c2)) => {
-                        if c1 == c2 { 0.0 } else { 0.5 }
+                        if c1 == c2 {
+                            0.0
+                        } else {
+                            0.5
+                        }
                     }
                     _ => 0.0,
                 }
@@ -2452,22 +2263,19 @@ pub fn compute_structural_loss(
     let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
 
     // Compute differentiable node cost
-    let (node_cost, node_gradients) = compute_differentiable_node_cost(
-        &cost_matrix, &assignment, n1, n2
-    );
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
 
     // Compute differentiable edge cost
-    let (edge_cost, edge_gradients) = compute_differentiable_edge_cost(
-        predicted, target, &assignment, n1, n2
-    );
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost(predicted, target, &assignment, n1, n2);
 
     // Clique cost placeholder (to be implemented in backend-098)
     let clique_cost = 0.0f32;
 
     // Total weighted loss
-    let total_loss = config.alpha * node_cost
-                   + config.beta * edge_cost
-                   + config.gamma * clique_cost;
+    let total_loss =
+        config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
 
     StructuralLossResult {
         total_loss,
@@ -2535,17 +2343,14 @@ pub fn compute_structural_loss_math(
     }
 
     let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
-    let (node_cost, node_gradients) = compute_differentiable_node_cost(
-        &cost_matrix, &assignment, n1, n2
-    );
-    let (edge_cost, edge_gradients) = compute_differentiable_edge_cost_math(
-        predicted, target, &assignment, n1, n2
-    );
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost_math(predicted, target, &assignment, n1, n2);
 
     let clique_cost = 0.0f32;
-    let total_loss = config.alpha * node_cost
-                   + config.beta * edge_cost
-                   + config.gamma * clique_cost;
+    let total_loss =
+        config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
 
     StructuralLossResult {
         total_loss,
@@ -2588,7 +2393,8 @@ fn compute_soft_node_costs_math(
             let type_cost = if GraphEditDistance::math_nodes_equal(node1, node2) {
                 0.0
             } else if GraphEditDistance::math_node_category(node1)
-                    == GraphEditDistance::math_node_category(node2) {
+                == GraphEditDistance::math_node_category(node2)
+            {
                 0.5
             } else {
                 1.0
@@ -2835,27 +2641,69 @@ pub struct HardwareSection {
 }
 
 // Default value functions for serde
-fn default_batch_size() -> usize { 64 }
-fn default_epochs_per_level() -> usize { 10 }
-fn default_learning_rate() -> f64 { 0.001 }
-fn default_patience() -> usize { 5 }
-fn default_checkpoint_every() -> usize { 2 }
-fn default_optimizer_type() -> String { "adam".to_string() }
-fn default_beta1() -> f64 { 0.9 }
-fn default_beta2() -> f64 { 0.999 }
-fn default_epsilon() -> f64 { 1e-8 }
-fn default_weight_decay() -> f64 { 0.0001 }
-fn default_node_cost() -> f64 { 1.0 }
-fn default_edge_cost() -> f64 { 0.5 }
-fn default_clique_weight() -> f64 { 2.0 }
-fn default_start_level() -> u8 { 1 }
-fn default_end_level() -> u8 { 7 }
-fn default_advance_threshold() -> f64 { 0.95 }
-fn default_min_epochs() -> usize { 5 }
-fn default_train_data() -> String { "data/generated".to_string() }
-fn default_output_dir() -> String { "checkpoints".to_string() }
-fn default_log_file() -> String { "training.log".to_string() }
-fn default_parallel() -> bool { true }
+fn default_batch_size() -> usize {
+    64
+}
+fn default_epochs_per_level() -> usize {
+    10
+}
+fn default_learning_rate() -> f64 {
+    0.001
+}
+fn default_patience() -> usize {
+    5
+}
+fn default_checkpoint_every() -> usize {
+    2
+}
+fn default_optimizer_type() -> String {
+    "adam".to_string()
+}
+fn default_beta1() -> f64 {
+    0.9
+}
+fn default_beta2() -> f64 {
+    0.999
+}
+fn default_epsilon() -> f64 {
+    1e-8
+}
+fn default_weight_decay() -> f64 {
+    0.0001
+}
+fn default_node_cost() -> f64 {
+    1.0
+}
+fn default_edge_cost() -> f64 {
+    0.5
+}
+fn default_clique_weight() -> f64 {
+    2.0
+}
+fn default_start_level() -> u8 {
+    1
+}
+fn default_end_level() -> u8 {
+    7
+}
+fn default_advance_threshold() -> f64 {
+    0.95
+}
+fn default_min_epochs() -> usize {
+    5
+}
+fn default_train_data() -> String {
+    "data/generated".to_string()
+}
+fn default_output_dir() -> String {
+    "checkpoints".to_string()
+}
+fn default_log_file() -> String {
+    "training.log".to_string()
+}
+fn default_parallel() -> bool {
+    true
+}
 
 impl Default for TrainingSection {
     fn default() -> Self {
@@ -3023,7 +2871,9 @@ impl Trainer {
             return 0.0;
         }
 
-        let correct = dataset.examples.iter()
+        let correct = dataset
+            .examples
+            .iter()
             .filter(|ex| self.validate_example(ex))
             .count();
 
@@ -3276,7 +3126,11 @@ pub enum LRScheduler {
     /// Linear warmup: lr increases linearly for warmup_steps, then constant
     WarmupLR { warmup_steps: usize },
     /// Warmup then cosine decay
-    WarmupCosineDecay { warmup_steps: usize, total_steps: usize, eta_min: f32 },
+    WarmupCosineDecay {
+        warmup_steps: usize,
+        total_steps: usize,
+        eta_min: f32,
+    },
 }
 
 impl LRScheduler {
@@ -3290,14 +3144,13 @@ impl LRScheduler {
                 base_lr * gamma.powi(num_decays as i32)
             }
 
-            LRScheduler::ExponentialLR { gamma } => {
-                base_lr * gamma.powi(epoch as i32)
-            }
+            LRScheduler::ExponentialLR { gamma } => base_lr * gamma.powi(epoch as i32),
 
             LRScheduler::CosineAnnealingLR { t_max, eta_min } => {
                 let t = (epoch % t_max) as f32;
                 let t_max = *t_max as f32;
-                eta_min + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
+                eta_min
+                    + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
             }
 
             LRScheduler::WarmupLR { warmup_steps } => {
@@ -3308,13 +3161,19 @@ impl LRScheduler {
                 }
             }
 
-            LRScheduler::WarmupCosineDecay { warmup_steps, total_steps, eta_min } => {
+            LRScheduler::WarmupCosineDecay {
+                warmup_steps,
+                total_steps,
+                eta_min,
+            } => {
                 if epoch < *warmup_steps {
                     base_lr * (epoch + 1) as f32 / *warmup_steps as f32
                 } else {
                     let t = (epoch - warmup_steps) as f32;
                     let t_max = (total_steps - warmup_steps) as f32;
-                    eta_min + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
+                    eta_min
+                        + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos())
+                            / 2.0
                 }
             }
         }
@@ -3399,7 +3258,8 @@ impl TrainingMetrics {
         }
 
         let recent = &self.epoch_losses[self.epoch_losses.len() - window..];
-        let prev = &self.epoch_losses[self.epoch_losses.len() - window - 1..self.epoch_losses.len() - 1];
+        let prev =
+            &self.epoch_losses[self.epoch_losses.len() - window - 1..self.epoch_losses.len() - 1];
 
         let recent_avg: f32 = recent.iter().sum::<f32>() / recent.len() as f32;
         let prev_avg: f32 = prev.iter().sum::<f32>() / prev.len() as f32;
@@ -3624,12 +3484,8 @@ fn validate_symbolic_expr(expr: &Expr, max_depth: usize) -> Result<(), String> {
         Expr::Value(v) => {
             // Validate value types
             match v {
-                Value::Symbol(s) if s.is_empty() => {
-                    Err("Empty symbol name".to_string())
-                }
-                Value::Rational(_, 0) => {
-                    Err("Division by zero in rational".to_string())
-                }
+                Value::Symbol(s) if s.is_empty() => Err("Empty symbol name".to_string()),
+                Value::Rational(_, 0) => Err("Division by zero in rational".to_string()),
                 _ => Ok(()),
             }
         }
@@ -3637,9 +3493,7 @@ fn validate_symbolic_expr(expr: &Expr, max_depth: usize) -> Result<(), String> {
             validate_symbolic_expr(left, max_depth - 1)?;
             validate_symbolic_expr(right, max_depth - 1)
         }
-        Expr::UnaryOp { operand, .. } => {
-            validate_symbolic_expr(operand, max_depth - 1)
-        }
+        Expr::UnaryOp { operand, .. } => validate_symbolic_expr(operand, max_depth - 1),
         Expr::Function { args, .. } => {
             for arg in args {
                 validate_symbolic_expr(arg, max_depth - 1)?;
@@ -3689,7 +3543,9 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
             // Validate input expression
             if let Err(e) = validate_symbolic_expr(&example.input_expr, MAX_DEPTH) {
                 report.invalid += 1;
-                report.errors.push(format!("{}: input expr - {}", example.id, e));
+                report
+                    .errors
+                    .push(format!("{}: input expr - {}", example.id, e));
                 continue;
             }
 
@@ -3697,7 +3553,9 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
             if let Some(ref output_expr) = example.expected_symbolic {
                 if let Err(e) = validate_symbolic_expr(output_expr, MAX_DEPTH) {
                     report.invalid += 1;
-                    report.errors.push(format!("{}: output expr - {}", example.id, e));
+                    report
+                        .errors
+                        .push(format!("{}: output expr - {}", example.id, e));
                     continue;
                 }
             }
@@ -3890,7 +3748,9 @@ impl Pipeline {
         // Try to extract math expression from natural language
         let expr = match self.extract_expression(input) {
             Ok(e) => {
-                result.steps.push(format!("  Extracted: {}", expr_to_polish(&e)));
+                result
+                    .steps
+                    .push(format!("  Extracted: {}", expr_to_polish(&e)));
                 e
             }
             Err(e) => {
@@ -3901,21 +3761,32 @@ impl Pipeline {
 
         // Step 2: Create NL graph (Layer 4)
         let nl_graph = GraphemeGraph::from_text(input);
-        result.steps.push(format!("  NL graph: {} nodes", nl_graph.graph.node_count()));
+        result
+            .steps
+            .push(format!("  NL graph: {} nodes", nl_graph.graph.node_count()));
         result.nl_graph = Some(nl_graph);
 
         // Step 3: Create math graph (Layer 3)
-        result.steps.push("Layer 3: Building math graph".to_string());
+        result
+            .steps
+            .push("Layer 3: Building math graph".to_string());
         let math_graph = MathGraph::from_expr(&expr);
-        result.steps.push(format!("  Math graph: {} nodes, {} edges",
-            math_graph.node_count(), math_graph.edge_count()));
+        result.steps.push(format!(
+            "  Math graph: {} nodes, {} edges",
+            math_graph.node_count(),
+            math_graph.edge_count()
+        ));
         result.math_graph = Some(math_graph);
 
         // Step 4: Optimize expression (Layer 2)
-        result.steps.push("Layer 2: Optimizing expression".to_string());
+        result
+            .steps
+            .push("Layer 2: Optimizing expression".to_string());
         let optimizer = grapheme_polish::Optimizer::with_defaults();
         let optimized = optimizer.optimize_fixpoint(&expr);
-        result.steps.push(format!("  Optimized: {}", expr_to_polish(&optimized)));
+        result
+            .steps
+            .push(format!("  Optimized: {}", expr_to_polish(&optimized)));
         result.optimized_expr = Some(optimized.clone());
 
         // Step 5: Evaluate (Layer 1)
@@ -3985,7 +3856,10 @@ impl Pipeline {
         }
 
         // Handle "calculate X" patterns
-        if cleaned.starts_with("calculate ") || cleaned.starts_with("compute ") || cleaned.starts_with("evaluate ") {
+        if cleaned.starts_with("calculate ")
+            || cleaned.starts_with("compute ")
+            || cleaned.starts_with("evaluate ")
+        {
             let rest = cleaned
                 .strip_prefix("calculate ")
                 .or_else(|| cleaned.strip_prefix("compute "))
@@ -4047,8 +3921,14 @@ impl Pipeline {
             let bounds_str = &rest[from_idx + 6..];
 
             if let Some(to_idx) = bounds_str.find(" to ") {
-                let lower: f64 = bounds_str[..to_idx].trim().parse().map_err(|_| "Invalid lower bound")?;
-                let upper: f64 = bounds_str[to_idx + 4..].trim().parse().map_err(|_| "Invalid upper bound")?;
+                let lower: f64 = bounds_str[..to_idx]
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Invalid lower bound")?;
+                let upper: f64 = bounds_str[to_idx + 4..]
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Invalid upper bound")?;
 
                 let expr = self.parse_math_expression(expr_str)?;
 
@@ -4067,7 +3947,8 @@ impl Pipeline {
 
         // Indefinite integral
         let expr = self.parse_math_expression(rest)?;
-        self.symbolic.integrate(&expr, "x")
+        self.symbolic
+            .integrate(&expr, "x")
             .map_err(|e| format!("Integration error: {:?}", e))
     }
 
@@ -4155,14 +4036,21 @@ impl Pipeline {
     ///
     /// This provides significant speedup for batch inference.
     pub fn process_batch(&self, inputs: &[&str]) -> Vec<PipelineResult> {
-        inputs.par_iter().map(|&input| self.process(input)).collect()
+        inputs
+            .par_iter()
+            .map(|&input| self.process(input))
+            .collect()
     }
 
     /// Run training mode on a dataset
     ///
     /// Uses parallel processing via Rayon for improved performance.
     /// Each example in the dataset is processed in parallel within each epoch.
-    pub fn train(&mut self, dataset: &Dataset, config: &TrainingConfig) -> TrainingResult<TrainingMetrics> {
+    pub fn train(
+        &mut self,
+        dataset: &Dataset,
+        config: &TrainingConfig,
+    ) -> TrainingResult<TrainingMetrics> {
         self.mode = PipelineMode::Training;
 
         let mut metrics = TrainingMetrics::default();
@@ -4170,7 +4058,8 @@ impl Pipeline {
 
         for _epoch in 0..config.epochs {
             // Use Rayon's parallel fold/reduce for thread-safe accumulation
-            let (total_loss, batch_count): (f64, usize) = dataset.examples
+            let (total_loss, batch_count): (f64, usize) = dataset
+                .examples
                 .par_iter()
                 .filter_map(|example| {
                     // Get input expression in polish notation
@@ -4209,11 +4098,11 @@ impl Pipeline {
                 })
                 .fold(
                     || (0.0f64, 0usize),
-                    |(acc_loss, acc_count), loss| (acc_loss + loss, acc_count + 1)
+                    |(acc_loss, acc_count), loss| (acc_loss + loss, acc_count + 1),
                 )
                 .reduce(
                     || (0.0f64, 0usize),
-                    |(a_loss, a_count), (b_loss, b_count)| (a_loss + b_loss, a_count + b_count)
+                    |(a_loss, a_count), (b_loss, b_count)| (a_loss + b_loss, a_count + b_count),
                 );
 
             // Complete epoch if we had any examples
@@ -4263,9 +4152,9 @@ pub fn quick_eval(input: &str) -> Option<f64> {
 pub fn quick_symbolic(input: &str) -> Option<String> {
     let pipeline = Pipeline::new();
     let result = pipeline.process(input);
-    result.symbolic_result.or_else(|| {
-        result.numeric_result.map(|n| format!("{}", n))
-    })
+    result
+        .symbolic_result
+        .or_else(|| result.numeric_result.map(|n| format!("{}", n)))
 }
 
 // ============================================================================
@@ -4316,9 +4205,11 @@ mod tests {
             // Should have bindings
             assert!(!example.bindings.is_empty());
             // Polish should contain a symbol
-            assert!(example.input_polish.contains('x')
-                || example.input_polish.contains('y')
-                || example.input_polish.contains('z'));
+            assert!(
+                example.input_polish.contains('x')
+                    || example.input_polish.contains('y')
+                    || example.input_polish.contains('z')
+            );
         }
     }
 
@@ -4370,8 +4261,7 @@ mod tests {
         let examples = generator.generate_curriculum(5);
 
         // Should have examples from all 7 levels
-        let levels: std::collections::HashSet<u8> =
-            examples.iter().map(|e| e.level).collect();
+        let levels: std::collections::HashSet<u8> = examples.iter().map(|e| e.level).collect();
         assert!(levels.len() >= 5); // At least 5 levels with generated examples
     }
 
@@ -4526,7 +4416,10 @@ mod tests {
         let g2 = GraphemeGraph::from_text("Hello");
 
         let similarity = GraphEditDistance::compute_wl(&g1, &g2);
-        assert!((similarity - 1.0).abs() < 1e-6, "Identical graphs should have similarity 1.0");
+        assert!(
+            (similarity - 1.0).abs() < 1e-6,
+            "Identical graphs should have similarity 1.0"
+        );
     }
 
     #[test]
@@ -4536,7 +4429,10 @@ mod tests {
 
         let similarity = GraphEditDistance::compute_wl(&g1, &g2);
         // Different characters means different initial colors
-        assert!(similarity < 0.5, "Different graphs should have low similarity");
+        assert!(
+            similarity < 0.5,
+            "Different graphs should have low similarity"
+        );
     }
 
     #[test]
@@ -4546,7 +4442,10 @@ mod tests {
 
         let similarity = GraphEditDistance::compute_wl(&g1, &g2);
         // Should be high but not 1.0 (extra character)
-        assert!(similarity > 0.6, "Similar graphs should have high similarity");
+        assert!(
+            similarity > 0.6,
+            "Similar graphs should have high similarity"
+        );
         assert!(similarity < 1.0, "Different graphs should not be identical");
     }
 
@@ -4557,7 +4456,10 @@ mod tests {
 
         let kernel = WeisfeilerLehmanKernel::new();
         let similarity = kernel.compute(&g1, &g2);
-        assert!((similarity - 1.0).abs() < 1e-6, "Empty graphs should be identical");
+        assert!(
+            (similarity - 1.0).abs() < 1e-6,
+            "Empty graphs should be identical"
+        );
     }
 
     #[test]
@@ -4566,7 +4468,10 @@ mod tests {
         let g2 = GraphemeGraph::new();
 
         let similarity = GraphEditDistance::compute_wl(&g1, &g2);
-        assert!(similarity < 0.1, "One empty graph should have near-zero similarity");
+        assert!(
+            similarity < 0.1,
+            "One empty graph should have near-zero similarity"
+        );
     }
 
     #[test]
@@ -4604,7 +4509,10 @@ mod tests {
         let g2 = MathGraph::from_expr(&expr2);
 
         let similarity = GraphEditDistance::compute_wl_math(&g1, &g2);
-        assert!((similarity - 1.0).abs() < 1e-6, "Identical math graphs should have similarity 1.0");
+        assert!(
+            (similarity - 1.0).abs() < 1e-6,
+            "Identical math graphs should have similarity 1.0"
+        );
     }
 
     #[test]
@@ -4627,7 +4535,10 @@ mod tests {
         // Same values but different operator - they share 2/3 node types
         // WL captures that the structure differs due to the operator
         assert!(similarity >= 0.0, "Similarity should be non-negative");
-        assert!(similarity < 1.0, "Different operators should reduce similarity");
+        assert!(
+            similarity < 1.0,
+            "Different operators should reduce similarity"
+        );
     }
 
     #[test]
@@ -4651,7 +4562,10 @@ mod tests {
         let sim12 = GraphEditDistance::compute_wl(&g1, &g2);
         let sim21 = GraphEditDistance::compute_wl(&g2, &g1);
 
-        assert!((sim12 - sim21).abs() < 1e-6, "WL similarity should be symmetric");
+        assert!(
+            (sim12 - sim21).abs() < 1e-6,
+            "WL similarity should be symmetric"
+        );
     }
 
     #[test]
@@ -4770,7 +4684,7 @@ mod tests {
         // BP2 and WL should generally agree on similarity ordering
         let g1 = GraphemeGraph::from_text("hello");
         let g2 = GraphemeGraph::from_text("hallo"); // Similar
-        let g3 = GraphemeGraph::from_text("xyz");   // Different
+        let g3 = GraphemeGraph::from_text("xyz"); // Different
 
         let bp2_similar = GraphEditDistance::compute_bp2(&g1, &g2);
         let bp2_different = GraphEditDistance::compute_bp2(&g1, &g3);
@@ -4825,7 +4739,10 @@ mod tests {
 
         // All values should be similar (roughly 0.5)
         for val in &result {
-            assert!((*val - 0.5).abs() < 0.1, "Uniform costs should give uniform assignment");
+            assert!(
+                (*val - 0.5).abs() < 0.1,
+                "Uniform costs should give uniform assignment"
+            );
         }
     }
 
@@ -4842,9 +4759,9 @@ mod tests {
     fn test_sinkhorn_rectangular() {
         // 3x2 cost matrix (more rows than cols)
         let costs = vec![
-            0.0, 1.0,  // Row 0: prefers col 0
-            1.0, 0.0,  // Row 1: prefers col 1
-            0.5, 0.5,  // Row 2: equal preference
+            0.0, 1.0, // Row 0: prefers col 0
+            1.0, 0.0, // Row 1: prefers col 1
+            0.5, 0.5, // Row 2: equal preference
         ];
         let config = SinkhornConfig::default();
 
@@ -4874,7 +4791,11 @@ mod tests {
         // Identical graphs should have very low loss
         // The edge cost can be non-zero due to soft assignment probabilities
         // being distributed across all possible matches
-        assert!(result.total_loss < 5.0, "Identical graphs should have low loss, got {}", result.total_loss);
+        assert!(
+            result.total_loss < 5.0,
+            "Identical graphs should have low loss, got {}",
+            result.total_loss
+        );
         assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
         assert!(result.edge_cost >= 0.0, "Edge cost should be non-negative");
     }
@@ -4888,7 +4809,10 @@ mod tests {
         let result = compute_structural_loss(&g1, &g2, &config);
 
         // Different graphs should have higher loss
-        assert!(result.total_loss > 0.0, "Different graphs should have positive loss");
+        assert!(
+            result.total_loss > 0.0,
+            "Different graphs should have positive loss"
+        );
     }
 
     #[test]
@@ -4902,7 +4826,10 @@ mod tests {
         // Size difference should contribute to loss
         assert!(result.total_loss > 0.0);
         // n1=5, n2=2, so size difference = 3
-        assert!(result.node_cost >= 3.0, "Node cost should include size difference");
+        assert!(
+            result.node_cost >= 3.0,
+            "Node cost should include size difference"
+        );
     }
 
     #[test]
@@ -4944,7 +4871,7 @@ mod tests {
         };
 
         let config2 = StructuralLossConfig {
-            alpha: 2.0,  // Double alpha
+            alpha: 2.0, // Double alpha
             beta: 0.5,
             gamma: 0.0,
             ..Default::default()
@@ -4954,8 +4881,10 @@ mod tests {
         let result2 = compute_structural_loss(&g1, &g2, &config2);
 
         // Higher alpha should increase total loss (node cost component)
-        assert!(result2.total_loss > result1.total_loss,
-                "Higher alpha should increase total loss");
+        assert!(
+            result2.total_loss > result1.total_loss,
+            "Higher alpha should increase total loss"
+        );
     }
 
     #[test]
@@ -5013,8 +4942,10 @@ mod tests {
         let loss_different = compute_structural_loss(&g1, &g2_different, &config);
 
         // Similar graphs should have lower structural loss
-        assert!(loss_similar.total_loss < loss_different.total_loss,
-                "Similar graphs should have lower structural loss");
+        assert!(
+            loss_similar.total_loss < loss_different.total_loss,
+            "Similar graphs should have lower structural loss"
+        );
     }
 
     #[test]
@@ -5026,10 +4957,16 @@ mod tests {
         let result = compute_structural_loss(&g1, &g2, &config);
 
         // Gradients should be computed
-        assert!(!result.node_gradients.is_empty(), "Node gradients should exist");
+        assert!(
+            !result.node_gradients.is_empty(),
+            "Node gradients should exist"
+        );
         // Edge gradients depend on edges in predicted graph
         // For "ab" we have 1 edge
-        assert!(!result.edge_gradients.is_empty(), "Edge gradients should exist");
+        assert!(
+            !result.edge_gradients.is_empty(),
+            "Edge gradients should exist"
+        );
     }
 
     #[test]
@@ -5077,7 +5014,10 @@ mod tests {
         let max_high = result_high.iter().cloned().fold(0.0f32, f32::max);
         let max_low = result_low.iter().cloned().fold(0.0f32, f32::max);
 
-        assert!(max_low > max_high, "Lower temperature should give sharper assignments");
+        assert!(
+            max_low > max_high,
+            "Lower temperature should give sharper assignments"
+        );
     }
 
     // ========================================================================
@@ -5180,7 +5120,10 @@ mod tests {
 
     #[test]
     fn test_lr_scheduler_step() {
-        let scheduler = LRScheduler::StepLR { step_size: 10, gamma: 0.5 };
+        let scheduler = LRScheduler::StepLR {
+            step_size: 10,
+            gamma: 0.5,
+        };
 
         assert_eq!(scheduler.get_lr(0.1, 0), 0.1);
         assert_eq!(scheduler.get_lr(0.1, 9), 0.1);
@@ -5202,14 +5145,17 @@ mod tests {
         let scheduler = LRScheduler::WarmupLR { warmup_steps: 5 };
 
         // During warmup, lr increases linearly
-        assert!((scheduler.get_lr(0.1, 0) - 0.02).abs() < 1e-6);  // 1/5
-        assert!((scheduler.get_lr(0.1, 4) - 0.1).abs() < 1e-6);   // 5/5
-        assert_eq!(scheduler.get_lr(0.1, 10), 0.1);  // After warmup
+        assert!((scheduler.get_lr(0.1, 0) - 0.02).abs() < 1e-6); // 1/5
+        assert!((scheduler.get_lr(0.1, 4) - 0.1).abs() < 1e-6); // 5/5
+        assert_eq!(scheduler.get_lr(0.1, 10), 0.1); // After warmup
     }
 
     #[test]
     fn test_lr_scheduler_cosine() {
-        let scheduler = LRScheduler::CosineAnnealingLR { t_max: 10, eta_min: 0.0 };
+        let scheduler = LRScheduler::CosineAnnealingLR {
+            t_max: 10,
+            eta_min: 0.0,
+        };
 
         // At epoch 0, lr should be at max
         assert!((scheduler.get_lr(0.1, 0) - 0.1).abs() < 0.001);
@@ -5217,11 +5163,19 @@ mod tests {
         // At t_max/2, lr should be at eta_min (cos(pi) = -1, so (1 + -1)/2 = 0)
         // Actually at epoch 5: cos(pi * 5/10) = cos(pi/2) = 0, so lr = 0.05
         let lr_at_5 = scheduler.get_lr(0.1, 5);
-        assert!((lr_at_5 - 0.05).abs() < 0.001, "Expected ~0.05, got {}", lr_at_5);
+        assert!(
+            (lr_at_5 - 0.05).abs() < 0.001,
+            "Expected ~0.05, got {}",
+            lr_at_5
+        );
 
         // At t_max, lr should be back to eta_min (cos(pi) = -1)
         let lr_at_10 = scheduler.get_lr(0.1, 10);
-        assert!((lr_at_10 - 0.1).abs() < 0.001, "Expected ~0.1 (cycle restart), got {}", lr_at_10);
+        assert!(
+            (lr_at_10 - 0.1).abs() < 0.001,
+            "Expected ~0.1 (cycle restart), got {}",
+            lr_at_10
+        );
     }
 
     // ========================================================================
@@ -5293,8 +5247,10 @@ mod tests {
     #[test]
     fn test_training_loop_with_scheduler() {
         let config = TrainingConfig::default();
-        let loop_state = TrainingLoop::new(config)
-            .with_scheduler(LRScheduler::StepLR { step_size: 5, gamma: 0.5 });
+        let loop_state = TrainingLoop::new(config).with_scheduler(LRScheduler::StepLR {
+            step_size: 5,
+            gamma: 0.5,
+        });
 
         assert!(matches!(loop_state.scheduler, LRScheduler::StepLR { .. }));
     }
@@ -5438,8 +5394,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_mode() {
-        let pipeline = Pipeline::new()
-            .with_mode(PipelineMode::Training);
+        let pipeline = Pipeline::new().with_mode(PipelineMode::Training);
 
         assert_eq!(pipeline.mode, PipelineMode::Training);
         assert!(pipeline.is_training());
@@ -5447,8 +5402,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_with_cache() {
-        let pipeline = Pipeline::new()
-            .with_cache(true);
+        let pipeline = Pipeline::new().with_cache(true);
 
         assert!(pipeline.cache_enabled);
     }
@@ -5797,8 +5751,10 @@ mod tests {
 
     #[test]
     fn test_training_state_validation() {
-        let mut state = TrainingState::default();
-        state.current_lr = -0.001; // Invalid
+        let state = TrainingState {
+            current_lr: -0.001, // Invalid
+            ..Default::default()
+        };
 
         let result = state.validate();
         assert!(result.is_err());
@@ -5913,133 +5869,5 @@ mod tests {
 
         // Cleanup
         fs::remove_file(&temp_path).ok();
-    }
-
-    // ========================================================================
-    // Supervised Edit Prediction Tests (backend-092)
-    // ========================================================================
-
-    #[test]
-    fn test_compute_edit_sequence_identical() {
-        let seq = compute_edit_sequence("hello", "hello");
-        assert_eq!(seq.labels.len(), 5);
-        assert!(seq.labels.iter().all(|&l| l == EditLabel::Keep));
-    }
-
-    #[test]
-    fn test_compute_edit_sequence_delete_all() {
-        let seq = compute_edit_sequence("abc", "");
-        assert_eq!(seq.labels.len(), 3);
-        assert!(seq.labels.iter().all(|&l| l == EditLabel::Delete));
-    }
-
-    #[test]
-    fn test_compute_edit_sequence_simple_modify() {
-        let seq = compute_edit_sequence("cat", "bat");
-        assert_eq!(seq.labels.len(), 3);
-        // First char 'c' -> 'b' is a modify
-        assert_eq!(seq.labels[0], EditLabel::Modify);
-        assert_eq!(seq.modifications[0], Some('b'));
-        // Rest should be keep
-        assert_eq!(seq.labels[1], EditLabel::Keep);
-        assert_eq!(seq.labels[2], EditLabel::Keep);
-    }
-
-    #[test]
-    fn test_compute_edit_sequence_deletion() {
-        let seq = compute_edit_sequence("hello", "helo");
-        assert_eq!(seq.labels.len(), 5);
-        // One 'l' should be deleted
-        let delete_count = seq.labels.iter().filter(|&&l| l == EditLabel::Delete).count();
-        assert_eq!(delete_count, 1);
-    }
-
-    #[test]
-    fn test_compute_edit_sequence_empty_input() {
-        let seq = compute_edit_sequence("", "abc");
-        assert_eq!(seq.labels.len(), 0);
-    }
-
-    #[test]
-    fn test_edit_label_to_one_hot() {
-        assert_eq!(EditLabel::Keep.to_one_hot(), [1.0, 0.0, 0.0, 0.0]);
-        assert_eq!(EditLabel::Delete.to_one_hot(), [0.0, 1.0, 0.0, 0.0]);
-        assert_eq!(EditLabel::Modify.to_one_hot(), [0.0, 0.0, 1.0, 0.0]);
-        assert_eq!(EditLabel::Insert.to_one_hot(), [0.0, 0.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn test_cross_entropy_loss_perfect_prediction() {
-        // Perfect prediction should give low loss
-        let probs = vec![0.99, 0.003, 0.003, 0.004];
-        let loss = cross_entropy_loss(&probs, EditLabel::Keep);
-        assert!(loss < 0.1);
-    }
-
-    #[test]
-    fn test_cross_entropy_loss_wrong_prediction() {
-        // Wrong prediction should give high loss
-        let probs = vec![0.01, 0.97, 0.01, 0.01];
-        let loss = cross_entropy_loss(&probs, EditLabel::Keep);
-        assert!(loss > 3.0); // -ln(0.01) ≈ 4.6
-    }
-
-    #[test]
-    fn test_cross_entropy_gradient() {
-        let probs = vec![0.7, 0.1, 0.1, 0.1];
-        let grad = cross_entropy_gradient(&probs, EditLabel::Keep);
-        // Gradient should be pred - target = [0.7-1, 0.1-0, 0.1-0, 0.1-0]
-        assert!((grad[0] - (-0.3)).abs() < 1e-6);
-        assert!((grad[1] - 0.1).abs() < 1e-6);
-        assert!((grad[2] - 0.1).abs() < 1e-6);
-        assert!((grad[3] - 0.1).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_compute_edit_prediction_loss_basic() {
-        use grapheme_core::GraphTransformNet;
-
-        let model = GraphTransformNet::new(256, 32, 64, 2);
-        let inputs = vec!["2+3"];
-        let targets = vec!["5"];
-
-        let result = compute_edit_prediction_loss(&model, &inputs, &targets);
-
-        // Should have computed some loss
-        assert!(result.loss >= 0.0);
-        // Should have gradients for the batch
-        assert_eq!(result.gradients.len(), 1);
-        // Accuracy should be between 0 and 1
-        assert!((0.0..=1.0).contains(&result.accuracy));
-    }
-
-    #[test]
-    fn test_compute_edit_prediction_loss_empty_batch() {
-        use grapheme_core::GraphTransformNet;
-
-        let model = GraphTransformNet::new(256, 32, 64, 2);
-        let inputs: Vec<&str> = vec![];
-        let targets: Vec<&str> = vec![];
-
-        let result = compute_edit_prediction_loss(&model, &inputs, &targets);
-
-        assert_eq!(result.loss, 0.0);
-        assert_eq!(result.accuracy, 1.0);
-        assert!(result.gradients.is_empty());
-    }
-
-    #[test]
-    fn test_edit_sequence_complexity_polynomial() {
-        // Verify the algorithm handles longer strings without exponential blowup
-        let long_input: String = "a".repeat(100);
-        let long_target: String = "b".repeat(100);
-
-        let start = std::time::Instant::now();
-        let seq = compute_edit_sequence(&long_input, &long_target);
-        let elapsed = start.elapsed();
-
-        // Should complete in under 100ms for O(n*m) = O(10000)
-        assert!(elapsed.as_millis() < 100);
-        assert_eq!(seq.labels.len(), 100);
     }
 }

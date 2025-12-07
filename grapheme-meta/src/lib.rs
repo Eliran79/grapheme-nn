@@ -20,8 +20,8 @@
 //! Real meta-cognition may require learned policies.
 
 use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
+    LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_reason::ReasoningStep;
 use serde::{Deserialize, Serialize};
@@ -567,7 +567,8 @@ impl MetaCognition for SimpleMetaCognition {
 
         // Keep only recent data
         if self.calibration_data.len() > 1000 {
-            self.calibration_data = self.calibration_data[self.calibration_data.len() - 1000..].to_vec();
+            self.calibration_data =
+                self.calibration_data[self.calibration_data.len() - 1000..].to_vec();
         }
     }
 
@@ -843,7 +844,11 @@ impl BrainAwareMetaCognition {
                         base_uncertainty: base,
                         domain_adjustments: adjustments,
                         adjusted_uncertainty: adjusted,
-                        consulted_domains: routing.domains().iter().map(|s| s.to_string()).collect(),
+                        consulted_domains: routing
+                            .domains()
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
                     };
                 }
             }
@@ -1053,11 +1058,7 @@ mod tests {
     fn test_metacognition_calibrate() {
         let mut meta = SimpleMetaCognition::new();
 
-        let predictions = vec![
-            (0.8, true),
-            (0.2, false),
-            (0.6, true),
-        ];
+        let predictions = vec![(0.8, true), (0.2, false), (0.6, true)];
 
         meta.calibrate(&predictions);
         let error = meta.calibration_error();

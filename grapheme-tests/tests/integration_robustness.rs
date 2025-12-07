@@ -301,7 +301,10 @@ fn test_negative_infinity() {
     let result = engine.evaluate(&expr);
 
     match result {
-        Ok(f) => assert!(f.is_infinite() && f < 0.0, "-1/0 should be negative infinity"),
+        Ok(f) => assert!(
+            f.is_infinite() && f < 0.0,
+            "-1/0 should be negative infinity"
+        ),
         Err(_) => (), // Error is also acceptable
     }
 }
@@ -319,7 +322,10 @@ fn test_very_small_numbers() {
     };
 
     let result = engine.evaluate(&expr);
-    assert!(result.is_ok(), "very small number multiplication should work");
+    assert!(
+        result.is_ok(),
+        "very small number multiplication should work"
+    );
 }
 
 /// Test division by very small number

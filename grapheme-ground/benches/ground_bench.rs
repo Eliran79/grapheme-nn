@@ -2,9 +2,9 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use grapheme_ground::{
-    create_default_grounded_graph, create_visual_sensor, create_default_embodied_agent,
-    GroundedGraph, Sensor, EmbodiedAgent, WorldInterface, SimpleSensor, SimpleActuator,
-    Graph, Referent, ExternalRef,
+    create_default_embodied_agent, create_default_grounded_graph, create_visual_sensor,
+    EmbodiedAgent, ExternalRef, Graph, GroundedGraph, Referent, Sensor, SimpleActuator,
+    SimpleSensor, WorldInterface,
 };
 use grapheme_multimodal::Modality;
 

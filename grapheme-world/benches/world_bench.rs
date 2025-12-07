@@ -1,9 +1,7 @@
 //! Benchmarks for grapheme-world
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use grapheme_world::{
-    create_default_world_model, Graph, WorldModeling,
-};
+use grapheme_world::{create_default_world_model, Graph, WorldModeling};
 
 fn make_graph(text: &str) -> Graph {
     grapheme_core::DagNN::from_text(text).unwrap()
@@ -31,10 +29,6 @@ fn bench_simulate(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_predict,
-    bench_simulate,
-);
+criterion_group!(benches, bench_predict, bench_simulate,);
 
 criterion_main!(benches);

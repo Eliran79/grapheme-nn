@@ -9,8 +9,8 @@
 //! - Composition structure representation
 
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
-    ExecutionResult, ValidationIssue, ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,18 @@ pub type MusicGraphResult<T> = Result<T, MusicGraphError>;
 /// Musical note names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NoteName {
-    C, CSharp, D, DSharp, E, F, FSharp, G, GSharp, A, ASharp, B,
+    C,
+    CSharp,
+    D,
+    DSharp,
+    E,
+    F,
+    FSharp,
+    G,
+    GSharp,
+    A,
+    ASharp,
+    B,
 }
 
 impl NoteName {
@@ -71,20 +82,11 @@ pub enum MusicNode {
         quality: ChordQuality,
     },
     /// A scale
-    Scale {
-        root: NoteName,
-        mode: ScaleMode,
-    },
+    Scale { root: NoteName, mode: ScaleMode },
     /// Time signature
-    TimeSignature {
-        numerator: u8,
-        denominator: u8,
-    },
+    TimeSignature { numerator: u8, denominator: u8 },
     /// Key signature
-    KeySignature {
-        root: NoteName,
-        mode: ScaleMode,
-    },
+    KeySignature { root: NoteName, mode: ScaleMode },
     /// Tempo marking
     Tempo(u16),
     /// Rest
@@ -233,7 +235,12 @@ impl MusicGraph {
                 'F' => NoteName::FSharp,
                 'G' => NoteName::GSharp,
                 'A' => NoteName::ASharp,
-                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid sharp note: {}", trimmed))),
+                _ => {
+                    return Err(MusicGraphError::InvalidNote(format!(
+                        "Invalid sharp note: {}",
+                        trimmed
+                    )))
+                }
             };
             (name, &trimmed[2..])
         } else {
@@ -245,7 +252,12 @@ impl MusicGraph {
                 'G' => NoteName::G,
                 'A' => NoteName::A,
                 'B' => NoteName::B,
-                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid note: {}", trimmed))),
+                _ => {
+                    return Err(MusicGraphError::InvalidNote(format!(
+                        "Invalid note: {}",
+                        trimmed
+                    )))
+                }
             };
             (name, &trimmed[1..])
         };
@@ -294,12 +306,27 @@ impl MusicBrain {
     /// Check if text looks like music notation
     fn looks_like_music(&self, input: &str) -> bool {
         let music_patterns = [
-            "note", "chord", "scale", "key",
-            "major", "minor", "tempo", "bpm",
-            "measure", "bar", "beat", "rhythm",
-            "sharp", "flat", "natural",
-            "piano", "forte", "crescendo",
-            "staccato", "legato", "harmony",
+            "note",
+            "chord",
+            "scale",
+            "key",
+            "major",
+            "minor",
+            "tempo",
+            "bpm",
+            "measure",
+            "bar",
+            "beat",
+            "rhythm",
+            "sharp",
+            "flat",
+            "natural",
+            "piano",
+            "forte",
+            "crescendo",
+            "staccato",
+            "legato",
+            "harmony",
         ];
         let lower = input.to_lowercase();
         music_patterns.iter().any(|p| lower.contains(p))
@@ -449,9 +476,10 @@ impl DomainBrain for MusicBrain {
             1 => self.apply_chord_progression(graph),
             2 => self.apply_key_detection(graph),
             3 => self.apply_rhythm_quantization(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(
-                format!("Unknown rule ID: {}", rule_id)
-            )),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
         }
     }
 
@@ -468,10 +496,9 @@ impl DomainBrain for MusicBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) = (
-                DagNN::from_text(input),
-                DagNN::from_text(output),
-            ) {
+            if let (Ok(input_graph), Ok(output_graph)) =
+                (DagNN::from_text(input), DagNN::from_text(output))
+            {
                 examples.push(DomainExample {
                     input: input_graph,
                     output: output_graph,

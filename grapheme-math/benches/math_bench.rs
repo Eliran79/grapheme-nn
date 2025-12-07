@@ -24,10 +24,7 @@ fn bench_graph_from_expr_simple(c: &mut Criterion) {
 }
 
 fn bench_graph_from_expr_nested(c: &mut Criterion) {
-    let expr = Expr::mul(
-        Expr::add(Expr::int(2), Expr::int(3)),
-        Expr::int(4),
-    );
+    let expr = Expr::mul(Expr::add(Expr::int(2), Expr::int(3)), Expr::int(4));
 
     c.bench_function("graph_from_expr_nested", |b| {
         b.iter(|| MathGraph::from_expr(black_box(&expr)))
@@ -96,10 +93,7 @@ fn bench_graph_to_expr_simple(c: &mut Criterion) {
 }
 
 fn bench_graph_to_expr_nested(c: &mut Criterion) {
-    let expr = Expr::mul(
-        Expr::add(Expr::int(2), Expr::int(3)),
-        Expr::int(4),
-    );
+    let expr = Expr::mul(Expr::add(Expr::int(2), Expr::int(3)), Expr::int(4));
     let graph = MathGraph::from_expr(&expr);
 
     c.bench_function("graph_to_expr_nested", |b| {

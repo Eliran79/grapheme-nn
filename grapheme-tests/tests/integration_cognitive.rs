@@ -365,13 +365,13 @@ fn test_learnable_grounding_cooccurrence() {
 
 #[test]
 fn test_all_modules_trainable() {
+    use grapheme_agent::LearnableAgency;
+    use grapheme_ground::LearnableGrounding;
     use grapheme_memory::LearnableMemoryRetrieval;
+    use grapheme_meta::LearnableMetaCognition;
+    use grapheme_multimodal::LearnableMultimodal;
     use grapheme_reason::LearnableReasoning;
     use grapheme_world::LearnableWorldModel;
-    use grapheme_meta::LearnableMetaCognition;
-    use grapheme_agent::LearnableAgency;
-    use grapheme_multimodal::LearnableMultimodal;
-    use grapheme_ground::LearnableGrounding;
 
     // Create all modules
     let mut memory = LearnableMemoryRetrieval::new();
@@ -463,22 +463,21 @@ fn test_training_convergence() {
 
 #[test]
 fn test_parameter_count() {
+    use grapheme_agent::LearnableAgency;
+    use grapheme_ground::LearnableGrounding;
     use grapheme_memory::LearnableMemoryRetrieval;
+    use grapheme_meta::LearnableMetaCognition;
+    use grapheme_multimodal::LearnableMultimodal;
     use grapheme_reason::LearnableReasoning;
     use grapheme_world::LearnableWorldModel;
-    use grapheme_meta::LearnableMetaCognition;
-    use grapheme_agent::LearnableAgency;
-    use grapheme_multimodal::LearnableMultimodal;
-    use grapheme_ground::LearnableGrounding;
 
-    let total_params =
-        LearnableMemoryRetrieval::new().num_parameters() +
-        LearnableReasoning::new().num_parameters() +
-        LearnableWorldModel::new().num_parameters() +
-        LearnableMetaCognition::new().num_parameters() +
-        LearnableAgency::new().num_parameters() +
-        LearnableMultimodal::new().num_parameters() +
-        LearnableGrounding::new().num_parameters();
+    let total_params = LearnableMemoryRetrieval::new().num_parameters()
+        + LearnableReasoning::new().num_parameters()
+        + LearnableWorldModel::new().num_parameters()
+        + LearnableMetaCognition::new().num_parameters()
+        + LearnableAgency::new().num_parameters()
+        + LearnableMultimodal::new().num_parameters()
+        + LearnableGrounding::new().num_parameters();
 
     // 6 + 6 + 6 + 5 + 6 + 6 + 5 = 40 parameters total
     assert_eq!(total_params, 40);
@@ -490,7 +489,7 @@ fn test_parameter_count() {
 
 #[test]
 fn test_cognitive_brain_bridge_creation() {
-    use grapheme_core::{DefaultCognitiveBridge, CognitiveBrainBridge};
+    use grapheme_core::{CognitiveBrainBridge, DefaultCognitiveBridge};
 
     let bridge = DefaultCognitiveBridge::new();
     assert!(bridge.available_domains().is_empty());
@@ -563,7 +562,7 @@ fn test_orchestrated_result() {
 
 #[test]
 fn test_multi_brain_result() {
-    use grapheme_core::{MultiBrainResult, BrainRoutingResult, DagNN};
+    use grapheme_core::{BrainRoutingResult, DagNN, MultiBrainResult};
 
     let mut result = MultiBrainResult::new();
     assert!(!result.success);
@@ -585,8 +584,8 @@ fn test_multi_brain_result() {
 
 #[test]
 fn test_brain_aware_reasoning_creation() {
-    use grapheme_reason::create_brain_aware_reasoning;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_reason::create_brain_aware_reasoning;
 
     let reasoning = create_brain_aware_reasoning();
     assert!(reasoning.available_domains().is_empty());
@@ -595,8 +594,8 @@ fn test_brain_aware_reasoning_creation() {
 
 #[test]
 fn test_brain_aware_memory_creation() {
-    use grapheme_memory::create_domain_aware_memory;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_memory::create_domain_aware_memory;
 
     let memory = create_domain_aware_memory();
     assert!(memory.available_domains().is_empty());
@@ -605,8 +604,8 @@ fn test_brain_aware_memory_creation() {
 
 #[test]
 fn test_brain_aware_metacognition_creation() {
-    use grapheme_meta::create_brain_aware_metacognition;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_meta::create_brain_aware_metacognition;
 
     let meta = create_brain_aware_metacognition();
     assert!(meta.available_domains().is_empty());
@@ -624,8 +623,8 @@ fn test_brain_aware_agency_creation() {
 
 #[test]
 fn test_brain_aware_world_model_creation() {
-    use grapheme_world::create_brain_aware_world_model;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_world::create_brain_aware_world_model;
 
     let world = create_brain_aware_world_model();
     assert!(world.available_domains().is_empty());
@@ -633,8 +632,8 @@ fn test_brain_aware_world_model_creation() {
 
 #[test]
 fn test_brain_aware_grounding_creation() {
-    use grapheme_ground::create_brain_aware_grounding;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_ground::create_brain_aware_grounding;
 
     let grounding = create_brain_aware_grounding();
     assert!(grounding.available_domains().is_empty());
@@ -642,8 +641,8 @@ fn test_brain_aware_grounding_creation() {
 
 #[test]
 fn test_brain_aware_multimodal_creation() {
-    use grapheme_multimodal::create_brain_aware_multimodal;
     use grapheme_core::CognitiveBrainBridge;
+    use grapheme_multimodal::create_brain_aware_multimodal;
 
     let multimodal = create_brain_aware_multimodal();
     assert!(multimodal.available_domains().is_empty());
@@ -667,14 +666,6 @@ fn test_domain_memory_metadata() {
 fn test_all_brain_aware_modules_implement_bridge() {
     // This test verifies that all brain-aware cognitive modules implement CognitiveBrainBridge
     use grapheme_core::CognitiveBrainBridge;
-
-    
-    
-    
-    
-    
-    
-    
 
     fn accepts_bridge<T: CognitiveBrainBridge>(_: &T) {}
 

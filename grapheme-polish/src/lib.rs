@@ -164,7 +164,8 @@ impl PolishGraph {
             Expr::UnaryOp { op, operand } => {
                 let op_node = self.graph.add_node(GraphNode::Operator(*op));
                 let operand_node = self.add_expr(operand);
-                self.graph.add_edge(op_node, operand_node, GraphEdge::Operand);
+                self.graph
+                    .add_edge(op_node, operand_node, GraphEdge::Operand);
                 op_node
             }
             Expr::Function { func, args } => {

@@ -133,11 +133,7 @@ impl Node {
     /// Create a new input node from a character
     pub fn input(ch: char, position: usize) -> Self {
         Self {
-            value: if ch.is_ascii() {
-                Some(ch as u8)
-            } else {
-                None
-            },
+            value: if ch.is_ascii() { Some(ch as u8) } else { None },
             activation: 1.0,
             node_type: NodeType::Input(ch),
             position: Some(position),
@@ -563,7 +559,11 @@ impl DagNN {
     ///
     /// # Errors
     /// Returns `CliqueError::SizeExceeded` if members.len() > MAX_CLIQUE_SIZE
-    pub fn form_clique(&mut self, members: Vec<NodeId>, label: Option<String>) -> CliqueResult<usize> {
+    pub fn form_clique(
+        &mut self,
+        members: Vec<NodeId>,
+        label: Option<String>,
+    ) -> CliqueResult<usize> {
         // Validate clique size
         if members.len() > MAX_CLIQUE_SIZE {
             return Err(CliqueError::SizeExceeded {
@@ -612,7 +612,8 @@ impl DagNN {
     /// Uses a sliding window approach for O(n × window_size) total complexity.
     pub fn connect_all_relevant(&mut self, context_window: usize) {
         // Collect nodes sorted by position
-        let mut nodes_by_pos: Vec<(usize, NodeId)> = self.input_nodes
+        let mut nodes_by_pos: Vec<(usize, NodeId)> = self
+            .input_nodes
             .iter()
             .filter_map(|&n| self.graph[n].position.map(|p| (p, n)))
             .collect();
@@ -833,7 +834,8 @@ impl GraphBuilder for DagNN {
         let end = node_pos + context_window;
 
         // Use BTreeMap range query for O(window_size) iteration
-        let neighbors: Vec<(usize, NodeId)> = self.position_index
+        let neighbors: Vec<(usize, NodeId)> = self
+            .position_index
             .range(start..=end)
             .map(|(&pos, &n)| (pos, n))
             .collect();
@@ -859,9 +861,7 @@ impl GraphBuilder for DagNN {
 
         // Collect windows first to avoid borrow conflict
         let windows: Vec<Vec<NodeId>> = if self.input_nodes.len() >= 3 {
-            self.input_nodes.windows(3)
-                .map(|w| w.to_vec())
-                .collect()
+            self.input_nodes.windows(3).map(|w| w.to_vec()).collect()
         } else {
             Vec::new()
         };
@@ -880,16 +880,22 @@ impl GraphBuilder for DagNN {
 
     fn compress_region(&mut self, start: NodeId, end: NodeId) -> GraphemeResult<CompressedRegion> {
         // Find nodes between start and end
-        let start_pos = self.topology.get_position(start)
+        let start_pos = self
+            .topology
+            .get_position(start)
             .ok_or_else(|| GraphemeError::GraphError("Start node not in topology".into()))?;
-        let end_pos = self.topology.get_position(end)
+        let end_pos = self
+            .topology
+            .get_position(end)
             .ok_or_else(|| GraphemeError::GraphError("End node not in topology".into()))?;
 
         let nodes_in_region: Vec<NodeId> = self.topology.order[start_pos..=end_pos].to_vec();
         let original_count = nodes_in_region.len();
 
         // Create compressed node
-        let compressed_node = self.graph.add_node(Node::compressed(CompressionType::Hierarchical));
+        let compressed_node = self
+            .graph
+            .add_node(Node::compressed(CompressionType::Hierarchical));
 
         Ok(CompressedRegion {
             start,
@@ -904,7 +910,9 @@ impl GraphBuilder for DagNN {
         let level_0 = self.input_nodes.clone();
 
         // Level 1: cliques (if any)
-        let level_1: Vec<NodeId> = self.cliques.iter()
+        let level_1: Vec<NodeId> = self
+            .cliques
+            .iter()
             .map(|c| c.members[0]) // Representative node
             .collect();
 
@@ -957,7 +965,10 @@ impl ForwardPass for DagNN {
             let mut incoming_count = 0;
 
             // Sum weighted inputs from predecessors
-            for edge in self.graph.edges_directed(node, petgraph::Direction::Incoming) {
+            for edge in self
+                .graph
+                .edges_directed(node, petgraph::Direction::Incoming)
+            {
                 let source_activation = self.graph[edge.source()].activation;
                 let weight = edge.weight().weight;
                 incoming_sum += source_activation * weight;
@@ -988,7 +999,9 @@ impl ForwardPass for DagNN {
     }
 
     fn get_activations(&self) -> Vec<(NodeId, f32)> {
-        self.topology.order.iter()
+        self.topology
+            .order
+            .iter()
             .map(|&node| (node, self.graph[node].activation))
             .collect()
     }
@@ -1100,7 +1113,10 @@ impl Learnable for Embedding {
 
     fn has_gradients(&self) -> bool {
         // Check if gradients exist AND are non-zero
-        self.grad.as_ref().map(|g| g.iter().any(|&x| x != 0.0)).unwrap_or(false)
+        self.grad
+            .as_ref()
+            .map(|g| g.iter().any(|&x| x != 0.0))
+            .unwrap_or(false)
     }
 
     fn gradient_norm(&self) -> f32 {
@@ -1135,11 +1151,13 @@ impl Learnable for MessagePassingLayer {
     }
 
     fn gradient_norm(&self) -> f32 {
-        let weight_norm: f32 = self.weight_grad
+        let weight_norm: f32 = self
+            .weight_grad
             .as_ref()
             .map(|g| g.iter().map(|x| x * x).sum::<f32>())
             .unwrap_or(0.0);
-        let bias_norm: f32 = self.bias_grad
+        let bias_norm: f32 = self
+            .bias_grad
             .as_ref()
             .map(|g| g.iter().map(|x| x * x).sum::<f32>())
             .unwrap_or(0.0);
@@ -1164,17 +1182,21 @@ impl Learnable for GraphTransformNet {
 
     fn num_parameters(&self) -> usize {
         self.embedding.num_parameters()
-            + self.mp_layers.iter().map(|l| l.num_parameters()).sum::<usize>()
+            + self
+                .mp_layers
+                .iter()
+                .map(|l| l.num_parameters())
+                .sum::<usize>()
     }
 
     fn has_gradients(&self) -> bool {
-        self.embedding.has_gradients()
-            || self.mp_layers.iter().any(|l| l.has_gradients())
+        self.embedding.has_gradients() || self.mp_layers.iter().any(|l| l.has_gradients())
     }
 
     fn gradient_norm(&self) -> f32 {
         let embed_norm = self.embedding.gradient_norm();
-        let layer_norm: f32 = self.mp_layers
+        let layer_norm: f32 = self
+            .mp_layers
             .iter()
             .map(|l| l.gradient_norm().powi(2))
             .sum::<f32>()
@@ -1254,12 +1276,14 @@ impl GraphTransformer for BasicGraphTransformer {
         self.rule_counter += 1;
 
         // Extract patterns from input and target
-        let input_pattern: Vec<NodeType> = input.input_nodes()
+        let input_pattern: Vec<NodeType> = input
+            .input_nodes()
             .iter()
             .map(|&n| input.graph[n].node_type.clone())
             .collect();
 
-        let output_pattern: Vec<NodeType> = target.input_nodes()
+        let output_pattern: Vec<NodeType> = target
+            .input_nodes()
             .iter()
             .map(|&n| target.graph[n].node_type.clone())
             .collect();
@@ -1361,9 +1385,7 @@ impl CliqueProcessor for DagNN {
 
     fn compress_to_clique(&mut self, nodes: Vec<NodeId>) -> NodeId {
         // Create a new clique node
-        let member_indices: Vec<usize> = nodes.iter()
-            .map(|n| n.index())
-            .collect();
+        let member_indices: Vec<usize> = nodes.iter().map(|n| n.index()).collect();
 
         let clique_node = self.graph.add_node(Node::clique(member_indices));
 
@@ -1408,15 +1430,22 @@ impl MemoryManager for DagNN {
         let mut disconnected = Vec::new();
 
         for node_idx in self.graph.node_indices() {
-            let has_incoming = self.graph.edges_directed(node_idx, petgraph::Direction::Incoming).next().is_some();
-            let has_outgoing = self.graph.edges_directed(node_idx, petgraph::Direction::Outgoing).next().is_some();
+            let has_incoming = self
+                .graph
+                .edges_directed(node_idx, petgraph::Direction::Incoming)
+                .next()
+                .is_some();
+            let has_outgoing = self
+                .graph
+                .edges_directed(node_idx, petgraph::Direction::Outgoing)
+                .next()
+                .is_some();
 
             // Skip input nodes (they're allowed to have no incoming edges)
             // Using HashSet for O(1) lookup instead of Vec::contains() O(n)
-            if !has_incoming && !has_outgoing
-                && !self.input_nodes_set.contains(&node_idx) {
-                    disconnected.push(node_idx);
-                }
+            if !has_incoming && !has_outgoing && !self.input_nodes_set.contains(&node_idx) {
+                disconnected.push(node_idx);
+            }
         }
 
         let count = disconnected.len();
@@ -1444,7 +1473,9 @@ impl MemoryManager for DagNN {
             } else {
                 // If we have a run of 3+ low activation nodes, compress them
                 if low_activation_run.len() >= 3 {
-                    let _compressed = self.graph.add_node(Node::compressed(CompressionType::Semantic));
+                    let _compressed = self
+                        .graph
+                        .add_node(Node::compressed(CompressionType::Semantic));
                     compressed_count += low_activation_run.len();
                 }
                 low_activation_run.clear();
@@ -1453,7 +1484,9 @@ impl MemoryManager for DagNN {
 
         // Handle trailing run
         if low_activation_run.len() >= 3 {
-            let _compressed = self.graph.add_node(Node::compressed(CompressionType::Semantic));
+            let _compressed = self
+                .graph
+                .add_node(Node::compressed(CompressionType::Semantic));
             compressed_count += low_activation_run.len();
         }
 
@@ -1532,7 +1565,8 @@ impl PatternMatcher for DagNN {
             }
 
             for window in self.input_nodes.windows(window_size) {
-                let pattern: Vec<NodeType> = window.iter()
+                let pattern: Vec<NodeType> = window
+                    .iter()
                     .map(|&n| self.graph[n].node_type.clone())
                     .collect();
 
@@ -1567,7 +1601,9 @@ impl PatternMatcher for DagNN {
             }
 
             // Create a pattern node for this pattern
-            let pattern_bytes: Vec<u8> = pattern.sequence.iter()
+            let pattern_bytes: Vec<u8> = pattern
+                .sequence
+                .iter()
                 .filter_map(|nt| {
                     if let NodeType::Input(ch) = nt {
                         if ch.is_ascii() {
@@ -1592,18 +1628,19 @@ impl PatternMatcher for DagNN {
 
     fn extract_hierarchy(&self) -> PatternHierarchy {
         // Level 0: individual characters
-        let level_0: Vec<Pattern> = self.input_nodes.iter()
+        let level_0: Vec<Pattern> = self
+            .input_nodes
+            .iter()
             .enumerate()
-            .map(|(id, &node)| {
-                Pattern::new(id, vec![self.graph[node].node_type.clone()])
-            })
+            .map(|(id, &node)| Pattern::new(id, vec![self.graph[node].node_type.clone()]))
             .collect();
 
         // Level 1: bigrams with frequency >= 2
         let level_1 = self.learn_patterns(2);
 
         // Level 2: trigrams and above with frequency >= 3
-        let level_2: Vec<Pattern> = self.learn_patterns(3)
+        let level_2: Vec<Pattern> = self
+            .learn_patterns(3)
             .into_iter()
             .filter(|p| p.len() >= 3)
             .collect();
@@ -1651,14 +1688,17 @@ impl DagNN {
 
     /// Get nodes by activation level
     pub fn get_nodes_by_activation(&self, min_activation: f32) -> Vec<NodeId> {
-        self.graph.node_indices()
+        self.graph
+            .node_indices()
             .filter(|&node| self.graph[node].activation >= min_activation)
             .collect()
     }
 
     /// Prune edges below a weight threshold
     pub fn prune_weak_edges(&mut self, threshold: f32) -> usize {
-        let weak_edges: Vec<_> = self.graph.edge_indices()
+        let weak_edges: Vec<_> = self
+            .graph
+            .edge_indices()
             .filter(|&e| self.graph[e].weight < threshold)
             .collect();
 
@@ -1673,7 +1713,9 @@ impl DagNN {
 
     /// Get graph statistics
     pub fn stats(&self) -> GraphStats {
-        let total_activation: f32 = self.graph.node_indices()
+        let total_activation: f32 = self
+            .graph
+            .node_indices()
             .map(|n| self.graph[n].activation)
             .sum();
 
@@ -1694,7 +1736,9 @@ impl DagNN {
         let density = edge_count as f32 / max_edges as f32;
 
         // Compute degree statistics
-        let degrees: Vec<usize> = self.graph.node_indices()
+        let degrees: Vec<usize> = self
+            .graph
+            .node_indices()
             .map(|n| self.graph.neighbors(n).count())
             .collect();
         let max_degree = degrees.iter().max().copied().unwrap_or(0);
@@ -1705,9 +1749,7 @@ impl DagNN {
         };
 
         // Compute clique statistics
-        let clique_sizes: Vec<usize> = self.cliques.iter()
-            .map(|c| c.members.len())
-            .collect();
+        let clique_sizes: Vec<usize> = self.cliques.iter().map(|c| c.members.len()).collect();
         let max_clique_size = clique_sizes.iter().max().copied().unwrap_or(0);
         let avg_clique_size = if !clique_sizes.is_empty() {
             clique_sizes.iter().sum::<usize>() as f32 / clique_sizes.len() as f32
@@ -1736,9 +1778,7 @@ impl DagNN {
 
     /// Get statistics about clique sizes in the graph
     pub fn clique_stats(&self) -> CliqueStats {
-        let sizes: Vec<usize> = self.cliques.iter()
-            .map(|c| c.members.len())
-            .collect();
+        let sizes: Vec<usize> = self.cliques.iter().map(|c| c.members.len()).collect();
 
         let count = sizes.len();
         let max_size = sizes.iter().max().copied().unwrap_or(0);
@@ -1890,14 +1930,7 @@ impl DagNN {
         let x: HashSet<NodeId> = HashSet::new();
         let r: Vec<NodeId> = Vec::new();
 
-        self.bron_kerbosch_pivot(
-            r,
-            p,
-            x,
-            &neighbor_sets,
-            &mut cliques,
-            max_results,
-        );
+        self.bron_kerbosch_pivot(r, p, x, &neighbor_sets, &mut cliques, max_results);
 
         cliques
     }
@@ -1905,9 +1938,9 @@ impl DagNN {
     /// Recursive Bron-Kerbosch with pivot selection
     fn bron_kerbosch_pivot(
         &self,
-        r: Vec<NodeId>,           // Current clique
-        mut p: HashSet<NodeId>,   // Candidates
-        mut x: HashSet<NodeId>,   // Excluded
+        r: Vec<NodeId>,         // Current clique
+        mut p: HashSet<NodeId>, // Candidates
+        mut x: HashSet<NodeId>, // Excluded
         neighbors: &HashMap<NodeId, HashSet<NodeId>>,
         cliques: &mut Vec<Vec<NodeId>>,
         max_results: Option<usize>,
@@ -2019,10 +2052,9 @@ impl DagNN {
         // For each node in degeneracy order
         for (pos, &v) in ordering.iter().enumerate() {
             // Get neighbors that come later in ordering (higher-ordered neighbors)
-            let later_neighbors: Vec<NodeId> = self.neighbors(v)
-                .filter(|&u| {
-                    position.get(&u).map(|&p| p > pos).unwrap_or(false)
-                })
+            let later_neighbors: Vec<NodeId> = self
+                .neighbors(v)
+                .filter(|&u| position.get(&u).map(|&p| p > pos).unwrap_or(false))
                 .collect();
 
             // If not enough neighbors for a (k-1)-clique, skip
@@ -2059,7 +2091,7 @@ impl DagNN {
                 .iter()
                 .min_by_key(|&node| {
                     self.neighbors(*node)
-                        .filter(|n| remaining.contains(n))  // O(1) lookup now!
+                        .filter(|n| remaining.contains(n)) // O(1) lookup now!
                         .count()
                 })
                 .copied()
@@ -2091,14 +2123,11 @@ impl DagNN {
 
     /// Get neighbors of a node (both incoming and outgoing for undirected check)
     fn neighbors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        self.graph
-            .edges(node)
-            .map(|e| e.target())
-            .chain(
-                self.graph
-                    .edges_directed(node, petgraph::Direction::Incoming)
-                    .map(|e| e.source())
-            )
+        self.graph.edges(node).map(|e| e.target()).chain(
+            self.graph
+                .edges_directed(node, petgraph::Direction::Incoming)
+                .map(|e| e.source()),
+        )
     }
 
     /// Generate all k-combinations of a slice (recursive version)
@@ -2720,8 +2749,7 @@ impl UnifiedCheckpoint {
 
     /// Load checkpoint from JSON string
     pub fn load_json(json: &str) -> PersistenceResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+        serde_json::from_str(json).map_err(|e| PersistenceError::Deserialization(e.to_string()))
     }
 
     /// Save checkpoint to file
@@ -2887,8 +2915,7 @@ impl GraphemeGraph {
 
     /// Load GraphemeGraph from JSON format
     pub fn load_json(json: &str) -> PersistenceResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| PersistenceError::Deserialization(e.to_string()))
+        serde_json::from_str(json).map_err(|e| PersistenceError::Deserialization(e.to_string()))
     }
 
     /// Save GraphemeGraph to a file (JSON format)
@@ -2986,24 +3013,16 @@ impl Embedding {
         match init {
             InitStrategy::Xavier => {
                 let scale = (2.0 / (vocab_size + embed_dim) as f32).sqrt();
-                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
-                    rng.gen_range(-scale..scale)
-                })
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| rng.gen_range(-scale..scale))
             }
             InitStrategy::He => {
                 let scale = (2.0 / vocab_size as f32).sqrt();
-                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
-                    rng.gen_range(-scale..scale)
-                })
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| rng.gen_range(-scale..scale))
             }
             InitStrategy::Uniform(scale) => {
-                Array2::from_shape_fn((vocab_size, embed_dim), |_| {
-                    rng.gen_range(-scale..scale)
-                })
+                Array2::from_shape_fn((vocab_size, embed_dim), |_| rng.gen_range(-scale..scale))
             }
-            InitStrategy::Zero => {
-                Array2::zeros((vocab_size, embed_dim))
-            }
+            InitStrategy::Zero => Array2::zeros((vocab_size, embed_dim)),
         }
     }
 
@@ -3111,9 +3130,7 @@ impl Embedding {
                 }
                 sum / bytes.len() as f32
             }
-            NodeType::Compressed(_) => {
-                self.forward_index(4)
-            }
+            NodeType::Compressed(_) => self.forward_index(4),
         }
     }
 
@@ -3172,7 +3189,10 @@ impl EmbeddingExt for DagNN {
 #[derive(Debug, Clone)]
 pub enum TapeOp {
     /// Embedding lookup: (embedding_idx, char_idx)
-    EmbeddingLookup { embedding_idx: usize, char_idx: usize },
+    EmbeddingLookup {
+        embedding_idx: usize,
+        char_idx: usize,
+    },
     /// Linear transformation: output = input * weight + bias
     Linear { input_idx: usize, weight_idx: usize },
     /// Sum of multiple inputs
@@ -3188,9 +3208,16 @@ pub enum TapeOp {
     /// Tanh activation
     Tanh { input_idx: usize },
     /// Message passing: aggregate neighbors
-    MessagePass { node_idx: usize, neighbor_indices: Vec<usize>, weights: Vec<f32> },
+    MessagePass {
+        node_idx: usize,
+        neighbor_indices: Vec<usize>,
+        weights: Vec<f32>,
+    },
     /// Graph convolution operation
-    GraphConv { node_idx: usize, neighbor_indices: Vec<usize> },
+    GraphConv {
+        node_idx: usize,
+        neighbor_indices: Vec<usize>,
+    },
     /// Loss computation (MSE, CrossEntropy, etc.)
     Loss { pred_idx: usize, target_idx: usize },
 }
@@ -3362,16 +3389,16 @@ impl Tape {
         let right = &self.values[right_idx];
         let dim = left.len().min(right.len());
 
-        let result: Vec<f32> = left.iter()
-            .zip(right.iter())
-            .map(|(l, r)| l * r)
-            .collect();
+        let result: Vec<f32> = left.iter().zip(right.iter()).map(|(l, r)| l * r).collect();
 
         let output_idx = self.store_value(result, vec![dim]);
 
         if self.recording {
             self.entries.push(TapeEntry {
-                op: TapeOp::Mul { left_idx, right_idx },
+                op: TapeOp::Mul {
+                    left_idx,
+                    right_idx,
+                },
                 output_idx,
                 output_shape: vec![dim],
             });
@@ -3496,7 +3523,10 @@ impl Tape {
 
         if self.recording {
             self.entries.push(TapeEntry {
-                op: TapeOp::Loss { pred_idx, target_idx },
+                op: TapeOp::Loss {
+                    pred_idx,
+                    target_idx,
+                },
                 output_idx,
                 output_shape: vec![1],
             });
@@ -3561,17 +3591,22 @@ impl Tape {
                     }
                 }
 
-                TapeOp::Mul { left_idx, right_idx } => {
+                TapeOp::Mul {
+                    left_idx,
+                    right_idx,
+                } => {
                     // d(a*b)/da = b, d(a*b)/db = a
                     let left = self.values[left_idx].clone();
                     let right = self.values[right_idx].clone();
 
-                    let left_grad: Vec<f32> = output_grad.iter()
+                    let left_grad: Vec<f32> = output_grad
+                        .iter()
                         .zip(right.iter())
                         .map(|(g, r)| g * r)
                         .collect();
 
-                    let right_grad: Vec<f32> = output_grad.iter()
+                    let right_grad: Vec<f32> = output_grad
+                        .iter()
                         .zip(left.iter())
                         .map(|(g, l)| g * l)
                         .collect();
@@ -3583,7 +3618,8 @@ impl Tape {
                 TapeOp::ReLU { input_idx } => {
                     // d(relu)/dx = 1 if x > 0 else 0
                     let input = self.values[input_idx].clone();
-                    let grad: Vec<f32> = output_grad.iter()
+                    let grad: Vec<f32> = output_grad
+                        .iter()
                         .zip(input.iter())
                         .map(|(g, x)| if *x > 0.0 { *g } else { 0.0 })
                         .collect();
@@ -3593,7 +3629,8 @@ impl Tape {
                 TapeOp::Sigmoid { input_idx } => {
                     // d(sigmoid)/dx = sigmoid * (1 - sigmoid)
                     let output = self.values[entry_output_idx].clone();
-                    let grad: Vec<f32> = output_grad.iter()
+                    let grad: Vec<f32> = output_grad
+                        .iter()
                         .zip(output.iter())
                         .map(|(g, s)| g * s * (1.0 - s))
                         .collect();
@@ -3603,14 +3640,19 @@ impl Tape {
                 TapeOp::Tanh { input_idx } => {
                     // d(tanh)/dx = 1 - tanh^2
                     let output = self.values[entry_output_idx].clone();
-                    let grad: Vec<f32> = output_grad.iter()
+                    let grad: Vec<f32> = output_grad
+                        .iter()
                         .zip(output.iter())
                         .map(|(g, t)| g * (1.0 - t * t))
                         .collect();
                     self.accumulate_grad(input_idx, &grad);
                 }
 
-                TapeOp::MessagePass { neighbor_indices, weights, .. } => {
+                TapeOp::MessagePass {
+                    neighbor_indices,
+                    weights,
+                    ..
+                } => {
                     // Gradient flows back to neighbors weighted by edge weights
                     for (i, neighbor_idx) in neighbor_indices.iter().enumerate() {
                         let w = weights.get(i).copied().unwrap_or(1.0);
@@ -3619,7 +3661,9 @@ impl Tape {
                     }
                 }
 
-                TapeOp::GraphConv { neighbor_indices, .. } => {
+                TapeOp::GraphConv {
+                    neighbor_indices, ..
+                } => {
                     // Simple mean aggregation gradient
                     let n = neighbor_indices.len() as f32;
                     let scaled_grad: Vec<f32> = output_grad.iter().map(|&g| g / n).collect();
@@ -3628,21 +3672,23 @@ impl Tape {
                     }
                 }
 
-                TapeOp::Loss { pred_idx, target_idx } => {
+                TapeOp::Loss {
+                    pred_idx,
+                    target_idx,
+                } => {
                     // MSE gradient: d/dpred = 2 * (pred - target) / n
                     let pred = self.values[pred_idx].clone();
                     let target = self.values[target_idx].clone();
                     let n = pred.len() as f32;
 
-                    let grad: Vec<f32> = pred.iter()
+                    let grad: Vec<f32> = pred
+                        .iter()
                         .zip(target.iter())
                         .map(|(p, t)| 2.0 * (p - t) / n)
                         .collect();
 
                     // Scale by output gradient (usually 1.0)
-                    let scaled_grad: Vec<f32> = grad.iter()
-                        .map(|&g| g * output_grad[0])
-                        .collect();
+                    let scaled_grad: Vec<f32> = grad.iter().map(|&g| g * output_grad[0]).collect();
 
                     self.accumulate_grad(pred_idx, &scaled_grad);
                 }
@@ -3809,7 +3855,10 @@ impl BackwardPass for DagNN {
             };
 
             // Propagate gradient to predecessors
-            for edge in self.graph.edges_directed(node, petgraph::Direction::Incoming) {
+            for edge in self
+                .graph
+                .edges_directed(node, petgraph::Direction::Incoming)
+            {
                 let source = edge.source();
                 let edge_weight = edge.weight().weight;
 
@@ -3819,9 +3868,7 @@ impl BackwardPass for DagNN {
 
                 // Gradient w.r.t. edge weight = source_activation * node_grad
                 let source_activation = self.graph[source].activation;
-                let edge_grad: f32 = node_grad.iter()
-                    .map(|&g| g * source_activation)
-                    .sum();
+                let edge_grad: f32 = node_grad.iter().map(|&g| g * source_activation).sum();
                 grads.accumulate_edge(source, node, edge_grad);
             }
 
@@ -3856,11 +3903,7 @@ pub mod grad_utils {
     use super::*;
 
     /// Compute numerical gradient for validation
-    pub fn numerical_gradient<F>(
-        f: F,
-        x: &Array1<f32>,
-        eps: f32,
-    ) -> Array1<f32>
+    pub fn numerical_gradient<F>(f: F, x: &Array1<f32>, eps: f32) -> Array1<f32>
     where
         F: Fn(&Array1<f32>) -> f32,
     {
@@ -3975,7 +4018,11 @@ impl MessagePassingLayer {
     }
 
     /// Forward pass: aggregate neighbor features and transform
-    pub fn forward(&self, node_features: &Array1<f32>, neighbor_features: &[Array1<f32>]) -> Array1<f32> {
+    pub fn forward(
+        &self,
+        node_features: &Array1<f32>,
+        neighbor_features: &[Array1<f32>],
+    ) -> Array1<f32> {
         // Aggregate neighbors (mean pooling)
         let aggregated = if neighbor_features.is_empty() {
             node_features.clone()
@@ -4006,7 +4053,11 @@ impl MessagePassingLayer {
     ///
     /// Uses parallel processing via Rayon for improved performance on large graphs.
     /// Each node's forward pass is computed independently in parallel.
-    pub fn forward_batch(&self, node_features: &Array2<f32>, adjacency: &[Vec<usize>]) -> Array2<f32> {
+    pub fn forward_batch(
+        &self,
+        node_features: &Array2<f32>,
+        adjacency: &[Vec<usize>],
+    ) -> Array2<f32> {
         let n = node_features.shape()[0];
 
         // Process all nodes in parallel using Rayon
@@ -4088,7 +4139,12 @@ impl AttentionLayer {
     }
 
     /// Compute attention scores and weighted values
-    pub fn forward(&self, query: &Array1<f32>, keys: &[Array1<f32>], values: &[Array1<f32>]) -> Array1<f32> {
+    pub fn forward(
+        &self,
+        query: &Array1<f32>,
+        keys: &[Array1<f32>],
+        values: &[Array1<f32>],
+    ) -> Array1<f32> {
         if keys.is_empty() || values.is_empty() {
             return query.clone();
         }
@@ -4186,7 +4242,8 @@ impl NodePredictionHead {
     /// Get the predicted edit operation
     pub fn predict_op(&self, node_features: &Array1<f32>) -> EditOp {
         let probs = self.predict(node_features);
-        let max_idx = probs.iter()
+        let max_idx = probs
+            .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
@@ -4223,17 +4280,23 @@ pub enum PoolingType {
 impl GraphPooling {
     /// Create mean pooling
     pub fn mean() -> Self {
-        Self { pooling_type: PoolingType::Mean }
+        Self {
+            pooling_type: PoolingType::Mean,
+        }
     }
 
     /// Create max pooling
     pub fn max() -> Self {
-        Self { pooling_type: PoolingType::Max }
+        Self {
+            pooling_type: PoolingType::Max,
+        }
     }
 
     /// Create sum pooling
     pub fn sum() -> Self {
-        Self { pooling_type: PoolingType::Sum }
+        Self {
+            pooling_type: PoolingType::Sum,
+        }
     }
 
     /// Pool node features into a graph-level feature
@@ -4324,16 +4387,19 @@ impl GraphTransformNet {
     /// Forward pass: compute node representations
     pub fn encode(&self, dag: &DagNN) -> Vec<Array1<f32>> {
         // Get initial embeddings
-        let mut node_features: Vec<Array1<f32>> = dag.input_nodes()
+        let mut node_features: Vec<Array1<f32>> = dag
+            .input_nodes()
             .iter()
             .map(|&node| self.embedding.embed_node(&dag.graph[node]))
             .collect();
 
         // Build adjacency list
-        let adjacency: Vec<Vec<usize>> = dag.input_nodes()
+        let adjacency: Vec<Vec<usize>> = dag
+            .input_nodes()
             .iter()
             .map(|&node| {
-                dag.graph.edges_directed(node, petgraph::Direction::Incoming)
+                dag.graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
                     .filter_map(|e| {
                         let source = e.source();
                         dag.input_nodes().iter().position(|&n| n == source)
@@ -4344,10 +4410,10 @@ impl GraphTransformNet {
 
         // Apply message passing layers
         for layer in &self.mp_layers {
-            let features_matrix = Array2::from_shape_fn(
-                (node_features.len(), node_features[0].len()),
-                |(i, j)| node_features[i][j]
-            );
+            let features_matrix =
+                Array2::from_shape_fn((node_features.len(), node_features[0].len()), |(i, j)| {
+                    node_features[i][j]
+                });
             let new_features = layer.forward_batch(&features_matrix, &adjacency);
 
             node_features = (0..new_features.shape()[0])
@@ -4374,7 +4440,11 @@ impl GraphTransformNet {
     }
 
     /// Apply predicted edits to create output graph
-    pub fn apply_edits(&self, input: &DagNN, edits: &[(NodeId, EditOp, Vec<f32>)]) -> GraphemeResult<DagNN> {
+    pub fn apply_edits(
+        &self,
+        input: &DagNN,
+        edits: &[(NodeId, EditOp, Vec<f32>)],
+    ) -> GraphemeResult<DagNN> {
         let mut output_chars: Vec<char> = Vec::new();
 
         for &(node, op, _) in edits {
@@ -4779,7 +4849,9 @@ impl BrainRegistry {
     /// Process input with the appropriate brain
     pub fn process(&self, input: &str) -> DomainResult<DagNN> {
         self.find_processor(input)
-            .ok_or_else(|| DomainError::DomainNotRegistered("No brain can process this input".to_string()))?
+            .ok_or_else(|| {
+                DomainError::DomainNotRegistered("No brain can process this input".to_string())
+            })?
             .parse(input)
     }
 
@@ -4840,10 +4912,8 @@ impl CrossDomainBridge {
     where
         F: Fn(&DagNN) -> DomainResult<DagNN> + Send + Sync + 'static,
     {
-        self.mappings.insert(
-            (from.to_string(), to.to_string()),
-            Box::new(mapper),
-        );
+        self.mappings
+            .insert((from.to_string(), to.to_string()), Box::new(mapper));
     }
 
     /// Transfer knowledge from one domain to another
@@ -4851,15 +4921,16 @@ impl CrossDomainBridge {
         let key = (from.to_string(), to.to_string());
         self.mappings
             .get(&key)
-            .ok_or_else(|| DomainError::DomainNotRegistered(
-                format!("No mapping from {} to {}", from, to)
-            ))
+            .ok_or_else(|| {
+                DomainError::DomainNotRegistered(format!("No mapping from {} to {}", from, to))
+            })
             .and_then(|f| f(graph))
     }
 
     /// Check if a mapping exists
     pub fn has_mapping(&self, from: &str, to: &str) -> bool {
-        self.mappings.contains_key(&(from.to_string(), to.to_string()))
+        self.mappings
+            .contains_key(&(from.to_string(), to.to_string()))
     }
 }
 
@@ -4945,10 +5016,9 @@ pub trait CognitiveBrainBridge: Send + Sync {
     /// Route input to the most appropriate domain brain
     fn route_to_brain(&self, input: &str) -> DomainResult<BrainRoutingResult> {
         let registry = self.get_registry();
-        let brain = registry.find_processor(input)
-            .ok_or_else(|| DomainError::DomainNotRegistered(
-                "No brain can process this input".to_string()
-            ))?;
+        let brain = registry.find_processor(input).ok_or_else(|| {
+            DomainError::DomainNotRegistered("No brain can process this input".to_string())
+        })?;
 
         let graph = brain.parse(input)?;
         let result = brain.execute(&graph)?;
@@ -5042,7 +5112,8 @@ pub trait CognitiveBrainBridge: Send + Sync {
         rule_id: usize,
     ) -> DomainResult<DagNN> {
         let registry = self.get_registry();
-        let brain = registry.get(domain_id)
+        let brain = registry
+            .get(domain_id)
             .ok_or_else(|| DomainError::DomainNotRegistered(domain_id.to_string()))?;
         brain.transform(graph, rule_id)
     }
@@ -5248,14 +5319,21 @@ impl CognitiveBrainOrchestrator {
         }
 
         // Find all brains that can process this input
-        let mut applicable: Vec<_> = self.registry.domains().iter()
+        let mut applicable: Vec<_> = self
+            .registry
+            .domains()
+            .iter()
             .filter_map(|domain_id| {
                 let brain = self.registry.get(domain_id)?;
                 if brain.can_process(input) {
                     // Calculate confidence
                     let input_lower = input.to_lowercase();
                     let domain = brain.domain_id().to_lowercase();
-                    let confidence = if input_lower.contains(&domain) { 0.9 } else { 0.7 };
+                    let confidence = if input_lower.contains(&domain) {
+                        0.9
+                    } else {
+                        0.7
+                    };
                     if confidence >= self.config.confidence_threshold {
                         Some((domain_id.clone(), confidence))
                     } else {
@@ -5286,7 +5364,9 @@ impl CognitiveBrainOrchestrator {
             if let Some(brain) = self.registry.get(domain_id) {
                 if let Ok(graph) = brain.parse(input) {
                     if let Ok(exec_result) = brain.execute(&graph) {
-                        result.brain_results.insert(domain_id.clone(), exec_result.clone());
+                        result
+                            .brain_results
+                            .insert(domain_id.clone(), exec_result.clone());
                         result.domains.push(domain_id.clone());
 
                         // Update primary if this is highest confidence
@@ -5377,14 +5457,7 @@ mod tests {
     #[test]
     fn test_unicode() {
         // Test universal language support
-        let texts = vec![
-            "Hello",
-            "你好",
-            "مرحبا",
-            "🚀🎉",
-            "∫x²dx",
-            "Hello你好🚀",
-        ];
+        let texts = vec!["Hello", "你好", "مرحبا", "🚀🎉", "∫x²dx", "Hello你好🚀"];
 
         let mut processor = BasicTextProcessor::new();
 
@@ -5435,7 +5508,9 @@ mod tests {
     fn test_clique_creation() {
         let mut dag = DagNN::from_text("test").unwrap();
         let members = dag.input_nodes().to_vec();
-        let clique_id = dag.form_clique(members.clone(), Some("test_word".into())).unwrap();
+        let clique_id = dag
+            .form_clique(members.clone(), Some("test_word".into()))
+            .unwrap();
 
         assert_eq!(dag.cliques.len(), 1);
         assert_eq!(dag.cliques[clique_id].size(), 4);
@@ -5831,12 +5906,16 @@ mod tests {
         let n3 = dag.graph.add_node(Node::input('d', 3));
 
         // Create a triangle (3-clique): n0-n1-n2
-        dag.graph.add_edge(n0, n1, Edge::new(0.5, EdgeType::Sequential));
-        dag.graph.add_edge(n1, n2, Edge::new(0.5, EdgeType::Sequential));
-        dag.graph.add_edge(n0, n2, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph
+            .add_edge(n0, n1, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph
+            .add_edge(n1, n2, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph
+            .add_edge(n0, n2, Edge::new(0.5, EdgeType::Sequential));
 
         // n3 only connects to n0
-        dag.graph.add_edge(n0, n3, Edge::new(0.5, EdgeType::Sequential));
+        dag.graph
+            .add_edge(n0, n3, Edge::new(0.5, EdgeType::Sequential));
 
         dag.input_nodes = vec![n0, n1, n2, n3];
 
@@ -6106,9 +6185,9 @@ mod tests {
     fn test_find_clique_components() {
         // Two components: {0, 1} and {2}
         let adjacency = vec![
-            vec![1],    // 0 -> 1
-            vec![0],    // 1 -> 0
-            vec![],     // 2 (isolated)
+            vec![1], // 0 -> 1
+            vec![0], // 1 -> 0
+            vec![],  // 2 (isolated)
         ];
 
         let components = DagNN::find_clique_components(&adjacency, 3);
@@ -6116,19 +6195,13 @@ mod tests {
         assert_eq!(components.len(), 2);
 
         // Find which component contains 0 and 1
-        let comp_01: Vec<usize> = components.iter()
-            .find(|c| c.contains(&0))
-            .cloned()
-            .unwrap();
+        let comp_01: Vec<usize> = components.iter().find(|c| c.contains(&0)).cloned().unwrap();
         assert!(comp_01.contains(&0));
         assert!(comp_01.contains(&1));
         assert!(!comp_01.contains(&2));
 
         // The other component should have just 2
-        let comp_2: Vec<usize> = components.iter()
-            .find(|c| c.contains(&2))
-            .cloned()
-            .unwrap();
+        let comp_2: Vec<usize> = components.iter().find(|c| c.contains(&2)).cloned().unwrap();
         assert_eq!(comp_2.len(), 1);
     }
 
@@ -6297,7 +6370,8 @@ mod tests {
     #[test]
     fn test_validate_sparse_graph() {
         // Use a long text to ensure sparsity below threshold
-        let dag = DagNN::from_text("the quick brown fox jumps over the lazy dog and keeps running").unwrap();
+        let dag = DagNN::from_text("the quick brown fox jumps over the lazy dog and keeps running")
+            .unwrap();
         let stats = dag.stats();
         let violations = stats.validate();
 
@@ -6470,9 +6544,12 @@ mod tests {
 
         // Test num_parameters: embedding + 2 layers
         let embed_params = 256 * 64;
-        let layer1_params = 32 * 64 + 32;  // first layer: hidden_dim x embed_dim + bias
-        let layer2_params = 32 * 32 + 32;  // second layer: hidden_dim x hidden_dim + bias
-        assert_eq!(net.num_parameters(), embed_params + layer1_params + layer2_params);
+        let layer1_params = 32 * 64 + 32; // first layer: hidden_dim x embed_dim + bias
+        let layer2_params = 32 * 32 + 32; // second layer: hidden_dim x hidden_dim + bias
+        assert_eq!(
+            net.num_parameters(),
+            embed_params + layer1_params + layer2_params
+        );
 
         // Initially no gradients
         assert!(!net.has_gradients());
@@ -6885,8 +6962,9 @@ mod tests {
         let layer = MessagePassingLayer::new(4, 4);
         let features = Array2::from_shape_vec(
             (3, 4),
-            vec![1.0, 2.0, 3.0, 4.0, 0.5, 0.5, 0.5, 0.5, 1.5, 1.5, 1.5, 1.5]
-        ).unwrap();
+            vec![1.0, 2.0, 3.0, 4.0, 0.5, 0.5, 0.5, 0.5, 1.5, 1.5, 1.5, 1.5],
+        )
+        .unwrap();
         let adjacency = vec![vec![1], vec![0, 2], vec![1]];
 
         let output = layer.forward_batch(&features, &adjacency);
@@ -6940,7 +7018,10 @@ mod tests {
 
         let op = head.predict_op(&features);
         // Should return one of the valid operations
-        assert!(matches!(op, EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert));
+        assert!(matches!(
+            op,
+            EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert
+        ));
     }
 
     #[test]
@@ -7020,7 +7101,10 @@ mod tests {
 
         // Each edit should have node, operation, and probabilities
         for (_node, op, probs) in &edits {
-            assert!(matches!(op, EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert));
+            assert!(matches!(
+                op,
+                EditOp::Keep | EditOp::Delete | EditOp::Modify | EditOp::Insert
+            ));
             assert_eq!(probs.len(), 4);
         }
     }
@@ -7107,12 +7191,18 @@ mod tests {
         let loaded = GraphTransformNet::load_json(&json).unwrap();
 
         // Verify embedding weights are identical
-        assert_eq!(original.embedding.weights.shape(), loaded.embedding.weights.shape());
+        assert_eq!(
+            original.embedding.weights.shape(),
+            loaded.embedding.weights.shape()
+        );
         for i in 0..original.embedding.weights.shape()[0] {
             for j in 0..original.embedding.weights.shape()[1] {
                 assert!(
-                    (original.embedding.weights[[i, j]] - loaded.embedding.weights[[i, j]]).abs() < 1e-10,
-                    "Embedding weight mismatch at [{}, {}]", i, j
+                    (original.embedding.weights[[i, j]] - loaded.embedding.weights[[i, j]]).abs()
+                        < 1e-10,
+                    "Embedding weight mismatch at [{}, {}]",
+                    i,
+                    j
                 );
             }
         }
@@ -7131,9 +7221,18 @@ mod tests {
         }
 
         // Verify attention weights
-        assert_eq!(original.attention.query_proj.shape(), loaded.attention.query_proj.shape());
-        assert_eq!(original.attention.key_proj.shape(), loaded.attention.key_proj.shape());
-        assert_eq!(original.attention.value_proj.shape(), loaded.attention.value_proj.shape());
+        assert_eq!(
+            original.attention.query_proj.shape(),
+            loaded.attention.query_proj.shape()
+        );
+        assert_eq!(
+            original.attention.key_proj.shape(),
+            loaded.attention.key_proj.shape()
+        );
+        assert_eq!(
+            original.attention.value_proj.shape(),
+            loaded.attention.value_proj.shape()
+        );
     }
 
     #[test]

@@ -17,8 +17,8 @@
 //! - Modality translation (cross-modal inference)
 
 use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
+    LearnableParam, Persistable, PersistenceError,
 };
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
@@ -183,7 +183,12 @@ impl SpatialRegion {
 
     /// Full frame region
     pub fn full() -> Self {
-        Self { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        }
     }
 
     /// Check if regions overlap
@@ -313,8 +318,11 @@ pub trait MultiModalGraph: Send + Sync + Debug {
     ) -> MultiModalResult<Graph>;
 
     /// Translate content from one modality to another
-    fn translate_modality(&self, source: &ModalGraph, target_modality: Modality)
-        -> MultiModalResult<ModalGraph>;
+    fn translate_modality(
+        &self,
+        source: &ModalGraph,
+        target_modality: Modality,
+    ) -> MultiModalResult<ModalGraph>;
 
     /// Bind representations across modalities
     fn cross_modal_bind(&mut self, event: MultiModalEvent) -> MultiModalResult<Graph>;
@@ -514,8 +522,11 @@ impl MultiModalGraph for SimpleMultiModal {
         Ok(Self::clone_graph(&weighted_graphs[0].1.graph))
     }
 
-    fn translate_modality(&self, source: &ModalGraph, target_modality: Modality)
-        -> MultiModalResult<ModalGraph> {
+    fn translate_modality(
+        &self,
+        source: &ModalGraph,
+        target_modality: Modality,
+    ) -> MultiModalResult<ModalGraph> {
         // Simplified: copy graph with new modality tag
         // Real implementation would learn cross-modal mappings
         Ok(ModalGraph::new(
@@ -617,14 +628,25 @@ impl LearnableMultimodal {
         ];
         let sum: f32 = weights.iter().sum();
         if sum > 0.0 {
-            [weights[0] / sum, weights[1] / sum, weights[2] / sum, weights[3] / sum]
+            [
+                weights[0] / sum,
+                weights[1] / sum,
+                weights[2] / sum,
+                weights[3] / sum,
+            ]
         } else {
             [0.25, 0.25, 0.25, 0.25]
         }
     }
 
     /// Compute weighted fusion of modality values
-    pub fn weighted_fusion(&self, visual: f32, auditory: f32, linguistic: f32, tactile: f32) -> f32 {
+    pub fn weighted_fusion(
+        &self,
+        visual: f32,
+        auditory: f32,
+        linguistic: f32,
+        tactile: f32,
+    ) -> f32 {
         let w = self.normalized_weights();
         w[0] * visual + w[1] * auditory + w[2] * linguistic + w[3] * tactile
     }
@@ -639,7 +661,8 @@ impl LearnableMultimodal {
     pub fn attention_weights(&self, scores: &[f32]) -> Vec<f32> {
         let temp = self.fusion_temperature.value.max(0.01);
         let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_scores: Vec<f32> = scores.iter()
+        let exp_scores: Vec<f32> = scores
+            .iter()
             .map(|&s| ((s - max_score) / temp).exp())
             .collect();
         let sum: f32 = exp_scores.iter().sum();
@@ -761,7 +784,12 @@ impl BrainAwareMultimodal {
 
     /// Get domains relevant to a cross-modal input
     pub fn domains_for_input(&self, input_text: &str) -> Vec<String> {
-        self.bridge.route_to_multiple_brains(input_text).domains().iter().map(|s| s.to_string()).collect()
+        self.bridge
+            .route_to_multiple_brains(input_text)
+            .domains()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Get available domains
@@ -839,7 +867,8 @@ mod tests {
             (Modality::Linguistic, NodeIndex::new(0)),
             (Modality::Visual, NodeIndex::new(5)),
             0.95,
-        ).with_type(BindingType::Reference);
+        )
+        .with_type(BindingType::Reference);
 
         assert_eq!(binding.source.0, Modality::Linguistic);
         assert_eq!(binding.target.0, Modality::Visual);
@@ -943,7 +972,10 @@ mod tests {
         let mut mm = SimpleMultiModal::with_focus(Modality::Linguistic);
 
         let visual = Some(ModalGraph::new(make_graph("visual_data"), Modality::Visual));
-        let linguistic = Some(ModalGraph::new(make_graph("linguistic_data"), Modality::Linguistic));
+        let linguistic = Some(ModalGraph::new(
+            make_graph("linguistic_data"),
+            Modality::Linguistic,
+        ));
 
         // With linguistic focus, linguistic should be selected
         let result = mm.fuse(visual, None, linguistic, None);

@@ -9,8 +9,8 @@
 //! - Argument structure representation
 
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
-    ExecutionResult, ValidationIssue, ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -65,10 +65,7 @@ pub enum LegalNode {
     /// Legal principle or holding
     Holding(String),
     /// Legal argument
-    Argument {
-        premise: String,
-        conclusion: String,
-    },
+    Argument { premise: String, conclusion: String },
     /// Party in a case
     Party { name: String, role: PartyRole },
     /// Legal issue or question
@@ -245,25 +242,46 @@ impl LawBrain {
     /// Check if text looks like legal content
     fn looks_like_legal(&self, input: &str) -> bool {
         let legal_patterns = [
-            " v. ", " vs. ", "plaintiff", "defendant",
-            "appellant", "appellee", "statute", "§",
-            "U.S.C.", "U.S. ", "F.2d", "F.3d", "S.Ct.",
-            "court", "judge", "ruling", "precedent",
-            "holding", "dissent", "concur", "jurisdiction",
-            "liable", "damages", "tort", "contract",
-            "constitutional", "amendment", "rights",
+            " v. ",
+            " vs. ",
+            "plaintiff",
+            "defendant",
+            "appellant",
+            "appellee",
+            "statute",
+            "§",
+            "U.S.C.",
+            "U.S. ",
+            "F.2d",
+            "F.3d",
+            "S.Ct.",
+            "court",
+            "judge",
+            "ruling",
+            "precedent",
+            "holding",
+            "dissent",
+            "concur",
+            "jurisdiction",
+            "liable",
+            "damages",
+            "tort",
+            "contract",
+            "constitutional",
+            "amendment",
+            "rights",
         ];
         let lower = input.to_lowercase();
-        legal_patterns.iter().any(|p| lower.contains(&p.to_lowercase()))
+        legal_patterns
+            .iter()
+            .any(|p| lower.contains(&p.to_lowercase()))
     }
 
     /// Normalize legal text for domain processing
     /// Standardizes citation formats and legal terminology
     fn normalize_legal_text(&self, text: &str) -> String {
         // Normalize case citation format (vs. -> v.)
-        let normalized = text
-            .replace(" vs. ", " v. ")
-            .replace(" vs ", " v. ");
+        let normalized = text.replace(" vs. ", " v. ").replace(" vs ", " v. ");
 
         // Normalize common citation abbreviations
         let normalized = normalized
@@ -291,8 +309,14 @@ impl LawBrain {
         // Check for orphan citations (citations with no connections)
         for node_idx in graph.graph.node_indices() {
             if let LegalNode::Citation { case_name, .. } = &graph.graph[node_idx] {
-                let incoming = graph.graph.edges_directed(node_idx, petgraph::Direction::Incoming).count();
-                let outgoing = graph.graph.edges_directed(node_idx, petgraph::Direction::Outgoing).count();
+                let incoming = graph
+                    .graph
+                    .edges_directed(node_idx, petgraph::Direction::Incoming)
+                    .count();
+                let outgoing = graph
+                    .graph
+                    .edges_directed(node_idx, petgraph::Direction::Outgoing)
+                    .count();
                 if incoming == 0 && outgoing == 0 && graph.node_count() > 1 {
                     issues.push(ValidationIssue {
                         severity: ValidationSeverity::Info,
@@ -432,9 +456,10 @@ impl DomainBrain for LawBrain {
             2 => self.apply_irac_analysis(graph),
             3 => self.apply_citation_validation(graph),
             4 => self.apply_hierarchy_of_authority(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(
-                format!("Unknown rule ID: {}", rule_id)
-            )),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
         }
     }
 
@@ -452,10 +477,9 @@ impl DomainBrain for LawBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) = (
-                DagNN::from_text(input),
-                DagNN::from_text(output),
-            ) {
+            if let (Ok(input_graph), Ok(output_graph)) =
+                (DagNN::from_text(input), DagNN::from_text(output))
+            {
                 examples.push(DomainExample {
                     input: input_graph,
                     output: output_graph,

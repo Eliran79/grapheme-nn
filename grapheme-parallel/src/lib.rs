@@ -184,7 +184,10 @@ pub trait BatchProcessor<T>: Send + Sync {
     where
         T: Sync,
     {
-        batch.par_iter().map(|item| self.process_one(item)).collect()
+        batch
+            .par_iter()
+            .map(|item| self.process_one(item))
+            .collect()
     }
 
     /// Process batch with progress callback
@@ -698,11 +701,7 @@ mod tests {
 
     #[test]
     fn test_batch_processor() {
-        let graphs: Vec<Graph> = vec![
-            make_graph("hello"),
-            make_graph("world"),
-            make_graph("test"),
-        ];
+        let graphs: Vec<Graph> = vec![make_graph("hello"), make_graph("world"), make_graph("test")];
 
         let processor = GraphBatchProcessor::new(|g: &Graph| g.node_count());
         let counts = processor.process_batch(&graphs);
@@ -732,9 +731,11 @@ mod tests {
         let concurrent = ConcurrentGraph::new(graph);
 
         // Write doesn't actually modify in this test
-        concurrent.with_write(|_g| {
-            // Would modify graph here
-        }).unwrap();
+        concurrent
+            .with_write(|_g| {
+                // Would modify graph here
+            })
+            .unwrap();
 
         let count = concurrent.with_read(|g| g.node_count()).unwrap();
         assert!(count > 0);
@@ -767,11 +768,7 @@ mod tests {
 
     #[test]
     fn test_sharded_parallel() {
-        let graphs = vec![
-            make_graph("one"),
-            make_graph("two"),
-            make_graph("three"),
-        ];
+        let graphs = vec![make_graph("one"), make_graph("two"), make_graph("three")];
         let sharded = ShardedGraph::from_shards(graphs);
 
         let counts: Vec<_> = sharded.par_map_shards(|g| g.node_count());

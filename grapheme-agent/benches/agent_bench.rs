@@ -1,9 +1,7 @@
 //! Benchmarks for grapheme-agent
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use grapheme_agent::{
-    create_default_agent, Agency, Goal, GoalHierarchy, Plan, Graph,
-};
+use grapheme_agent::{create_default_agent, Agency, Goal, GoalHierarchy, Graph, Plan};
 use grapheme_meta::UncertaintyEstimate;
 
 fn make_graph(text: &str) -> Graph {

@@ -217,7 +217,10 @@ fn main() -> anyhow::Result<()> {
             }
             "verbose" => {
                 state.verbose = !state.verbose;
-                println!("  Verbose mode: {}", if state.verbose { "on" } else { "off" });
+                println!(
+                    "  Verbose mode: {}",
+                    if state.verbose { "on" } else { "off" }
+                );
             }
             "timing on" => {
                 state.timing = true;
@@ -229,7 +232,10 @@ fn main() -> anyhow::Result<()> {
             }
             "timing" => {
                 state.timing = !state.timing;
-                println!("  Timing display: {}", if state.timing { "on" } else { "off" });
+                println!(
+                    "  Timing display: {}",
+                    if state.timing { "on" } else { "off" }
+                );
             }
             _ => {
                 // Check for let statement
@@ -245,7 +251,10 @@ fn main() -> anyhow::Result<()> {
                                 if let Some(value) = quick_eval(value_str) {
                                     state.set_variable(name, value);
                                 } else {
-                                    println!("  Error: Cannot parse '{}' as a number or expression", value_str);
+                                    println!(
+                                        "  Error: Cannot parse '{}' as a number or expression",
+                                        value_str
+                                    );
                                 }
                             }
                         }

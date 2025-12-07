@@ -89,12 +89,7 @@ fn main() -> anyhow::Result<()> {
         datasets
     } else {
         // Load single file
-        let name = args
-            .data
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let name = args.data.file_stem().unwrap().to_string_lossy().to_string();
         let dataset = Dataset::load_jsonl(&args.data, &name)?;
         vec![(args.data.clone(), dataset)]
     };
@@ -173,7 +168,8 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Compute loss if we have graphs
-            if let (Some(ref nl_graph), Some(expected)) = (&result.nl_graph, example.expected_result)
+            if let (Some(ref nl_graph), Some(expected)) =
+                (&result.nl_graph, example.expected_result)
             {
                 let target_graph = grapheme_core::GraphemeGraph::from_text(&expected.to_string());
                 let loss = compute_ged_loss(nl_graph, &target_graph, 1.0, 0.5, 2.0);
@@ -260,7 +256,10 @@ fn main() -> anyhow::Result<()> {
         let overall_accuracy = total_correct as f64 / total as f64 * 100.0;
 
         println!("  Total examples: {}", total);
-        println!("  Correct:        {} ({:.1}%)", total_correct, overall_accuracy);
+        println!(
+            "  Correct:        {} ({:.1}%)",
+            total_correct, overall_accuracy
+        );
         println!(
             "  Incorrect:      {} ({:.1}%)",
             total_incorrect,

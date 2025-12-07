@@ -13,8 +13,8 @@
 //! - Full compilation and execution support
 
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
-    ExecutionResult, ValidationIssue, ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,10 @@ pub enum CodeNode {
         return_type: Option<String>,
     },
     /// Variable declaration
-    Variable { name: String, var_type: Option<String> },
+    Variable {
+        name: String,
+        var_type: Option<String>,
+    },
     /// Literal value
     Literal(LiteralValue),
     /// Binary operation
@@ -253,7 +256,10 @@ impl InferredType {
         match self {
             InferredType::Unknown(v) if *v == var => replacement.clone(),
             InferredType::Function { params, ret } => InferredType::Function {
-                params: params.iter().map(|p| p.substitute(var, replacement)).collect(),
+                params: params
+                    .iter()
+                    .map(|p| p.substitute(var, replacement))
+                    .collect(),
                 ret: Box::new(ret.substitute(var, replacement)),
             },
             InferredType::Array(inner) => {
@@ -262,9 +268,12 @@ impl InferredType {
             InferredType::Ref(inner) => {
                 InferredType::Ref(Box::new(inner.substitute(var, replacement)))
             }
-            InferredType::Tuple(types) => {
-                InferredType::Tuple(types.iter().map(|t| t.substitute(var, replacement)).collect())
-            }
+            InferredType::Tuple(types) => InferredType::Tuple(
+                types
+                    .iter()
+                    .map(|t| t.substitute(var, replacement))
+                    .collect(),
+            ),
             _ => self.clone(),
         }
     }
@@ -294,9 +303,7 @@ impl InferredType {
                 };
                 InferredType::Array(Box::new(Self::from_type_string(inner)))
             }
-            _ if s.starts_with('&') => {
-                InferredType::Ref(Box::new(Self::from_type_string(&s[1..])))
-            }
+            _ if s.starts_with('&') => InferredType::Ref(Box::new(Self::from_type_string(&s[1..]))),
             _ => InferredType::Named(s.to_string()),
         }
     }
@@ -364,8 +371,17 @@ impl TypeInferenceEngine {
     }
 
     /// Add a constraint that two types must be equal
-    pub fn add_constraint(&mut self, left: InferredType, right: InferredType, source: Option<NodeIndex>) {
-        self.constraints.push(TypeConstraint { left, right, source });
+    pub fn add_constraint(
+        &mut self,
+        left: InferredType,
+        right: InferredType,
+        source: Option<NodeIndex>,
+    ) {
+        self.constraints.push(TypeConstraint {
+            left,
+            right,
+            source,
+        });
     }
 
     /// Bind a variable name to a type in the environment
@@ -423,8 +439,14 @@ impl TypeInferenceEngine {
 
             // Function types
             (
-                InferredType::Function { params: p1, ret: r1 },
-                InferredType::Function { params: p2, ret: r2 },
+                InferredType::Function {
+                    params: p1,
+                    ret: r1,
+                },
+                InferredType::Function {
+                    params: p2,
+                    ret: r2,
+                },
             ) => {
                 if p1.len() != p2.len() {
                     return Err(format!(
@@ -482,7 +504,10 @@ impl TypeInferenceEngine {
             if let Err(e) = self.unify(&constraint.left, &constraint.right) {
                 self.errors.push(format!(
                     "Type error{}: {}",
-                    constraint.source.map(|n| format!(" at node {:?}", n)).unwrap_or_default(),
+                    constraint
+                        .source
+                        .map(|n| format!(" at node {:?}", n))
+                        .unwrap_or_default(),
                     e
                 ));
                 all_ok = false;
@@ -553,7 +578,11 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::Function { return_type, params, .. } => {
+            CodeNode::Function {
+                return_type,
+                params,
+                ..
+            } => {
                 let ret_ty = if let Some(ret_str) = return_type {
                     InferredType::from_type_string(ret_str)
                 } else {
@@ -641,9 +670,10 @@ impl TypeInferenceEngine {
 
             CodeNode::Type(ty_str) => InferredType::from_type_string(ty_str),
 
-            CodeNode::Module { .. } | CodeNode::Comment(_) | CodeNode::Assignment | CodeNode::ExprStmt => {
-                InferredType::Unit
-            }
+            CodeNode::Module { .. }
+            | CodeNode::Comment(_)
+            | CodeNode::Assignment
+            | CodeNode::ExprStmt => InferredType::Unit,
         }
     }
 
@@ -703,8 +733,16 @@ impl TypeInferenceEngine {
         operand_node: NodeIndex,
         op: &BinaryOperator,
     ) {
-        let operand_ty = self.node_types.get(&operand_node).cloned().unwrap_or_else(|| self.fresh_var());
-        let result_ty = self.node_types.get(&op_node).cloned().unwrap_or_else(|| self.fresh_var());
+        let operand_ty = self
+            .node_types
+            .get(&operand_node)
+            .cloned()
+            .unwrap_or_else(|| self.fresh_var());
+        let result_ty = self
+            .node_types
+            .get(&op_node)
+            .cloned()
+            .unwrap_or_else(|| self.fresh_var());
 
         match op {
             BinaryOperator::Add
@@ -956,9 +994,9 @@ impl TypeInferenceResult {
 
     /// Check if a node has a concrete (non-unknown) type
     pub fn has_concrete_type(&self, node: NodeIndex) -> bool {
-        self.node_types.get(&node).is_some_and(|ty| {
-            !matches!(ty, InferredType::Unknown(_))
-        })
+        self.node_types
+            .get(&node)
+            .is_some_and(|ty| !matches!(ty, InferredType::Unknown(_)))
     }
 }
 
@@ -1004,13 +1042,30 @@ impl CodeBrain {
     /// Check if code contains function-like syntax
     fn looks_like_code(&self, input: &str) -> bool {
         let code_patterns = [
-            "fn ", "def ", "function ", "func ",
-            "let ", "var ", "const ",
-            "if ", "else ", "while ", "for ",
-            "return ", "class ", "struct ",
-            "import ", "from ", "use ",
-            "->", "=>", "::",
-            "{", "}", "(", ")",
+            "fn ",
+            "def ",
+            "function ",
+            "func ",
+            "let ",
+            "var ",
+            "const ",
+            "if ",
+            "else ",
+            "while ",
+            "for ",
+            "return ",
+            "class ",
+            "struct ",
+            "import ",
+            "from ",
+            "use ",
+            "->",
+            "=>",
+            "::",
+            "{",
+            "}",
+            "(",
+            ")",
         ];
         let lower = input.to_lowercase();
         code_patterns.iter().any(|p| lower.contains(p))
@@ -1038,10 +1093,7 @@ impl CodeBrain {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
 
         // Remove trailing whitespace from each line
-        let lines: Vec<&str> = normalized
-            .lines()
-            .map(|line| line.trim_end())
-            .collect();
+        let lines: Vec<&str> = normalized.lines().map(|line| line.trim_end()).collect();
 
         // Join and trim overall
         lines.join("\n").trim().to_string()
@@ -1132,7 +1184,10 @@ impl CodeBrain {
             // Simple regex-free pattern matching
             let parts: Vec<&str> = result.split(op).collect();
             if parts.len() == 2 {
-                if let (Ok(a), Ok(b)) = (parts[0].trim().parse::<i64>(), parts[1].trim().parse::<i64>()) {
+                if let (Ok(a), Ok(b)) = (
+                    parts[0].trim().parse::<i64>(),
+                    parts[1].trim().parse::<i64>(),
+                ) {
                     result = func(a, b).to_string();
                 }
             }
@@ -1183,11 +1238,7 @@ impl CodeBrain {
 
                 // Add error comments if any
                 if !errors.is_empty() {
-                    result = format!(
-                        "{}\n/* Type errors:\n{}\n*/",
-                        result,
-                        errors.join("\n")
-                    );
+                    result = format!("{}\n/* Type errors:\n{}\n*/", result, errors.join("\n"));
                 }
 
                 DagNN::from_text(&result).map_err(|e| e.into())
@@ -1357,9 +1408,10 @@ impl DomainBrain for CodeBrain {
             2 => self.apply_inline_expansion(graph),
             3 => self.apply_loop_unrolling(graph),
             4 => self.apply_type_inference(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(
-                format!("Unknown rule ID: {}", rule_id)
-            )),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
         }
     }
 
@@ -1377,10 +1429,9 @@ impl DomainBrain for CodeBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) = (
-                DagNN::from_text(input),
-                DagNN::from_text(output),
-            ) {
+            if let (Ok(input_graph), Ok(output_graph)) =
+                (DagNN::from_text(input), DagNN::from_text(output))
+            {
                 examples.push(DomainExample {
                     input: input_graph,
                     output: output_graph,
@@ -1436,7 +1487,8 @@ pub mod tree_sitter_parser {
         /// Create a new parser for the specified language.
         pub fn new(language: Language) -> CodeGraphResult<Self> {
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&get_ts_language(language))
+            parser
+                .set_language(&get_ts_language(language))
                 .map_err(|e| parse_error(&format!("Failed to set language: {}", e)))?;
             Ok(Self { parser, language })
         }
@@ -1467,19 +1519,27 @@ pub mod tree_sitter_parser {
 
         /// Parse source code into a CodeGraph.
         pub fn parse(&mut self, code: &str) -> CodeGraphResult<CodeGraph> {
-            let tree = self.parser.parse(code, None)
+            let tree = self
+                .parser
+                .parse(code, None)
                 .ok_or_else(|| parse_error("Failed to parse code"))?;
 
             self.convert_tree_to_code_graph(tree.root_node(), code)
         }
 
         /// Convert a tree-sitter AST to a CodeGraph.
-        fn convert_tree_to_code_graph(&self, root: tree_sitter::Node, source: &str) -> CodeGraphResult<CodeGraph> {
+        fn convert_tree_to_code_graph(
+            &self,
+            root: tree_sitter::Node,
+            source: &str,
+        ) -> CodeGraphResult<CodeGraph> {
             let mut code_graph = CodeGraph::with_language(self.language);
             let mut child_index = 0;
 
             // Recursively convert nodes
-            if let Some(root_idx) = self.convert_node(&mut code_graph, root, source, &mut child_index)? {
+            if let Some(root_idx) =
+                self.convert_node(&mut code_graph, root, source, &mut child_index)?
+            {
                 code_graph.root = Some(root_idx);
             }
 
@@ -1494,7 +1554,8 @@ pub mod tree_sitter_parser {
             source: &str,
             child_index: &mut usize,
         ) -> CodeGraphResult<Option<NodeIndex>> {
-            let node_text = node.utf8_text(source.as_bytes())
+            let node_text = node
+                .utf8_text(source.as_bytes())
                 .map_err(|e| parse_error(&format!("UTF-8 error: {}", e)))?;
             let kind = node.kind();
 
@@ -1509,13 +1570,21 @@ pub mod tree_sitter_parser {
             let mut local_child_idx = 0usize;
             for child in node.children(&mut cursor) {
                 // Skip comment and whitespace nodes for cleaner graphs
-                if child.kind() == "comment" || child.kind() == "line_comment" ||
-                   child.kind() == "block_comment" {
+                if child.kind() == "comment"
+                    || child.kind() == "line_comment"
+                    || child.kind() == "block_comment"
+                {
                     continue;
                 }
 
-                if let Some(child_node_idx) = self.convert_node(graph, child, source, &mut local_child_idx)? {
-                    graph.graph.add_edge(node_idx, child_node_idx, CodeEdge::Child(local_child_idx));
+                if let Some(child_node_idx) =
+                    self.convert_node(graph, child, source, &mut local_child_idx)?
+                {
+                    graph.graph.add_edge(
+                        node_idx,
+                        child_node_idx,
+                        CodeEdge::Child(local_child_idx),
+                    );
                     local_child_idx += 1;
                 }
             }
@@ -1538,82 +1607,99 @@ pub mod tree_sitter_parser {
         /// Map Rust-specific AST nodes.
         fn map_rust_node(&self, kind: &str, text: &str) -> CodeNode {
             match kind {
-                "identifier" | "type_identifier" | "field_identifier" =>
-                    CodeNode::Identifier(text.to_string()),
-                "integer_literal" =>
-                    CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
-                "float_literal" =>
-                    CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
-                "string_literal" | "raw_string_literal" =>
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string())),
-                "char_literal" =>
-                    CodeNode::Literal(LiteralValue::String(text.chars().nth(1).map(|c| c.to_string()).unwrap_or_default())),
-                "boolean_literal" | "true" | "false" =>
-                    CodeNode::Literal(LiteralValue::Boolean(text == "true")),
-                "function_item" | "function_signature_item" =>
-                    CodeNode::Function { name: String::new(), params: vec![], return_type: None },
-                "call_expression" =>
-                    CodeNode::Call { function: String::new(), arg_count: 0 },
-                "binary_expression" =>
-                    CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" =>
-                    CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_expression" =>
-                    CodeNode::If,
-                "loop_expression" | "while_expression" | "for_expression" =>
-                    CodeNode::Loop { kind: LoopKind::While },
-                "let_declaration" =>
-                    CodeNode::Variable { name: String::new(), var_type: None },
-                "return_expression" =>
-                    CodeNode::Return,
-                "block" =>
-                    CodeNode::Block,
-                _ => CodeNode::Comment(format!("{}:{}", kind, text.chars().take(50).collect::<String>())),
+                "identifier" | "type_identifier" | "field_identifier" => {
+                    CodeNode::Identifier(text.to_string())
+                }
+                "integer_literal" => {
+                    CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
+                }
+                "float_literal" => {
+                    CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
+                }
+                "string_literal" | "raw_string_literal" => {
+                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
+                }
+                "char_literal" => CodeNode::Literal(LiteralValue::String(
+                    text.chars()
+                        .nth(1)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
+                )),
+                "boolean_literal" | "true" | "false" => {
+                    CodeNode::Literal(LiteralValue::Boolean(text == "true"))
+                }
+                "function_item" | "function_signature_item" => CodeNode::Function {
+                    name: String::new(),
+                    params: vec![],
+                    return_type: None,
+                },
+                "call_expression" => CodeNode::Call {
+                    function: String::new(),
+                    arg_count: 0,
+                },
+                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
+                "if_expression" => CodeNode::If,
+                "loop_expression" | "while_expression" | "for_expression" => CodeNode::Loop {
+                    kind: LoopKind::While,
+                },
+                "let_declaration" => CodeNode::Variable {
+                    name: String::new(),
+                    var_type: None,
+                },
+                "return_expression" => CodeNode::Return,
+                "block" => CodeNode::Block,
+                _ => CodeNode::Comment(format!(
+                    "{}:{}",
+                    kind,
+                    text.chars().take(50).collect::<String>()
+                )),
             }
         }
 
         /// Map Python-specific AST nodes.
         fn map_python_node(&self, kind: &str, text: &str) -> CodeNode {
             match kind {
-                "identifier" =>
-                    CodeNode::Identifier(text.to_string()),
-                "integer" =>
-                    CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
-                "float" =>
-                    CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
-                "string" | "concatenated_string" =>
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches(|c| c == '"' || c == '\'').to_string())),
-                "true" | "false" =>
-                    CodeNode::Literal(LiteralValue::Boolean(text == "True" || text == "true")),
-                "none" =>
-                    CodeNode::Literal(LiteralValue::Null),
-                "function_definition" =>
-                    CodeNode::Function { name: String::new(), params: vec![], return_type: None },
-                "call" =>
-                    CodeNode::Call { function: String::new(), arg_count: 0 },
-                "binary_operator" =>
-                    CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_operator" =>
-                    CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" =>
-                    CodeNode::If,
-                "while_statement" | "for_statement" =>
-                    CodeNode::Loop { kind: LoopKind::While },
-                "assignment" | "augmented_assignment" =>
-                    CodeNode::Assignment,
-                "return_statement" =>
-                    CodeNode::Return,
-                "block" =>
-                    CodeNode::Block,
-                _ => CodeNode::Comment(format!("{}:{}", kind, text.chars().take(50).collect::<String>())),
+                "identifier" => CodeNode::Identifier(text.to_string()),
+                "integer" => CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
+                "float" => CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
+                "string" | "concatenated_string" => CodeNode::Literal(LiteralValue::String(
+                    text.trim_matches(|c| c == '"' || c == '\'').to_string(),
+                )),
+                "true" | "false" => {
+                    CodeNode::Literal(LiteralValue::Boolean(text == "True" || text == "true"))
+                }
+                "none" => CodeNode::Literal(LiteralValue::Null),
+                "function_definition" => CodeNode::Function {
+                    name: String::new(),
+                    params: vec![],
+                    return_type: None,
+                },
+                "call" => CodeNode::Call {
+                    function: String::new(),
+                    arg_count: 0,
+                },
+                "binary_operator" => CodeNode::BinaryOp(BinaryOperator::Add),
+                "unary_operator" => CodeNode::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNode::If,
+                "while_statement" | "for_statement" => CodeNode::Loop {
+                    kind: LoopKind::While,
+                },
+                "assignment" | "augmented_assignment" => CodeNode::Assignment,
+                "return_statement" => CodeNode::Return,
+                "block" => CodeNode::Block,
+                _ => CodeNode::Comment(format!(
+                    "{}:{}",
+                    kind,
+                    text.chars().take(50).collect::<String>()
+                )),
             }
         }
 
         /// Map JavaScript-specific AST nodes.
         fn map_javascript_node(&self, kind: &str, text: &str) -> CodeNode {
             match kind {
-                "identifier" | "property_identifier" =>
-                    CodeNode::Identifier(text.to_string()),
+                "identifier" | "property_identifier" => CodeNode::Identifier(text.to_string()),
                 "number" => {
                     if text.contains('.') {
                         CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
@@ -1621,77 +1707,103 @@ pub mod tree_sitter_parser {
                         CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
                     }
                 }
-                "string" | "template_string" =>
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string())),
-                "true" | "false" =>
-                    CodeNode::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "undefined" =>
-                    CodeNode::Literal(LiteralValue::Null),
-                "function_declaration" | "function" | "arrow_function" =>
-                    CodeNode::Function { name: String::new(), params: vec![], return_type: None },
-                "call_expression" =>
-                    CodeNode::Call { function: String::new(), arg_count: 0 },
-                "binary_expression" =>
-                    CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" =>
-                    CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" =>
-                    CodeNode::If,
-                "while_statement" | "for_statement" | "for_in_statement" | "do_statement" =>
-                    CodeNode::Loop { kind: LoopKind::While },
-                "variable_declaration" | "lexical_declaration" =>
-                    CodeNode::Variable { name: String::new(), var_type: None },
-                "return_statement" =>
-                    CodeNode::Return,
-                "statement_block" =>
-                    CodeNode::Block,
-                _ => CodeNode::Comment(format!("{}:{}", kind, text.chars().take(50).collect::<String>())),
+                "string" | "template_string" => CodeNode::Literal(LiteralValue::String(
+                    text.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                        .to_string(),
+                )),
+                "true" | "false" => CodeNode::Literal(LiteralValue::Boolean(text == "true")),
+                "null" | "undefined" => CodeNode::Literal(LiteralValue::Null),
+                "function_declaration" | "function" | "arrow_function" => CodeNode::Function {
+                    name: String::new(),
+                    params: vec![],
+                    return_type: None,
+                },
+                "call_expression" => CodeNode::Call {
+                    function: String::new(),
+                    arg_count: 0,
+                },
+                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNode::If,
+                "while_statement" | "for_statement" | "for_in_statement" | "do_statement" => {
+                    CodeNode::Loop {
+                        kind: LoopKind::While,
+                    }
+                }
+                "variable_declaration" | "lexical_declaration" => CodeNode::Variable {
+                    name: String::new(),
+                    var_type: None,
+                },
+                "return_statement" => CodeNode::Return,
+                "statement_block" => CodeNode::Block,
+                _ => CodeNode::Comment(format!(
+                    "{}:{}",
+                    kind,
+                    text.chars().take(50).collect::<String>()
+                )),
             }
         }
 
         /// Map C-specific AST nodes.
         fn map_c_node(&self, kind: &str, text: &str) -> CodeNode {
             match kind {
-                "identifier" | "type_identifier" | "field_identifier" =>
-                    CodeNode::Identifier(text.to_string()),
+                "identifier" | "type_identifier" | "field_identifier" => {
+                    CodeNode::Identifier(text.to_string())
+                }
                 "number_literal" => {
                     if text.contains('.') {
                         CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
                     } else {
                         CodeNode::Literal(LiteralValue::Integer(
-                            i64::from_str_radix(text.trim_start_matches("0x").trim_start_matches("0X"),
-                                if text.starts_with("0x") || text.starts_with("0X") { 16 } else { 10 })
-                            .unwrap_or(0)
+                            i64::from_str_radix(
+                                text.trim_start_matches("0x").trim_start_matches("0X"),
+                                if text.starts_with("0x") || text.starts_with("0X") {
+                                    16
+                                } else {
+                                    10
+                                },
+                            )
+                            .unwrap_or(0),
                         ))
                     }
                 }
-                "string_literal" =>
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string())),
-                "char_literal" =>
-                    CodeNode::Literal(LiteralValue::String(text.chars().nth(1).map(|c| c.to_string()).unwrap_or_default())),
-                "true" | "false" =>
-                    CodeNode::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "NULL" =>
-                    CodeNode::Literal(LiteralValue::Null),
-                "function_definition" | "function_declarator" =>
-                    CodeNode::Function { name: String::new(), params: vec![], return_type: None },
-                "call_expression" =>
-                    CodeNode::Call { function: String::new(), arg_count: 0 },
-                "binary_expression" =>
-                    CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" =>
-                    CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" =>
-                    CodeNode::If,
-                "while_statement" | "for_statement" | "do_statement" =>
-                    CodeNode::Loop { kind: LoopKind::While },
-                "declaration" | "init_declarator" =>
-                    CodeNode::Variable { name: String::new(), var_type: None },
-                "return_statement" =>
-                    CodeNode::Return,
-                "compound_statement" =>
-                    CodeNode::Block,
-                _ => CodeNode::Comment(format!("{}:{}", kind, text.chars().take(50).collect::<String>())),
+                "string_literal" => {
+                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
+                }
+                "char_literal" => CodeNode::Literal(LiteralValue::String(
+                    text.chars()
+                        .nth(1)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
+                )),
+                "true" | "false" => CodeNode::Literal(LiteralValue::Boolean(text == "true")),
+                "null" | "NULL" => CodeNode::Literal(LiteralValue::Null),
+                "function_definition" | "function_declarator" => CodeNode::Function {
+                    name: String::new(),
+                    params: vec![],
+                    return_type: None,
+                },
+                "call_expression" => CodeNode::Call {
+                    function: String::new(),
+                    arg_count: 0,
+                },
+                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNode::If,
+                "while_statement" | "for_statement" | "do_statement" => CodeNode::Loop {
+                    kind: LoopKind::While,
+                },
+                "declaration" | "init_declarator" => CodeNode::Variable {
+                    name: String::new(),
+                    var_type: None,
+                },
+                "return_statement" => CodeNode::Return,
+                "compound_statement" => CodeNode::Block,
+                _ => CodeNode::Comment(format!(
+                    "{}:{}",
+                    kind,
+                    text.chars().take(50).collect::<String>()
+                )),
             }
         }
     }
@@ -1759,7 +1871,10 @@ mod tests {
         let brain = CodeBrain::new();
         assert_eq!(brain.detect_language("fn main() -> i32 {}"), Language::Rust);
         assert_eq!(brain.detect_language("def foo():"), Language::Python);
-        assert_eq!(brain.detect_language("function bar() {}"), Language::JavaScript);
+        assert_eq!(
+            brain.detect_language("function bar() {}"),
+            Language::JavaScript
+        );
         assert_eq!(brain.detect_language("#include <stdio.h>"), Language::C);
     }
 
@@ -1812,10 +1927,13 @@ mod tests {
             "[Int]"
         );
         assert_eq!(
-            format!("{}", InferredType::Function {
-                params: vec![InferredType::Int, InferredType::Int],
-                ret: Box::new(InferredType::Int),
-            }),
+            format!(
+                "{}",
+                InferredType::Function {
+                    params: vec![InferredType::Int, InferredType::Int],
+                    ret: Box::new(InferredType::Int),
+                }
+            ),
             "(Int, Int) -> Int"
         );
     }
@@ -1826,7 +1944,10 @@ mod tests {
         assert_eq!(InferredType::from_type_string("i64"), InferredType::Int);
         assert_eq!(InferredType::from_type_string("f64"), InferredType::Float);
         assert_eq!(InferredType::from_type_string("bool"), InferredType::Bool);
-        assert_eq!(InferredType::from_type_string("String"), InferredType::String);
+        assert_eq!(
+            InferredType::from_type_string("String"),
+            InferredType::String
+        );
         assert_eq!(InferredType::from_type_string("()"), InferredType::Unit);
         assert_eq!(
             InferredType::from_type_string("Vec<i32>"),
@@ -1880,7 +2001,9 @@ mod tests {
     fn test_type_inference_engine_unify_same_types() {
         let mut engine = TypeInferenceEngine::new();
         assert!(engine.unify(&InferredType::Int, &InferredType::Int).is_ok());
-        assert!(engine.unify(&InferredType::Bool, &InferredType::Bool).is_ok());
+        assert!(engine
+            .unify(&InferredType::Bool, &InferredType::Bool)
+            .is_ok());
     }
 
     #[test]
@@ -1896,16 +2019,22 @@ mod tests {
     fn test_type_inference_engine_unify_numeric_coercion() {
         let mut engine = TypeInferenceEngine::new();
         // Int and Float can coerce
-        assert!(engine.unify(&InferredType::Int, &InferredType::Float).is_ok());
+        assert!(engine
+            .unify(&InferredType::Int, &InferredType::Float)
+            .is_ok());
     }
 
     #[test]
     fn test_type_inference_engine_unify_fails() {
         let mut engine = TypeInferenceEngine::new();
         // Int and Bool cannot unify
-        assert!(engine.unify(&InferredType::Int, &InferredType::Bool).is_err());
+        assert!(engine
+            .unify(&InferredType::Int, &InferredType::Bool)
+            .is_err());
         // String and Int cannot unify
-        assert!(engine.unify(&InferredType::String, &InferredType::Int).is_err());
+        assert!(engine
+            .unify(&InferredType::String, &InferredType::Int)
+            .is_err());
     }
 
     #[test]

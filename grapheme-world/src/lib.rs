@@ -16,8 +16,8 @@
 //! This enables planning, counterfactual reasoning, and mental simulation.
 
 use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError, TransformRule,
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
+    LearnableParam, Persistable, PersistenceError, TransformRule,
 };
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
@@ -379,8 +379,12 @@ pub trait WorldModeling: Send + Sync + Debug {
     /// Predict future states given current state and action
     ///
     /// Returns multiple predictions representing possible outcomes.
-    fn predict(&self, state: &Graph, action: &Graph, horizon: usize)
-        -> WorldResult<Vec<Prediction>>;
+    fn predict(
+        &self,
+        state: &Graph,
+        action: &Graph,
+        horizon: usize,
+    ) -> WorldResult<Vec<Prediction>>;
 
     /// Explain an observation via causal graph
     ///
@@ -509,8 +513,12 @@ impl SimpleWorldModel {
 }
 
 impl WorldModeling for SimpleWorldModel {
-    fn predict(&self, state: &Graph, _action: &Graph, horizon: usize)
-        -> WorldResult<Vec<Prediction>> {
+    fn predict(
+        &self,
+        state: &Graph,
+        _action: &Graph,
+        horizon: usize,
+    ) -> WorldResult<Vec<Prediction>> {
         if horizon > self.config.max_prediction_horizon {
             return Err(WorldError::SimulationLimitExceeded(horizon));
         }
@@ -520,11 +528,7 @@ impl WorldModeling for SimpleWorldModel {
         let mut prob = 1.0f32;
 
         for t in 0..=horizon {
-            predictions.push(Prediction::new(
-                Self::clone_graph(state),
-                prob,
-                t,
-            ));
+            predictions.push(Prediction::new(Self::clone_graph(state), prob, t));
             prob *= 0.9; // Probability decreases over time
         }
 
@@ -765,7 +769,12 @@ impl BrainAwareWorldModel {
 
     /// Get domains relevant to a state
     pub fn domains_for_state(&self, state_text: &str) -> Vec<String> {
-        self.bridge.route_to_multiple_brains(state_text).domains().iter().map(|s| s.to_string()).collect()
+        self.bridge
+            .route_to_multiple_brains(state_text)
+            .domains()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Get available domains
@@ -833,8 +842,7 @@ mod tests {
         let action = make_graph("action");
         let effect = make_graph("effect");
 
-        let rule = TransitionRule::new(1, "test_rule", pre, action, effect)
-            .with_probability(0.9);
+        let rule = TransitionRule::new(1, "test_rule", pre, action, effect).with_probability(0.9);
 
         assert_eq!(rule.id, 1);
         assert_eq!(rule.probability, 0.9);
@@ -846,7 +854,8 @@ mod tests {
         assert!(dynamics.is_empty());
 
         let rule = TransitionRule::new(
-            1, "rule1",
+            1,
+            "rule1",
             make_graph("pre"),
             make_graph("act"),
             make_graph("eff"),
@@ -903,10 +912,7 @@ mod tests {
     fn test_simple_world_model_simulate() {
         let model = create_default_world_model();
         let initial = make_graph("initial");
-        let actions = vec![
-            make_graph("action1"),
-            make_graph("action2"),
-        ];
+        let actions = vec![make_graph("action1"), make_graph("action2")];
 
         let states = model.simulate(&initial, &actions).unwrap();
         assert_eq!(states.len(), 3); // initial + 2 actions

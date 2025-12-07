@@ -1,9 +1,7 @@
 //! Benchmarks for grapheme-meta
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use grapheme_meta::{
-    create_default_metacognition, ComputeBudget, Graph, MetaCognition,
-};
+use grapheme_meta::{create_default_metacognition, ComputeBudget, Graph, MetaCognition};
 
 fn make_graph(text: &str) -> Graph {
     grapheme_core::DagNN::from_text(text).unwrap()
@@ -21,9 +19,7 @@ fn bench_uncertainty(c: &mut Criterion) {
 fn bench_introspect(c: &mut Criterion) {
     let meta = create_default_metacognition();
 
-    c.bench_function("meta_introspect", |b| {
-        b.iter(|| meta.introspect())
-    });
+    c.bench_function("meta_introspect", |b| b.iter(|| meta.introspect()));
 }
 
 fn bench_allocate(c: &mut Criterion) {

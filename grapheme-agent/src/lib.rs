@@ -26,8 +26,8 @@
 //! - Human oversight integration points
 
 use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
+    LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_meta::UncertaintyEstimate;
 use grapheme_world::WorldModeling;
@@ -123,7 +123,10 @@ pub enum GoalStatus {
 
 impl GoalStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, GoalStatus::Achieved | GoalStatus::Failed(_) | GoalStatus::Abandoned)
+        matches!(
+            self,
+            GoalStatus::Achieved | GoalStatus::Failed(_) | GoalStatus::Abandoned
+        )
     }
 }
 
@@ -265,7 +268,8 @@ impl GoalHierarchy {
 
     /// Get all active goals
     pub fn active_goals(&self) -> Vec<&Goal> {
-        self.goals.values()
+        self.goals
+            .values()
             .filter(|g| g.status == GoalStatus::Active)
             .collect()
     }
@@ -343,7 +347,8 @@ impl ValueFunction {
 
     /// Set weight for a drive
     pub fn set_weight(&mut self, drive_name: &str, weight: f32) {
-        self.drive_weights.insert(drive_name.to_string(), weight.clamp(0.0, 1.0));
+        self.drive_weights
+            .insert(drive_name.to_string(), weight.clamp(0.0, 1.0));
     }
 
     /// Estimate value of a state
@@ -598,8 +603,7 @@ impl SimpleAgency {
 impl Agency for SimpleAgency {
     fn formulate_goal(&self, situation: &Graph) -> Goal {
         // Simple: create goal from situation
-        Goal::new(0, "derived_goal", Self::clone_graph(situation))
-            .with_priority(0.5)
+        Goal::new(0, "derived_goal", Self::clone_graph(situation)).with_priority(0.5)
     }
 
     fn decompose(&self, goal: &Goal, _world: &dyn WorldModeling) -> Vec<Goal> {
@@ -687,7 +691,8 @@ impl Agency for SimpleAgency {
 
     fn is_achieved(&self, _goal: &Goal, _state: &Graph) -> bool {
         // Simplified: check if plan is complete
-        self.agent.current_plan
+        self.agent
+            .current_plan
             .as_ref()
             .map(|p| p.is_complete())
             .unwrap_or(false)
@@ -987,7 +992,8 @@ mod tests {
         let drives = Drive::default_drives();
         assert!(!drives.is_empty());
 
-        let helpfulness = drives.iter()
+        let helpfulness = drives
+            .iter()
             .find(|d| matches!(d, Drive::Helpfulness { .. }))
             .unwrap();
         assert!(helpfulness.strength() > 0.8);
@@ -1049,10 +1055,16 @@ mod tests {
         let agency = SimpleAgency::new();
 
         let uncertain = UncertaintyEstimate::new(0.8, 0.2);
-        assert_eq!(agency.explore_or_exploit(&uncertain), ExplorationStrategy::Explore);
+        assert_eq!(
+            agency.explore_or_exploit(&uncertain),
+            ExplorationStrategy::Explore
+        );
 
         let certain = UncertaintyEstimate::new(0.1, 0.1);
-        assert_eq!(agency.explore_or_exploit(&certain), ExplorationStrategy::Exploit);
+        assert_eq!(
+            agency.explore_or_exploit(&certain),
+            ExplorationStrategy::Exploit
+        );
     }
 
     #[test]

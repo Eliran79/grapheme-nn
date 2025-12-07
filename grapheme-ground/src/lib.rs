@@ -23,8 +23,8 @@
 //! - Embodied interaction (ideal but hard)
 
 use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge,
-    DomainBrain, Learnable, LearnableParam, Persistable, PersistenceError,
+    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
+    LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,12 @@ pub struct Grounding {
 
 impl Grounding {
     /// Create a new grounding
-    pub fn new(symbol: NodeId, referent: Referent, confidence: f32, source: GroundingSource) -> Self {
+    pub fn new(
+        symbol: NodeId,
+        referent: Referent,
+        confidence: f32,
+        source: GroundingSource,
+    ) -> Self {
         Self {
             symbol,
             referent,
@@ -356,7 +361,9 @@ impl WorldInterface {
                 return actuator.execute(action);
             }
         }
-        Err(ActionError::CannotExecute("No suitable actuator".to_string()))
+        Err(ActionError::CannotExecute(
+            "No suitable actuator".to_string(),
+        ))
     }
 
     /// Number of sensors
@@ -439,7 +446,10 @@ impl GroundedGraph for SimpleGroundedGraph {
     }
 
     fn groundings(&self, node: NodeId) -> Vec<&Grounding> {
-        self.groundings.iter().filter(|g| g.symbol == node).collect()
+        self.groundings
+            .iter()
+            .filter(|g| g.symbol == node)
+            .collect()
     }
 
     fn get_grounding(&self, id: GroundingId) -> Option<&Grounding> {
@@ -783,7 +793,12 @@ impl BrainAwareGrounding {
 
     /// Get domains relevant to a percept
     pub fn domains_for_percept(&self, percept_text: &str) -> Vec<String> {
-        self.bridge.route_to_multiple_brains(percept_text).domains().iter().map(|s| s.to_string()).collect()
+        self.bridge
+            .route_to_multiple_brains(percept_text)
+            .domains()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Get available domains
@@ -834,8 +849,8 @@ mod tests {
 
     #[test]
     fn test_procedure_spec() {
-        let proc = ProcedureSpec::new("make_coffee")
-            .with_steps(vec!["grind beans", "add water", "brew"]);
+        let proc =
+            ProcedureSpec::new("make_coffee").with_steps(vec!["grind beans", "add water", "brew"]);
         assert_eq!(proc.name, "make_coffee");
         assert_eq!(proc.steps.len(), 3);
     }

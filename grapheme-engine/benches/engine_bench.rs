@@ -191,9 +191,7 @@ fn bench_expr_depth(c: &mut Criterion) {
         expr = Expr::add(expr, Expr::int(i));
     }
 
-    c.bench_function("expr_depth", |b| {
-        b.iter(|| black_box(&expr).depth())
-    });
+    c.bench_function("expr_depth", |b| b.iter(|| black_box(&expr).depth()));
 }
 
 fn bench_expr_node_count(c: &mut Criterion) {
