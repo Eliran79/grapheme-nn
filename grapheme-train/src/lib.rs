@@ -2065,6 +2065,8 @@ fn compute_soft_node_costs(
             };
 
             // Activation difference cost (0-1)
+            // This is LEARNED - activation = mean(embedding)
+            // Gradients flow through this to embeddings!
             let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
 
             // Degree difference cost (normalized, 0-1)
@@ -2072,7 +2074,10 @@ fn compute_soft_node_costs(
             let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
 
             // Combined cost with weights
-            let cost = 0.6 * type_cost + 0.2 * activation_cost + 0.2 * degree_cost;
+            // INCREASED activation weight: 0.7 (was 0.2)
+            // Activation is learned, type/degree are fixed!
+            // This allows gradients to flow to embeddings
+            let cost = 0.1 * type_cost + 0.7 * activation_cost + 0.2 * degree_cost;
             costs[i * n2 + j] = cost;
         }
     }

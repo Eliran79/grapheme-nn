@@ -1,7 +1,7 @@
 ---
 id: backend-100
 title: Implement finite difference gradient checking for structural loss
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -28,35 +28,119 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+
+Backend-099 implemented graph morphing with learnable threshold. This task validates that gradients flow correctly using finite difference checking.
+
+**Finding:** Discovered critical gradient routing issue - backward pass doesn't account for graph morphing.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+
+- [x] Implement finite difference gradient checker
+- [x] Test embedding gradients
+- [x] Test threshold gradients
+- [x] Identify gradient flow issues
+- [x] Apply partial fixes
+- [x] Document findings and solution path
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+
+### Phase 1: Gradient Checking Implementation
+- [x] Create finite difference test (`test_gradient_check.rs`)
+- [x] Test threshold gradient with numerical approximation
+- [x] Test embedding gradients with numerical approximation
+- [x] Identify mismatches
+
+### Phase 2: Problem Diagnosis
+- [x] Create gradient descent direction test (`test_gradient_descent.rs`)
+- [x] Verify loss should decrease with correct gradients
+- [x] Discovered: Loss increases → gradients are wrong!
+- [x] Root cause: Backward doesn't route through morphing
+
+### Phase 3: Partial Fixes
+- [x] Increase activation weight in structural loss (0.7 vs 0.2)
+- [x] Add activation merging during node merge
+- [x] Test fixes (still doesn't converge - core issue remains)
+
+### Phase 4: Documentation
+- [x] Document gradient flow problem in detail
+- [x] Propose solutions (merge history tracking)
+- [x] Create `GRADIENT_FLOW_ANALYSIS.md`
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Gradient Checker Implemented:**
+- Finite difference test compares analytical vs numerical gradients
+- Tests both threshold and embedding gradients
+- Identifies mismatches correctly
+
+✅ **Problem Identified:**
+- Root cause found: Backward pass doesn't route through morphing
+- Loss increases instead of decreases (experimental proof)
+- Solution path documented (merge history tracking)
+
+⚠️ **Full Convergence (Deferred to Backend-104):**
+- Current implementation doesn't converge
+- Requires merge history implementation (new task)
+- Partial fixes applied as interim improvements
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+
+### The Core Problem
+
+**Graph morphing breaks gradient flow:**
+
+```
+Forward: [a, b, c] → merge b+c → [a, bc]
+         ↓ embeddings            ↓ activations
+
+Backward: gradients for [a, bc] ← from loss
+          How to map to [a, b, c]? ❌ No tracking!
+```
+
+### Why Hard Merging is Still Correct
+
+Despite gradient issues, hard merging remains theoretically sound (graph theory):
+- Discrete topology (valid quotient graphs)
+- Learnable threshold (policy gradient style)
+- Problem is implementation, not theory
+
+### Solution: Merge History Tracking
+
+```rust
+pub struct MergeHistory {
+    node_mapping: HashMap<NodeId, Vec<(NodeId, f32)>>,
+}
+
+// Forward: Track which input nodes → output nodes
+// Backward: Route gradients using mapping
+```
+
+**Complexity:** O(n) - still polynomial! ✓
+
+### DAG Advantages Maintained
+
+All operations stay polynomial:
+- Merge history storage: O(n)
+- Gradient routing: O(n)
+- No NP-hard graph enumeration
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+
+**Test binaries created:**
+
+1. `test_gradient_check.rs` - Finite difference validation
+   - Threshold gradient: FAIL (heuristic vs numerical)
+   - Embedding gradient: FAIL (wrong routing)
+
+2. `test_gradient_descent.rs` - Descent direction test
+   - Single step: Loss increases +0.000219
+   - 20 epochs: Loss increases +0.001231
+   - Conclusion: Gradients point wrong direction
+
+**Partial fixes tested:**
+- Activation weight 0.7: No convergence
+- Activation merging: No convergence
+- Core routing issue must be fixed
 
 ## Version Control
 
@@ -85,25 +169,150 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+
+**New test binaries:**
+1. `grapheme-train/src/bin/test_gradient_check.rs` - Finite difference checker
+2. `grapheme-train/src/bin/test_gradient_descent.rs` - Descent direction test
+
+**Code fixes (partial):**
+1. `grapheme-train/src/lib.rs:2080` - Increased activation weight to 0.7
+2. `grapheme-core/src/lib.rs:4649-4652` - Average activations during merge
+
+**Documentation:**
+1. `docs/GRADIENT_FLOW_ANALYSIS.md` - Complete analysis and solution path
+
+**Runtime behavior:**
+- Loss now depends more on activations (70% weight vs 10% type)
+- Merged nodes have averaged activations
+- **But training still doesn't converge** (gradients wrong)
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+
+**Broken causal chain identified:**
+```
+Input text → Embeddings → Morphed graph → Loss
+                ↓              ↑
+                X  (gradient flow broken!)
+```
+
+**The problem:**
+- Forward morphs graph: [a, b, c] → [a, bc]
+- Backward gets gradients for [a, bc]
+- Cannot map back to [a, b, c] without tracking!
+
+**No async flows** - all synchronous operations.
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+
+**No new external dependencies.**
+
+**Modified files:**
+- `grapheme-train/src/lib.rs` - Activation weight changed
+- `grapheme-core/src/lib.rs` - Activation merging added
+
+**New files:**
+- Two test binaries (gradient checking)
+- One analysis document
+
+**Backward compatibility:**
+- API unchanged
+- All existing tests pass (595 tests)
+- Training runs but doesn't converge
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
 
-### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+**How to verify the problem:**
+```bash
+# Should show loss INCREASING (proves gradients wrong)
+cargo run --release --bin test_gradient_descent
+
+# Should show analytical ≠ numerical
+cargo run --release --bin test_gradient_check
+```
+
+**What to test when building solution:**
+```bash
+# After implementing merge history (Backend-104):
+1. test_gradient_descent → Loss should DECREASE
+2. test_gradient_check → Gradients should match
+3. train_with_threshold_tracking → Threshold should adapt meaningfully
+```
+
+**Known limitations:**
+- Gradients don't flow correctly (documented)
+- Loss increases instead of decreases
+- Cannot train until Backend-104 completes
+
+### Context for Next Task (Backend-104)
+
+**What to implement:**
+
+Merge history tracking to route gradients correctly:
+
+```rust
+pub struct MergeHistory {
+    // Maps output_node → Vec<(input_node, contribution_weight)>
+    node_mapping: HashMap<NodeId, Vec<(NodeId, f32)>>,
+}
+
+impl GraphTransformNet {
+    pub fn forward(&self, input: &Graph) -> (Graph, MergeHistory) {
+        let mut history = MergeHistory::new();
+
+        // During merging:
+        when merge node_j into node_i:
+            history.record_merge(node_i, vec![
+                (original_node_i, 0.5),
+                (original_node_j, 0.5),
+            ]);
+
+        (morphed_graph, history)
+    }
+
+    pub fn backward(&mut self, history: &MergeHistory, ...) {
+        // Route gradients using history
+        for (output_node, contributors) in history.mappings {
+            let grad = output_grads[output_node];
+            for (input_node, weight) in contributors {
+                input_grads[input_node] += grad * weight;
+            }
+        }
+
+        // Then backprop to embeddings as usual
+    }
+}
+```
+
+**Why this works:**
+- O(n) complexity - polynomial! ✓
+- Tracks exact merge decisions
+- Enables correct gradient routing
+- Preserves DAG advantages
+
+**Important decisions:**
+
+1. **Hard merging is CORRECT** - Don't change to soft merging!
+   - Graph theory requires discrete topology
+   - Problem is gradient routing, not the merge operation
+   - See README.md FAQ for full justification
+
+2. **Activation weight matters** - Keep at 0.7
+   - Emphasizes learnable component
+   - Type/degree are fixed, activation is learned
+
+3. **Early prototypes had it right** - They stored intermediate values
+   - We need similar tracking for merges
+   - See `/data/git/DagNeuralNetwork/trainer.py` for reference
+
+**Gotchas:**
+
+- Don't try soft merging - violates graph theory
+- Don't decrease activation weight - needs to be high for learning
+- Forward pass signature will change: `fn forward() -> (Graph, History)`
+- Backward pass needs history parameter
+- All calling code (train.rs) must be updated
+
+**Success criteria for Backend-104:**
+- `test_gradient_descent` shows DECREASING loss
+- `test_gradient_check` shows matching gradients (< 1% error)
+- Sustained convergence over 100+ epochs

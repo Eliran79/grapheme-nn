@@ -3067,10 +3067,16 @@ pub struct PoolingResult {
 /// For DAG with E = O(n): Total O(n·k·d) - polynomial! ✓
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SabagPooling {
-    /// Number of clusters to pool into (k < n)
+    /// Number of output nodes (k can be <, =, or > n)
     pub num_clusters: usize,
     /// Embedding dimension
     pub embed_dim: usize,
+    /// Learnable query matrix Q ∈ ℝ^{k × d}
+    /// Each row represents what one output node "queries" for
+    pub query_matrix: Array2<f32>,
+    /// Gradient accumulator for query_matrix
+    #[serde(skip)]
+    pub query_grad: Option<Array2<f32>>,
     /// Sinkhorn iterations for assignment refinement
     pub sinkhorn_iterations: usize,
     /// Temperature for softmax (lower = sharper assignments)
@@ -3081,14 +3087,22 @@ impl SabagPooling {
     /// Create new Sabag pooling layer
     ///
     /// # Arguments
-    /// * `num_clusters` - Number of output clusters (k < n)
+    /// * `num_clusters` - Number of output nodes (k can be <, =, or > n)
     /// * `embed_dim` - Dimension of node embeddings
     /// * `sinkhorn_iterations` - Number of Sinkhorn refinement iterations (default: 10)
     /// * `temperature` - Softmax temperature (default: 0.1, lower = sharper)
     pub fn new(num_clusters: usize, embed_dim: usize) -> Self {
+        // Initialize query matrix with small random values
+        let mut rng = rand::thread_rng();
+        let query_matrix = Array2::from_shape_fn((num_clusters, embed_dim), |_| {
+            rng.gen_range(-0.1..0.1)
+        });
+
         Self {
             num_clusters,
             embed_dim,
+            query_matrix,
+            query_grad: None,
             sinkhorn_iterations: 10,
             temperature: 0.1,
         }
@@ -3188,64 +3202,30 @@ impl SabagPooling {
         Z
     }
 
-    /// Sabag Step 3: Convert similarity matrix to assignment matrix
+    /// Sabag Step 3: Compute soft assignment matrix using learnable queries
     ///
-    /// Takes n×n similarity and produces n×k assignment where:
-    /// - k = num_clusters (output size)
-    /// - S[i,j] = probability node i belongs to cluster j
+    /// Computes S ∈ ℝ^{k × n} where:
+    /// - k = num_clusters (output size, can be <, =, or > n)
+    /// - n = number of input nodes
+    /// - S[i,j] = attention weight of output node i to input node j
     ///
-    /// Uses K-means++ to select k initial cluster centers, then
-    /// computes soft assignment based on similarity to centers.
+    /// This is essentially attention: each output node queries all input nodes.
+    /// Works for ANY k vs n relationship (compression, identity, expansion).
     ///
-    /// Complexity: O(n·k·d)
-    fn compute_assignment_from_similarity(
-        &self,
-        similarity: &Array2<f32>,
-        embeddings: &Array2<f32>,
-    ) -> Array2<f32> {
-        let n = similarity.nrows();
-        let k = self.num_clusters.min(n);
-        let d = embeddings.ncols();
+    /// Complexity: O(k·n·d) - same as before, but simpler!
+    fn compute_assignment_matrix(&self, embeddings: &Array2<f32>) -> Array2<f32> {
+        let n = embeddings.nrows();  // Input nodes
+        let k = self.num_clusters;   // Output nodes (no min()!)
 
-        // K-means++ initialization: Select k diverse cluster centers
-        let mut cluster_indices = Vec::with_capacity(k);
+        // Compute attention scores: Q · H^T ∈ ℝ^{k × n}
+        // Each row i: how much does output node i attend to each input node j?
+        let scores = self.query_matrix.dot(&embeddings.t());
 
-        if k > 0 && n > 0 {
-            cluster_indices.push(0); // Start with first node
+        // Apply temperature scaling and softmax per row
+        // S[i,j] = exp(score[i,j]/T) / Σ_j exp(score[i,j]/T)
+        let Z = scores.mapv(|x| (x / self.temperature).exp());
 
-            // Greedily add maximally distant nodes
-            for _ in 1..k {
-                let mut max_min_dist = f32::NEG_INFINITY;
-                let mut best_idx = 0;
-
-                for i in 0..n {
-                    if cluster_indices.contains(&i) { continue; }
-
-                    // Minimum distance to any existing cluster center
-                    let min_dist = cluster_indices.iter()
-                        .map(|&c| 1.0 - similarity[[i, c]]) // Distance = 1 - similarity
-                        .fold(f32::INFINITY, f32::min);
-
-                    if min_dist > max_min_dist {
-                        max_min_dist = min_dist;
-                        best_idx = i;
-                    }
-                }
-
-                cluster_indices.push(best_idx);
-            }
-        }
-
-        // Compute assignment scores: Z[i,j] = similarity to cluster j
-        let mut Z = Array2::zeros((n, k));
-        for i in 0..n {
-            for (j, &cluster_idx) in cluster_indices.iter().enumerate() {
-                Z[[i, j]] = similarity[[i, cluster_idx]];
-            }
-        }
-
-        // Apply temperature scaling and Sinkhorn refinement
-        Z = Z.mapv(|x| (x / self.temperature).exp());
+        // Optional: Sinkhorn refinement for balanced assignment
         self.sinkhorn_refine(Z)
     }
 
@@ -3305,35 +3285,34 @@ impl SabagPooling {
         graph: &GraphemeGraph,
         embeddings: &Array2<f32>,
     ) -> PoolingResult {
-        let n = embeddings.nrows();
-        let k = self.num_clusters.min(n); // Don't exceed input size
+        let n = embeddings.nrows();  // Input nodes
+        let k = self.num_clusters;   // Output nodes (no constraint!)
 
-        // Sabag Step 1: Compute DAG-aware pairwise similarities
-        let similarity = self.compute_dag_similarity(graph, embeddings);
-
-        // Sabag Step 2+3: Convert to soft assignment matrix with Sinkhorn refinement
-        let S = self.compute_assignment_from_similarity(&similarity, embeddings);
+        // Sabag Step 1: Compute soft assignment matrix using learnable queries
+        // S ∈ ℝ^{k × n} - each output node attends to all input nodes
+        let S = self.compute_assignment_matrix(embeddings);
 
         // DEBUG: Check S dimensions
-        if S.nrows() != n || S.ncols() != k {
+        if S.nrows() != k || S.ncols() != n {
             eprintln!("WARNING: S has wrong shape! Expected {}×{}, got {}×{}",
-                     n, k, S.nrows(), S.ncols());
+                     k, n, S.nrows(), S.ncols());
         }
 
-        // Sabag Step 4: Dimension reduction via matrix multiplication
-        // H_new = S^T · H ∈ ℝ^{k × d}
-        // This is where the magic happens: n nodes → k nodes (DIFFERENTIABLE!)
-        let H_new = S.t().dot(embeddings);
+        // Sabag Step 2: Compute output features via attention-weighted combination
+        // H_new = S · H ∈ ℝ^{k × d}
+        // Each output node is a weighted combination of input nodes
+        // Works for k < n (compression), k = n (identity), k > n (expansion)!
+        let H_new = S.dot(embeddings);
 
-        // Sabag Step 5: Build coarsened DAG
-        let coarsened_graph = self.create_coarsened_dag(graph, k, &H_new, &S);
+        // Sabag Step 3: Build output DAG with k nodes
+        let output_graph = self.create_coarsened_dag(graph, k, &H_new, &S);
 
         // DEBUG: Verify dimensions before returning
-        eprintln!("Sabag forward: n={}, k={}, S.shape={:?}, H_new.shape={:?}, coarsened_graph.input_nodes={}",
-                 n, k, S.dim(), H_new.dim(), coarsened_graph.input_nodes.len());
+        eprintln!("Sabag forward: n={}, k={}, S.shape={:?}, H_new.shape={:?}, output_graph.input_nodes={}",
+                 n, k, S.dim(), H_new.dim(), output_graph.input_nodes.len());
 
         PoolingResult {
-            graph: coarsened_graph,
+            graph: output_graph,
             features: H_new,
             assignment: S,  // CRITICAL: Store for backward pass!
         }
@@ -3470,6 +3449,33 @@ impl SabagPooling {
         }
 
         grad_Z
+    }
+
+    /// Zero out gradients
+    pub fn zero_grad(&mut self) {
+        self.query_grad = Some(Array2::zeros((self.num_clusters, self.embed_dim)));
+    }
+
+    /// Update query matrix using accumulated gradients (SGD step)
+    ///
+    /// # Arguments
+    /// * `lr` - Learning rate
+    pub fn step(&mut self, lr: f32) {
+        if let Some(ref grad) = self.query_grad {
+            self.query_matrix = &self.query_matrix - &(grad * lr);
+        }
+    }
+
+    /// Accumulate gradient for query matrix
+    ///
+    /// This is called during backward pass to accumulate ∂L/∂Q
+    pub fn accumulate_query_grad(&mut self, grad: &Array2<f32>) {
+        if self.query_grad.is_none() {
+            self.zero_grad();
+        }
+        if let Some(ref mut existing_grad) = self.query_grad {
+            *existing_grad = &*existing_grad + grad;
+        }
     }
 }
 
@@ -4890,12 +4896,18 @@ pub struct GraphTransformNet {
 
 impl GraphTransformNet {
     /// Create a new graph transformation network
-    pub fn new(vocab_size: usize, embed_dim: usize, hidden_dim: usize, num_layers: usize) -> Self {
+    ///
+    /// # Arguments
+    /// * `vocab_size` - Size of character vocabulary (typically 256)
+    /// * `embed_dim` - Dimension of character embeddings
+    /// * `hidden_dim` - Hidden layer dimension
+    /// * `num_clusters` - Number of Sabag output nodes (k can be <, =, or > input n)
+    pub fn new(vocab_size: usize, embed_dim: usize, hidden_dim: usize, num_clusters: usize) -> Self {
         let embedding = Embedding::xavier(vocab_size, embed_dim);
 
-        let mut mp_layers = Vec::with_capacity(num_layers);
+        let mut mp_layers = Vec::with_capacity(2);  // Fixed 2 layers
         let mut in_dim = embed_dim;
-        for _ in 0..num_layers {
+        for _ in 0..2 {
             mp_layers.push(MessagePassingLayer::new(in_dim, hidden_dim));
             in_dim = hidden_dim;
         }
@@ -4909,8 +4921,8 @@ impl GraphTransformNet {
         let merge_threshold = Parameter::new(0.8);
 
         // Initialize Sabag pooling for differentiable gradient flow
-        // Use k=2 clusters for minimal coarsening (works with short inputs)
-        let sabag_pooling = Some(SabagPooling::new(2, embed_dim));
+        // Can compress (k < n), preserve (k = n), or expand (k > n)!
+        let sabag_pooling = Some(SabagPooling::new(num_clusters, embed_dim));
 
         Self {
             embedding,
@@ -4919,7 +4931,7 @@ impl GraphTransformNet {
             node_head,
             pooling,
             hidden_dim,
-            num_layers,
+            num_layers: 2,
             merge_threshold,
             sabag_pooling,
         }
@@ -5030,6 +5042,10 @@ impl GraphTransformNet {
     pub fn zero_grad(&mut self) {
         self.embedding.zero_grad();
         self.merge_threshold.zero_grad();
+        // Zero Sabag pooling gradients
+        if let Some(ref mut sabag) = self.sabag_pooling {
+            sabag.zero_grad();
+        }
         // Process layers in parallel - each layer is independent
         self.mp_layers.par_iter_mut().for_each(|layer| {
             layer.zero_grad();
@@ -5043,6 +5059,10 @@ impl GraphTransformNet {
     pub fn step(&mut self, lr: f32) {
         self.embedding.step(lr);
         self.merge_threshold.step(lr);
+        // Update Sabag pooling query matrix
+        if let Some(ref mut sabag) = self.sabag_pooling {
+            sabag.step(lr);
+        }
         // Process layers in parallel - each layer is independent
         self.mp_layers.par_iter_mut().for_each(|layer| {
             layer.step(lr);
@@ -5151,12 +5171,12 @@ impl GraphTransformNet {
         node_gradients: &[f32],
         embed_dim: usize,
     ) {
-        let n = input_graph.input_nodes.len();  // Original nodes
-        let k = pooling_result.graph.input_nodes.len();  // Coarsened nodes
-        let S = &pooling_result.assignment;  // Sabag soft assignment S ∈ ℝ^(n×k)
+        let n = input_graph.input_nodes.len();  // Original input nodes
+        let k = pooling_result.graph.input_nodes.len();  // Output nodes
+        let S = &pooling_result.assignment;  // Sabag soft assignment S ∈ ℝ^{k×n}
 
         // Reshape node_gradients from Sinkhorn (flat k×d) to Array2<f32>
-        // Each row is gradient for one coarsened node
+        // Each row is gradient for one output node
         let mut grad_k = Array2::zeros((k, embed_dim));
         for i in 0..k {
             for j in 0..embed_dim {
@@ -5167,10 +5187,45 @@ impl GraphTransformNet {
             }
         }
 
-        // Sabag backward: Route gradients from k coarsened nodes to n original nodes
-        // ∂L/∂H_n = S · ∂L/∂H_k
-        // S ∈ ℝ^(n×k), grad_k ∈ ℝ^(k×d) → grad_n ∈ ℝ^(n×d)
-        let grad_n = S.dot(&grad_k);  // Matrix multiply!
+        // Sabag backward: Route gradients from k output nodes to n input nodes
+        // Forward was: H_new = S · H  (k×n · n×d = k×d)
+        // Backward:    ∂L/∂H = S^T · ∂L/∂H_new  (n×k · k×d = n×d)
+        let grad_n = S.t().dot(&grad_k);  // Transpose and multiply!
+
+        // Compute gradient w.r.t. query matrix Q
+        // This is stored in pooling_result and used during backward pass
+        // We need to pass the input embeddings that were used in forward pass
+        // These should be stored in pooling_result or recomputed here
+        if let Some(ref mut sabag) = self.sabag_pooling {
+            // Reconstruct the input embeddings H that were used in forward pass
+            let mut H = Array2::zeros((n, embed_dim));
+            for (idx, &node_id) in input_graph.input_nodes.iter().enumerate() {
+                if let NodeType::Input(ch) = input_graph.graph[node_id].node_type {
+                    let embedding = self.embedding.forward(ch);
+                    for (i, &val) in embedding.iter().enumerate() {
+                        H[[idx, i]] = val;
+                    }
+                }
+            }
+
+            // Proper gradient computation through attention
+            // Forward: out = S · H where S = softmax(Q · H^T)
+            // Backward: ∂L/∂Q requires gradient through softmax
+            //
+            // Step 1: ∂L/∂S (gradient w.r.t. assignment matrix)
+            // From out = S · H, we have ∂L/∂S = ∂L/∂out · H^T = grad_k · H^T
+            let grad_S = grad_k.dot(&H.t());  // k×d · d×n = k×n ✓
+
+            // Step 2: ∂L/∂scores (gradient through softmax)
+            // Use softmax Jacobian backward pass
+            let grad_scores = sabag.softmax_backward(&grad_S, S);  // k×n
+
+            // Step 3: ∂L/∂Q (gradient through Q · H^T)
+            // From scores = Q · H^T, we have ∂L/∂Q = ∂L/∂scores · H
+            let Q_grad = grad_scores.dot(&H);  // k×n · n×d = k×d ✓
+
+            sabag.accumulate_query_grad(&Q_grad);
+        }
 
         // Now route gradients to character embeddings
         // For each original input node, update its character embedding
