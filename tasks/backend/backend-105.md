@@ -28,29 +28,112 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Implement learnable edge weights to transform GRAPHEME into a true neuromorphic system where edges act as synapses with trainable connection strengths. This is the foundation for synaptic plasticity (pruning weak connections) and enables the network to learn which connections are important.
+
+In biological neurons, synapses have varying strengths. Some connections amplify signals (excitatory), others suppress them (inhibitory). The strength changes through learning. This task brings that biological realism to GRAPHEME.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Add `HashMap<(NodeId, NodeId), Parameter>` to store per-edge weights
+- Make edge weights learnable parameters with gradient accumulation
+- Initialize edge weights (Xavier/He initialization respecting DAG)
+- Add training methods (`zero_grad`, `step`) for edge weight optimization
+- Ensure edge weights integrate with forward pass (multiply activations by weights)
+- Verify gradient flow through edge weights
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Add `edge_weights: HashMap<(NodeId, NodeId), Parameter>` to GraphTransformNet
+- [ ] Add `edge_grads: HashMap<(NodeId, NodeId), f32>` for gradient accumulation
+- [ ] Implement `init_edge_weights()` with proper initialization (Xavier/He)
+- [ ] Modify forward pass to use edge weights (activation *= weight)
+- [ ] Implement backward pass for edge weight gradients
+- [ ] Add `zero_grad()` method to clear edge gradients
+- [ ] Add `step(lr)` method for gradient descent update
+- [ ] Write unit test: verify edge weight initialization
+- [ ] Write unit test: verify gradient flow through edge weights
+- [ ] Write integration test: train simple graph, verify weights change
+- [ ] Update GraphTransformNet serialization to include edge weights
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Edge weights are learnable parameters:**
+- Each edge (u, v) has a weight parameter that can be trained
+- Gradients flow through edge weights during backpropagation
+- Edge weights update via gradient descent
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Proper initialization:**
+- Edge weights initialized with Xavier or He initialization
+- Initialization respects DAG topology (no initialization errors)
+- Initial weights are reasonable (not too large/small)
+
+✅ **Integration with forward pass:**
+- Activation propagation multiplies by edge weights: `output += weight * input`
+- Forward pass produces different results with different edge weights
+- No performance regression (forward pass remains efficient)
+
+✅ **Training mechanics work:**
+- `zero_grad()` clears all edge weight gradients
+- Backward pass accumulates edge weight gradients correctly
+- `step(lr)` updates edge weights: `weight -= lr * grad`
+- Weights change during training (not stuck)
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+### Architecture Design
+
+**Data Structure:**
+```rust
+pub struct GraphTransformNet {
+    // ... existing fields ...
+
+    /// Learnable edge weights (synaptic strengths)
+    /// Maps (source_node, target_node) -> weight parameter
+    /// Positive weights = excitatory, negative = inhibitory
+    pub edge_weights: HashMap<(NodeId, NodeId), Parameter>,
+
+    /// Gradient accumulator for edge weights
+    #[serde(skip)]
+    pub edge_grads: HashMap<(NodeId, NodeId), f32>,
+}
+```
+
+**Initialization Strategy:**
+- Use Xavier initialization: `w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))`
+- Or He initialization for ReLU: `w ~ N(0, sqrt(2/fan_in))`
+- Initialize ALL edges in the graph during model creation
+- Store in HashMap for O(1) lookup during forward/backward pass
+
+**Forward Pass Integration:**
+```rust
+// OLD: activation_next = sum(activation_prev for all predecessors)
+// NEW: activation_next = sum(edge_weight * activation_prev for all predecessors)
+
+for edge in graph.edges_directed(node, Incoming) {
+    let source = edge.source();
+    let weight = self.edge_weights.get(&(source, node)).unwrap_or(&1.0);
+    activation_next += weight * activations[source];
+}
+```
+
+**Backward Pass:**
+```rust
+// For each edge (u, v):
+// grad_weight = activation[u] * grad_activation[v]
+
+for edge in graph.edges() {
+    let (u, v) = (edge.source(), edge.target());
+    let grad = activations[u] * grad_activations[v];
+    *self.edge_grads.entry((u, v)).or_insert(0.0) += grad;
+}
+```
+
+**NP-Hard Complexity Avoidance:**
+- HashMap lookup is O(1) - no graph search needed
+- Edge weights stored explicitly, not computed
+- No combinatorial enumeration
+- Linear time w.r.t. number of edges
+
+### Dependencies
+- Depends on backend-092 (Parameter struct with gradient support)
+- Required by backend-107 (neuromorphic forward pass)
+- Required by backend-108 (edge weight pruning)
 
 ## Testing
 - [ ] Write unit tests for new functionality
