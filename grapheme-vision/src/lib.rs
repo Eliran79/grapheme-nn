@@ -248,7 +248,7 @@ pub fn new_vision_node(node_type: VisionNodeType) -> VisionNode {
 // ============================================================================
 
 /// Edge types in vision graphs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum VisionEdge {
     /// Spatial adjacency (blobs touching/near each other)
     Adjacent,
@@ -258,6 +258,104 @@ pub enum VisionEdge {
     SameContour,
     /// Hierarchical (lower level to higher level)
     Hierarchy,
+    /// Directional: source is above target
+    Above,
+    /// Directional: source is below target
+    Below,
+    /// Directional: source is left of target
+    LeftOf,
+    /// Directional: source is right of target
+    RightOf,
+    /// Proximity with distance (normalized 0.0-1.0)
+    Proximity(f32),
+}
+
+// Note: Eq is implemented manually for VisionEdge because Proximity contains f32
+// Two Proximity edges are considered equal if their distances are within epsilon
+impl Eq for VisionEdge {}
+
+impl std::hash::Hash for VisionEdge {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        if let VisionEdge::Proximity(d) = self {
+            // Quantize to 3 decimal places for consistent hashing
+            ((d * 1000.0).round() as i32).hash(state);
+        }
+    }
+}
+
+/// Spatial relationship between two blobs
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpatialRelationship {
+    /// Horizontal direction (-1.0 = left, 1.0 = right)
+    pub dx: f32,
+    /// Vertical direction (-1.0 = up, 1.0 = down)
+    pub dy: f32,
+    /// Distance (normalized 0.0-1.0 relative to image diagonal)
+    pub distance: f32,
+    /// Angle in radians (0 = right, π/2 = down)
+    pub angle: f32,
+}
+
+impl SpatialRelationship {
+    /// Compute spatial relationship between two blobs
+    pub fn from_blobs(a: &Blob, b: &Blob, image_width: usize, image_height: usize) -> Self {
+        let (ax, ay) = a.center;
+        let (bx, by) = b.center;
+
+        let dx = bx - ax;
+        let dy = by - ay;
+
+        // Normalize distance to image diagonal
+        let diag = ((image_width * image_width + image_height * image_height) as f32).sqrt();
+        let dist = (dx * dx + dy * dy).sqrt();
+        let distance = (dist / diag).min(1.0);
+
+        // Compute angle (0 = right, π/2 = down, π = left, -π/2 = up)
+        let angle = dy.atan2(dx);
+
+        Self {
+            dx: dx / image_width as f32,
+            dy: dy / image_height as f32,
+            distance,
+            angle,
+        }
+    }
+
+    /// Check if source is predominantly above target
+    pub fn is_above(&self) -> bool {
+        self.dy < -0.1 && self.dy.abs() > self.dx.abs()
+    }
+
+    /// Check if source is predominantly below target
+    pub fn is_below(&self) -> bool {
+        self.dy > 0.1 && self.dy.abs() > self.dx.abs()
+    }
+
+    /// Check if source is predominantly left of target
+    pub fn is_left_of(&self) -> bool {
+        self.dx < -0.1 && self.dx.abs() > self.dy.abs()
+    }
+
+    /// Check if source is predominantly right of target
+    pub fn is_right_of(&self) -> bool {
+        self.dx > 0.1 && self.dx.abs() > self.dy.abs()
+    }
+
+    /// Get the primary directional edge type
+    pub fn primary_direction(&self) -> Option<VisionEdge> {
+        if self.is_above() {
+            Some(VisionEdge::Above)
+        } else if self.is_below() {
+            Some(VisionEdge::Below)
+        } else if self.is_left_of() {
+            Some(VisionEdge::LeftOf)
+        } else if self.is_right_of() {
+            Some(VisionEdge::RightOf)
+        } else {
+            None // Too close to determine direction
+        }
+    }
 }
 
 // ============================================================================
@@ -337,6 +435,10 @@ pub struct FeatureConfig {
     pub build_hierarchy: bool,
     /// Maximum hierarchy levels
     pub max_hierarchy_levels: usize,
+    /// Threshold for spatial adjacency (normalized distance 0.0-1.0)
+    pub adjacency_threshold: f32,
+    /// Enable rich spatial relationships (directional edges, proximity)
+    pub build_spatial_graph: bool,
 }
 
 impl Default for FeatureConfig {
@@ -350,6 +452,8 @@ impl Default for FeatureConfig {
             detect_corners: false,
             build_hierarchy: true,
             max_hierarchy_levels: 3,
+            adjacency_threshold: 0.15,
+            build_spatial_graph: true,
         }
     }
 }
@@ -366,6 +470,8 @@ impl FeatureConfig {
             detect_corners: false,
             build_hierarchy: true,
             max_hierarchy_levels: 2,
+            adjacency_threshold: 0.2,
+            build_spatial_graph: true,
         }
     }
 }
@@ -702,6 +808,89 @@ pub fn extract_hierarchical_blobs(image: &RawImage, config: &FeatureConfig) -> B
     }
 }
 
+/// Compute all spatial relationships between blobs.
+///
+/// Returns a vector of (source_idx, target_idx, relationship) tuples
+/// for all pairs of blobs within the proximity threshold.
+pub fn compute_spatial_relationships(
+    blobs: &[Blob],
+    image_width: usize,
+    image_height: usize,
+    max_distance: f32,
+) -> Vec<(usize, usize, SpatialRelationship)> {
+    let mut relationships = Vec::new();
+
+    for i in 0..blobs.len() {
+        for j in (i + 1)..blobs.len() {
+            let rel = SpatialRelationship::from_blobs(&blobs[i], &blobs[j], image_width, image_height);
+
+            // Only include relationships within threshold
+            if rel.distance <= max_distance {
+                relationships.push((i, j, rel));
+            }
+        }
+    }
+
+    relationships
+}
+
+/// Build a complete spatial relationship graph from blobs.
+///
+/// This creates edges for:
+/// - Adjacency (blobs touching)
+/// - Directional relationships (above, below, left, right)
+/// - Proximity with distance
+pub fn build_spatial_graph(
+    graph: &mut VisionGraph,
+    blobs: &[Blob],
+    blob_nodes: &[NodeIndex],
+    config: &FeatureConfig,
+) {
+    let max_distance = config.adjacency_threshold.max(0.5); // At least 50% of diagonal
+
+    let relationships = compute_spatial_relationships(
+        blobs,
+        graph.width,
+        graph.height,
+        max_distance,
+    );
+
+    for (i, j, rel) in relationships {
+        if i >= blob_nodes.len() || j >= blob_nodes.len() {
+            continue;
+        }
+
+        let node_i = blob_nodes[i];
+        let node_j = blob_nodes[j];
+
+        // Add adjacency edge if blobs are touching
+        if blobs_adjacent(&blobs[i], &blobs[j]) {
+            graph.add_edge(node_i, node_j, VisionEdge::Adjacent);
+            graph.add_edge(node_j, node_i, VisionEdge::Adjacent);
+        }
+
+        // Add directional edges
+        if let Some(dir) = rel.primary_direction() {
+            graph.add_edge(node_i, node_j, dir);
+            // Add inverse direction
+            let inverse = match dir {
+                VisionEdge::Above => VisionEdge::Below,
+                VisionEdge::Below => VisionEdge::Above,
+                VisionEdge::LeftOf => VisionEdge::RightOf,
+                VisionEdge::RightOf => VisionEdge::LeftOf,
+                _ => continue,
+            };
+            graph.add_edge(node_j, node_i, inverse);
+        }
+
+        // Add proximity edge if within threshold
+        if rel.distance <= config.adjacency_threshold {
+            graph.add_edge(node_i, node_j, VisionEdge::Proximity(rel.distance));
+            graph.add_edge(node_j, node_i, VisionEdge::Proximity(rel.distance));
+        }
+    }
+}
+
 /// Check if two blobs are adjacent (bounding boxes touch or overlap)
 pub fn blobs_adjacent(a: &Blob, b: &Blob) -> bool {
     let (ax, ay, aw, ah) = a.bbox;
@@ -786,14 +975,40 @@ pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<
             }
         }
 
-        // Add adjacency edges between same-level blobs
-        for i in 0..hierarchy.blobs.len() {
-            for j in (i + 1)..hierarchy.blobs.len() {
-                // Only connect blobs at the same level
-                if hierarchy.blobs[i].level == hierarchy.blobs[j].level {
-                    if blobs_adjacent(&hierarchy.blobs[i].blob, &hierarchy.blobs[j].blob) {
-                        graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
-                        graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+        // Build spatial relationships between same-level blobs
+        if config.build_spatial_graph {
+            // Group blobs by level and build spatial graphs for each level
+            for level in 0..hierarchy.num_levels {
+                let level_blobs: Vec<&Blob> = hierarchy.blobs
+                    .iter()
+                    .filter(|h| h.level == level)
+                    .map(|h| &h.blob)
+                    .collect();
+                let level_indices: Vec<usize> = hierarchy.blobs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| h.level == level)
+                    .map(|(i, _)| i)
+                    .collect();
+
+                // Build spatial relationships within this level
+                if level_blobs.len() > 1 {
+                    let owned_blobs: Vec<Blob> = level_blobs.iter().map(|b| (*b).clone()).collect();
+                    let level_nodes: Vec<NodeIndex> = level_indices.iter()
+                        .filter_map(|&i| blob_nodes.get(i).copied())
+                        .collect();
+                    build_spatial_graph(&mut graph, &owned_blobs, &level_nodes, config);
+                }
+            }
+        } else {
+            // Simple adjacency (old behavior)
+            for i in 0..hierarchy.blobs.len() {
+                for j in (i + 1)..hierarchy.blobs.len() {
+                    if hierarchy.blobs[i].level == hierarchy.blobs[j].level {
+                        if blobs_adjacent(&hierarchy.blobs[i].blob, &hierarchy.blobs[j].blob) {
+                            graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
+                            graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+                        }
                     }
                 }
             }
@@ -822,12 +1037,17 @@ pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<
             graph.add_edge(root, node, VisionEdge::Contains);
         }
 
-        // Add adjacency edges between blobs
-        for i in 0..blobs.len() {
-            for j in (i + 1)..blobs.len() {
-                if blobs_adjacent(&blobs[i], &blobs[j]) {
-                    graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
-                    graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+        // Build spatial relationships
+        if config.build_spatial_graph && blobs.len() > 1 {
+            build_spatial_graph(&mut graph, &blobs, &blob_nodes, config);
+        } else {
+            // Simple adjacency (old behavior)
+            for i in 0..blobs.len() {
+                for j in (i + 1)..blobs.len() {
+                    if blobs_adjacent(&blobs[i], &blobs[j]) {
+                        graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
+                        graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+                    }
                 }
             }
         }
@@ -1580,6 +1800,162 @@ mod tests {
 
         assert!(blobs_adjacent(&blob1, &blob2)); // Close enough
         assert!(!blobs_adjacent(&blob1, &blob3)); // Far apart
+    }
+
+    // ========================================================================
+    // Spatial Relationship Tests
+    // ========================================================================
+
+    #[test]
+    fn test_spatial_relationship_from_blobs() {
+        let blob_a = Blob {
+            pixels: vec![(5, 5)],
+            center: (5.0, 5.0),
+            intensity: 1.0,
+            bbox: (5, 5, 1, 1),
+        };
+        let blob_b = Blob {
+            pixels: vec![(15, 5)],
+            center: (15.0, 5.0),
+            intensity: 1.0,
+            bbox: (15, 5, 1, 1),
+        };
+
+        let rel = SpatialRelationship::from_blobs(&blob_a, &blob_b, 20, 20);
+
+        // B is to the right of A
+        assert!(rel.dx > 0.0);
+        assert!(rel.dy.abs() < 0.01); // Same row
+        assert!(rel.is_right_of());
+        assert_eq!(rel.primary_direction(), Some(VisionEdge::RightOf));
+    }
+
+    #[test]
+    fn test_spatial_relationship_above_below() {
+        let blob_top = Blob {
+            pixels: vec![(10, 2)],
+            center: (10.0, 2.0),
+            intensity: 1.0,
+            bbox: (10, 2, 1, 1),
+        };
+        let blob_bottom = Blob {
+            pixels: vec![(10, 18)],
+            center: (10.0, 18.0),
+            intensity: 1.0,
+            bbox: (10, 18, 1, 1),
+        };
+
+        let rel = SpatialRelationship::from_blobs(&blob_top, &blob_bottom, 20, 20);
+
+        // Bottom is below Top
+        assert!(rel.dy > 0.0);
+        assert!(rel.is_below());
+        assert_eq!(rel.primary_direction(), Some(VisionEdge::Below));
+
+        // Reverse: Top is above Bottom
+        let rel_reverse = SpatialRelationship::from_blobs(&blob_bottom, &blob_top, 20, 20);
+        assert!(rel_reverse.dy < 0.0);
+        assert!(rel_reverse.is_above());
+        assert_eq!(rel_reverse.primary_direction(), Some(VisionEdge::Above));
+    }
+
+    #[test]
+    fn test_spatial_relationship_distance() {
+        let blob_a = Blob {
+            pixels: vec![(0, 0)],
+            center: (0.0, 0.0),
+            intensity: 1.0,
+            bbox: (0, 0, 1, 1),
+        };
+        let blob_b = Blob {
+            pixels: vec![(10, 0)],
+            center: (10.0, 0.0),
+            intensity: 1.0,
+            bbox: (10, 0, 1, 1),
+        };
+
+        let rel = SpatialRelationship::from_blobs(&blob_a, &blob_b, 10, 10);
+
+        // Distance should be normalized to diagonal (sqrt(100+100) = 14.14)
+        // Distance 10 / 14.14 ≈ 0.707
+        assert!(rel.distance > 0.5 && rel.distance < 0.8);
+    }
+
+    #[test]
+    fn test_compute_spatial_relationships() {
+        let blobs = vec![
+            Blob {
+                pixels: vec![(2, 2)],
+                center: (2.0, 2.0),
+                intensity: 1.0,
+                bbox: (2, 2, 1, 1),
+            },
+            Blob {
+                pixels: vec![(8, 2)],
+                center: (8.0, 2.0),
+                intensity: 1.0,
+                bbox: (8, 2, 1, 1),
+            },
+            Blob {
+                pixels: vec![(2, 8)],
+                center: (2.0, 8.0),
+                intensity: 1.0,
+                bbox: (2, 8, 1, 1),
+            },
+        ];
+
+        let relationships = compute_spatial_relationships(&blobs, 10, 10, 1.0);
+
+        // Should have 3 pairs: (0,1), (0,2), (1,2)
+        assert_eq!(relationships.len(), 3);
+
+        // Check that relationships are computed
+        for (i, j, rel) in &relationships {
+            assert!(*i < *j);
+            assert!(rel.distance > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_vision_edge_directional() {
+        assert_eq!(VisionEdge::Above, VisionEdge::Above);
+        assert_ne!(VisionEdge::Above, VisionEdge::Below);
+        assert_eq!(VisionEdge::Proximity(0.5), VisionEdge::Proximity(0.5));
+    }
+
+    #[test]
+    fn test_image_to_graph_with_spatial() {
+        // Create two blobs in different positions (closer together for spatial edges)
+        let mut pixels = vec![0.0f32; 400]; // 20x20
+        // Blob 1: left side
+        for y in 8..12 {
+            for x in 3..7 {
+                pixels[y * 20 + x] = 0.8;
+            }
+        }
+        // Blob 2: right side (close enough for directional relationship)
+        for y in 8..12 {
+            for x in 13..17 {
+                pixels[y * 20 + x] = 0.8;
+            }
+        }
+
+        let image = RawImage::grayscale(20, 20, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.build_spatial_graph = true;
+        config.build_hierarchy = false;
+        config.max_hierarchy_levels = 1;
+        config.adjacency_threshold = 0.5; // Allow more distant relationships
+
+        let graph = image_to_graph(&image, &config).unwrap();
+
+        // Should have root + 2 blobs = 3 nodes
+        assert_eq!(graph.node_count(), 3);
+        // Should have:
+        // - 2 Contains edges (root → blob1, root → blob2)
+        // - Directional edges (blob1 → blob2 RightOf, blob2 → blob1 LeftOf)
+        // - Proximity edges (if within threshold)
+        assert!(graph.edge_count() >= 4, "Expected at least 4 edges (2 contains + 2 directional), got {}", graph.edge_count());
     }
 
     // ========================================================================

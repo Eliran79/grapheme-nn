@@ -568,6 +568,7 @@ dependencies = [
  "criterion",
  "grapheme-brain-common",
  "grapheme-core",
+ "mnist",
  "ndarray",
  "petgraph",
  "serde",
