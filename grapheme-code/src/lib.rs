@@ -56,9 +56,9 @@ pub enum Language {
     Generic,
 }
 
-/// AST node types for code representation
+/// AST node type variants for code representation
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum CodeNode {
+pub enum CodeNodeType {
     /// Module/file root
     Module { name: String, language: Language },
     /// Function definition
@@ -98,6 +98,54 @@ pub enum CodeNode {
     Assignment,
     /// Expression statement
     ExprStmt,
+}
+
+/// Code node with activation for gradient flow (Backend-117)
+///
+/// Wraps CodeNodeType with a learned activation value that enables
+/// gradients to flow through structural loss during training.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeNode {
+    /// The underlying node type
+    pub node_type: CodeNodeType,
+    /// Learned activation value for gradient flow
+    pub activation: f32,
+}
+
+impl CodeNode {
+    /// Create a new code node with default activation based on type
+    pub fn new(node_type: CodeNodeType) -> Self {
+        let activation = Self::type_activation(&node_type);
+        Self { node_type, activation }
+    }
+
+    /// Create node with explicit activation value
+    pub fn with_activation(node_type: CodeNodeType, activation: f32) -> Self {
+        Self { node_type, activation }
+    }
+
+    /// Get default activation based on node type
+    /// Higher values for more semantically important constructs
+    fn type_activation(node_type: &CodeNodeType) -> f32 {
+        match node_type {
+            CodeNodeType::Module { .. } => 0.9,      // Root structure
+            CodeNodeType::Function { .. } => 0.8,   // Key construct
+            CodeNodeType::Variable { .. } => 0.4,   // Data storage
+            CodeNodeType::Literal(_) => 0.2,        // Constants
+            CodeNodeType::BinaryOp(_) => 0.5,       // Operations
+            CodeNodeType::UnaryOp(_) => 0.4,        // Operations
+            CodeNodeType::Call { .. } => 0.7,       // Function invocation
+            CodeNodeType::If => 0.6,                // Control flow
+            CodeNodeType::Loop { .. } => 0.6,       // Control flow
+            CodeNodeType::Return => 0.5,            // Control flow
+            CodeNodeType::Block => 0.3,             // Structural
+            CodeNodeType::Type(_) => 0.4,           // Type annotation
+            CodeNodeType::Comment(_) => 0.1,        // Documentation
+            CodeNodeType::Identifier(_) => 0.3,     // Reference
+            CodeNodeType::Assignment => 0.5,        // State change
+            CodeNodeType::ExprStmt => 0.3,          // Expression wrapper
+        }
+    }
 }
 
 /// Literal value types
@@ -545,7 +593,7 @@ impl TypeInferenceEngine {
         let node = &graph.graph[node_idx];
 
         match node {
-            CodeNode::Literal(lit) => match lit {
+            CodeNode { node_type: CodeNodeType::Literal(lit), .. } => match lit {
                 LiteralValue::Integer(_) => InferredType::Int,
                 LiteralValue::Float(_) => InferredType::Float,
                 LiteralValue::String(_) => InferredType::String,
@@ -553,7 +601,7 @@ impl TypeInferenceEngine {
                 LiteralValue::Null => InferredType::Null,
             },
 
-            CodeNode::Variable { name, var_type } => {
+            CodeNode { node_type: CodeNodeType::Variable { name, var_type }, .. } => {
                 if let Some(ty_str) = var_type {
                     let ty = InferredType::from_type_string(ty_str);
                     self.bind_var(name, ty.clone());
@@ -567,7 +615,7 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::Identifier(name) => {
+            CodeNode { node_type: CodeNodeType::Identifier(name), .. } => {
                 if let Some(ty) = self.lookup_var(name).cloned() {
                     ty
                 } else {
@@ -578,11 +626,11 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::Function {
+            CodeNode { node_type: CodeNodeType::Function {
                 return_type,
                 params,
                 ..
-            } => {
+            }, .. } => {
                 let ret_ty = if let Some(ret_str) = return_type {
                     InferredType::from_type_string(ret_str)
                 } else {
@@ -597,7 +645,7 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::Call { function, .. } => {
+            CodeNode { node_type: CodeNodeType::Call { function, .. }, .. } => {
                 // Look up function type and return its return type
                 if let Some(InferredType::Function { ret, .. }) = self.lookup_var(function) {
                     (**ret).clone()
@@ -606,7 +654,7 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::BinaryOp(op) => {
+            CodeNode { node_type: CodeNodeType::BinaryOp(op), .. } => {
                 // Binary ops: determine result type based on operator
                 match op {
                     BinaryOperator::Add
@@ -641,39 +689,39 @@ impl TypeInferenceEngine {
                 }
             }
 
-            CodeNode::UnaryOp(op) => match op {
+            CodeNode { node_type: CodeNodeType::UnaryOp(op), .. } => match op {
                 UnaryOperator::Neg | UnaryOperator::BitNot => self.fresh_var(),
                 UnaryOperator::Not => InferredType::Bool,
                 UnaryOperator::Deref => self.fresh_var(),
                 UnaryOperator::Ref => self.fresh_var(),
             },
 
-            CodeNode::If => {
+            CodeNode { node_type: CodeNodeType::If, .. } => {
                 // If expressions can have a result type
                 self.fresh_var()
             }
 
-            CodeNode::Loop { .. } => {
+            CodeNode { node_type: CodeNodeType::Loop { .. }, .. } => {
                 // Loops typically return unit unless they have break with value
                 InferredType::Unit
             }
 
-            CodeNode::Return => {
+            CodeNode { node_type: CodeNodeType::Return, .. } => {
                 // Return type depends on the expression being returned
                 self.fresh_var()
             }
 
-            CodeNode::Block => {
+            CodeNode { node_type: CodeNodeType::Block, .. } => {
                 // Block type is the type of the last expression
                 self.fresh_var()
             }
 
-            CodeNode::Type(ty_str) => InferredType::from_type_string(ty_str),
+            CodeNode { node_type: CodeNodeType::Type(ty_str), .. } => InferredType::from_type_string(ty_str),
 
-            CodeNode::Module { .. }
-            | CodeNode::Comment(_)
-            | CodeNode::Assignment
-            | CodeNode::ExprStmt => InferredType::Unit,
+            CodeNode { node_type: CodeNodeType::Module { .. }, .. }
+            | CodeNode { node_type: CodeNodeType::Comment(_), .. }
+            | CodeNode { node_type: CodeNodeType::Assignment, .. }
+            | CodeNode { node_type: CodeNodeType::ExprStmt, .. } => InferredType::Unit,
         }
     }
 
@@ -696,7 +744,7 @@ impl TypeInferenceEngine {
 
                 CodeEdge::Child(_) => {
                     // For binary operators, constrain operands
-                    if let CodeNode::BinaryOp(op) = &graph.graph[source] {
+                    if let CodeNode { node_type: CodeNodeType::BinaryOp(op), .. } = &graph.graph[source] {
                         self.propagate_binary_op_constraints(source, target, op);
                     }
                 }
@@ -870,25 +918,25 @@ impl CodeGraph {
 
         // Try to parse as a number
         if let Ok(n) = trimmed.parse::<i64>() {
-            let node = graph.add_node(CodeNode::Literal(LiteralValue::Integer(n)));
+            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(n))));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         if let Ok(n) = trimmed.parse::<f64>() {
-            let node = graph.add_node(CodeNode::Literal(LiteralValue::Float(n)));
+            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Float(n))));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         // Try to parse as a boolean
         if trimmed == "true" {
-            let node = graph.add_node(CodeNode::Literal(LiteralValue::Boolean(true)));
+            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Boolean(true))));
             graph.root = Some(node);
             return Ok(graph);
         }
         if trimmed == "false" {
-            let node = graph.add_node(CodeNode::Literal(LiteralValue::Boolean(false)));
+            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Boolean(false))));
             graph.root = Some(node);
             return Ok(graph);
         }
@@ -916,7 +964,7 @@ impl CodeGraph {
                     let right_graph = Self::from_simple_expr(right_str)?;
 
                     // Create the binary op node
-                    let op_node = graph.add_node(CodeNode::BinaryOp(op));
+                    let op_node = graph.add_node(CodeNode::new(CodeNodeType::BinaryOp(op)));
 
                     // Add left and right as children (simplified - just copy root values)
                     if let Some(left_root) = left_graph.root {
@@ -935,7 +983,7 @@ impl CodeGraph {
         }
 
         // Treat as identifier
-        let node = graph.add_node(CodeNode::Identifier(trimmed.to_string()));
+        let node = graph.add_node(CodeNode::new(CodeNodeType::Identifier(trimmed.to_string())));
         graph.root = Some(node);
         Ok(graph)
     }
@@ -969,7 +1017,7 @@ impl CodeGraph {
 
     /// Add a type annotation edge from a node to its type
     pub fn annotate_type(&mut self, node: NodeIndex, type_str: &str) -> NodeIndex {
-        let type_node = self.add_node(CodeNode::Type(type_str.to_string()));
+        let type_node = self.add_node(CodeNode::new(CodeNodeType::Type(type_str.to_string())));
         self.add_edge(node, type_node, CodeEdge::HasType);
         type_node
     }
@@ -1118,7 +1166,7 @@ impl CodeBrain {
 
         // Check for undefined identifiers (simplified)
         for node_idx in graph.graph.node_indices() {
-            if let CodeNode::Identifier(name) = &graph.graph[node_idx] {
+            if let CodeNode { node_type: CodeNodeType::Identifier(name), .. } = &graph.graph[node_idx] {
                 // In a real implementation, we'd check against defined symbols
                 if name.starts_with("undefined_") {
                     issues.push(ValidationIssue {
@@ -1606,155 +1654,158 @@ pub mod tree_sitter_parser {
 
         /// Map Rust-specific AST nodes.
         fn map_rust_node(&self, kind: &str, text: &str) -> CodeNode {
-            match kind {
+            let node_type = match kind {
                 "identifier" | "type_identifier" | "field_identifier" => {
-                    CodeNode::Identifier(text.to_string())
+                    CodeNodeType::Identifier(text.to_string())
                 }
                 "integer_literal" => {
-                    CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
+                    CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
                 }
                 "float_literal" => {
-                    CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
+                    CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
                 }
                 "string_literal" | "raw_string_literal" => {
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
+                    CodeNodeType::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
                 }
-                "char_literal" => CodeNode::Literal(LiteralValue::String(
+                "char_literal" => CodeNodeType::Literal(LiteralValue::String(
                     text.chars()
                         .nth(1)
                         .map(|c| c.to_string())
                         .unwrap_or_default(),
                 )),
                 "boolean_literal" | "true" | "false" => {
-                    CodeNode::Literal(LiteralValue::Boolean(text == "true"))
+                    CodeNodeType::Literal(LiteralValue::Boolean(text == "true"))
                 }
-                "function_item" | "function_signature_item" => CodeNode::Function {
+                "function_item" | "function_signature_item" => CodeNodeType::Function {
                     name: String::new(),
                     params: vec![],
                     return_type: None,
                 },
-                "call_expression" => CodeNode::Call {
+                "call_expression" => CodeNodeType::Call {
                     function: String::new(),
                     arg_count: 0,
                 },
-                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_expression" => CodeNode::If,
-                "loop_expression" | "while_expression" | "for_expression" => CodeNode::Loop {
+                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
+                "if_expression" => CodeNodeType::If,
+                "loop_expression" | "while_expression" | "for_expression" => CodeNodeType::Loop {
                     kind: LoopKind::While,
                 },
-                "let_declaration" => CodeNode::Variable {
+                "let_declaration" => CodeNodeType::Variable {
                     name: String::new(),
                     var_type: None,
                 },
-                "return_expression" => CodeNode::Return,
-                "block" => CodeNode::Block,
-                _ => CodeNode::Comment(format!(
+                "return_expression" => CodeNodeType::Return,
+                "block" => CodeNodeType::Block,
+                _ => CodeNodeType::Comment(format!(
                     "{}:{}",
                     kind,
                     text.chars().take(50).collect::<String>()
                 )),
-            }
+            };
+            CodeNode::new(node_type)
         }
 
         /// Map Python-specific AST nodes.
         fn map_python_node(&self, kind: &str, text: &str) -> CodeNode {
-            match kind {
-                "identifier" => CodeNode::Identifier(text.to_string()),
-                "integer" => CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
-                "float" => CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
-                "string" | "concatenated_string" => CodeNode::Literal(LiteralValue::String(
+            let node_type = match kind {
+                "identifier" => CodeNodeType::Identifier(text.to_string()),
+                "integer" => CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
+                "float" => CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
+                "string" | "concatenated_string" => CodeNodeType::Literal(LiteralValue::String(
                     text.trim_matches(|c| c == '"' || c == '\'').to_string(),
                 )),
                 "true" | "false" => {
-                    CodeNode::Literal(LiteralValue::Boolean(text == "True" || text == "true"))
+                    CodeNodeType::Literal(LiteralValue::Boolean(text == "True" || text == "true"))
                 }
-                "none" => CodeNode::Literal(LiteralValue::Null),
-                "function_definition" => CodeNode::Function {
+                "none" => CodeNodeType::Literal(LiteralValue::Null),
+                "function_definition" => CodeNodeType::Function {
                     name: String::new(),
                     params: vec![],
                     return_type: None,
                 },
-                "call" => CodeNode::Call {
+                "call" => CodeNodeType::Call {
                     function: String::new(),
                     arg_count: 0,
                 },
-                "binary_operator" => CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_operator" => CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNode::If,
-                "while_statement" | "for_statement" => CodeNode::Loop {
+                "binary_operator" => CodeNodeType::BinaryOp(BinaryOperator::Add),
+                "unary_operator" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNodeType::If,
+                "while_statement" | "for_statement" => CodeNodeType::Loop {
                     kind: LoopKind::While,
                 },
-                "assignment" | "augmented_assignment" => CodeNode::Assignment,
-                "return_statement" => CodeNode::Return,
-                "block" => CodeNode::Block,
-                _ => CodeNode::Comment(format!(
+                "assignment" | "augmented_assignment" => CodeNodeType::Assignment,
+                "return_statement" => CodeNodeType::Return,
+                "block" => CodeNodeType::Block,
+                _ => CodeNodeType::Comment(format!(
                     "{}:{}",
                     kind,
                     text.chars().take(50).collect::<String>()
                 )),
-            }
+            };
+            CodeNode::new(node_type)
         }
 
         /// Map JavaScript-specific AST nodes.
         fn map_javascript_node(&self, kind: &str, text: &str) -> CodeNode {
-            match kind {
-                "identifier" | "property_identifier" => CodeNode::Identifier(text.to_string()),
+            let node_type = match kind {
+                "identifier" | "property_identifier" => CodeNodeType::Identifier(text.to_string()),
                 "number" => {
                     if text.contains('.') {
-                        CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
+                        CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
                     } else {
-                        CodeNode::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
+                        CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
                     }
                 }
-                "string" | "template_string" => CodeNode::Literal(LiteralValue::String(
+                "string" | "template_string" => CodeNodeType::Literal(LiteralValue::String(
                     text.trim_matches(|c| c == '"' || c == '\'' || c == '`')
                         .to_string(),
                 )),
-                "true" | "false" => CodeNode::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "undefined" => CodeNode::Literal(LiteralValue::Null),
-                "function_declaration" | "function" | "arrow_function" => CodeNode::Function {
+                "true" | "false" => CodeNodeType::Literal(LiteralValue::Boolean(text == "true")),
+                "null" | "undefined" => CodeNodeType::Literal(LiteralValue::Null),
+                "function_declaration" | "function" | "arrow_function" => CodeNodeType::Function {
                     name: String::new(),
                     params: vec![],
                     return_type: None,
                 },
-                "call_expression" => CodeNode::Call {
+                "call_expression" => CodeNodeType::Call {
                     function: String::new(),
                     arg_count: 0,
                 },
-                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNode::If,
+                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNodeType::If,
                 "while_statement" | "for_statement" | "for_in_statement" | "do_statement" => {
-                    CodeNode::Loop {
+                    CodeNodeType::Loop {
                         kind: LoopKind::While,
                     }
                 }
-                "variable_declaration" | "lexical_declaration" => CodeNode::Variable {
+                "variable_declaration" | "lexical_declaration" => CodeNodeType::Variable {
                     name: String::new(),
                     var_type: None,
                 },
-                "return_statement" => CodeNode::Return,
-                "statement_block" => CodeNode::Block,
-                _ => CodeNode::Comment(format!(
+                "return_statement" => CodeNodeType::Return,
+                "statement_block" => CodeNodeType::Block,
+                _ => CodeNodeType::Comment(format!(
                     "{}:{}",
                     kind,
                     text.chars().take(50).collect::<String>()
                 )),
-            }
+            };
+            CodeNode::new(node_type)
         }
 
         /// Map C-specific AST nodes.
         fn map_c_node(&self, kind: &str, text: &str) -> CodeNode {
-            match kind {
+            let node_type = match kind {
                 "identifier" | "type_identifier" | "field_identifier" => {
-                    CodeNode::Identifier(text.to_string())
+                    CodeNodeType::Identifier(text.to_string())
                 }
                 "number_literal" => {
                     if text.contains('.') {
-                        CodeNode::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
+                        CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
                     } else {
-                        CodeNode::Literal(LiteralValue::Integer(
+                        CodeNodeType::Literal(LiteralValue::Integer(
                             i64::from_str_radix(
                                 text.trim_start_matches("0x").trim_start_matches("0X"),
                                 if text.starts_with("0x") || text.starts_with("0X") {
@@ -1768,43 +1819,44 @@ pub mod tree_sitter_parser {
                     }
                 }
                 "string_literal" => {
-                    CodeNode::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
+                    CodeNodeType::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
                 }
-                "char_literal" => CodeNode::Literal(LiteralValue::String(
+                "char_literal" => CodeNodeType::Literal(LiteralValue::String(
                     text.chars()
                         .nth(1)
                         .map(|c| c.to_string())
                         .unwrap_or_default(),
                 )),
-                "true" | "false" => CodeNode::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "NULL" => CodeNode::Literal(LiteralValue::Null),
-                "function_definition" | "function_declarator" => CodeNode::Function {
+                "true" | "false" => CodeNodeType::Literal(LiteralValue::Boolean(text == "true")),
+                "null" | "NULL" => CodeNodeType::Literal(LiteralValue::Null),
+                "function_definition" | "function_declarator" => CodeNodeType::Function {
                     name: String::new(),
                     params: vec![],
                     return_type: None,
                 },
-                "call_expression" => CodeNode::Call {
+                "call_expression" => CodeNodeType::Call {
                     function: String::new(),
                     arg_count: 0,
                 },
-                "binary_expression" => CodeNode::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNode::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNode::If,
-                "while_statement" | "for_statement" | "do_statement" => CodeNode::Loop {
+                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
+                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
+                "if_statement" => CodeNodeType::If,
+                "while_statement" | "for_statement" | "do_statement" => CodeNodeType::Loop {
                     kind: LoopKind::While,
                 },
-                "declaration" | "init_declarator" => CodeNode::Variable {
+                "declaration" | "init_declarator" => CodeNodeType::Variable {
                     name: String::new(),
                     var_type: None,
                 },
-                "return_statement" => CodeNode::Return,
-                "compound_statement" => CodeNode::Block,
-                _ => CodeNode::Comment(format!(
+                "return_statement" => CodeNodeType::Return,
+                "compound_statement" => CodeNodeType::Block,
+                _ => CodeNodeType::Comment(format!(
                     "{}:{}",
                     kind,
                     text.chars().take(50).collect::<String>()
                 )),
-            }
+            };
+            CodeNode::new(node_type)
         }
     }
 }
@@ -1827,7 +1879,7 @@ mod tests {
         assert_eq!(graph.node_count(), 1);
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode::Literal(LiteralValue::Integer(42))
+            CodeNode { node_type: CodeNodeType::Literal(LiteralValue::Integer(42)), .. }
         ));
     }
 
@@ -1836,7 +1888,7 @@ mod tests {
         let graph = CodeGraph::from_simple_expr("true").unwrap();
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode::Literal(LiteralValue::Boolean(true))
+            CodeNode { node_type: CodeNodeType::Literal(LiteralValue::Boolean(true)), .. }
         ));
     }
 
@@ -1846,7 +1898,7 @@ mod tests {
         assert!(graph.node_count() >= 1);
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode::BinaryOp(BinaryOperator::Add)
+            CodeNode { node_type: CodeNodeType::BinaryOp(BinaryOperator::Add), .. }
         ));
     }
 
@@ -1904,7 +1956,7 @@ mod tests {
         assert_eq!(issues.len(), 1); // Empty graph warning
 
         // Add a node to make it non-empty
-        graph.add_node(CodeNode::Literal(LiteralValue::Integer(42)));
+        graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(42))));
         let issues = brain.validate_code(&graph);
         assert!(issues.is_empty());
     }
@@ -2146,15 +2198,15 @@ mod tests {
     #[test]
     fn test_code_graph_annotate_type() {
         let mut graph = CodeGraph::new();
-        let var_node = graph.add_node(CodeNode::Variable {
+        let var_node = graph.add_node(CodeNode::new(CodeNodeType::Variable {
             name: "x".to_string(),
             var_type: None,
-        });
+        }));
         let type_node = graph.annotate_type(var_node, "i32");
         // Check that the type node was added (node_count should be 2)
         assert_eq!(graph.node_count(), 2);
         // Check the type node is a Type node
-        assert!(matches!(&graph.graph[type_node], CodeNode::Type(s) if s == "i32"));
+        assert!(matches!(&graph.graph[type_node], CodeNode { node_type: CodeNodeType::Type(s), .. } if s == "i32"));
         assert_eq!(graph.edge_count(), 1);
     }
 
@@ -2202,10 +2254,10 @@ mod tests {
     #[test]
     fn test_infer_variable_with_type() {
         let mut graph = CodeGraph::new();
-        let var = graph.add_node(CodeNode::Variable {
+        let var = graph.add_node(CodeNode::new(CodeNodeType::Variable {
             name: "x".to_string(),
             var_type: Some("i32".to_string()),
-        });
+        }));
         graph.root = Some(var);
 
         let types = graph.infer_types();
@@ -2215,11 +2267,11 @@ mod tests {
     #[test]
     fn test_infer_function_type() {
         let mut graph = CodeGraph::new();
-        let func = graph.add_node(CodeNode::Function {
+        let func = graph.add_node(CodeNode::new(CodeNodeType::Function {
             name: "add".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             return_type: Some("i32".to_string()),
-        });
+        }));
         graph.root = Some(func);
 
         let types = graph.infer_types();

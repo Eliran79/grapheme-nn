@@ -69,7 +69,8 @@ fn test_threshold_gradient(
     model.zero_grad();
     let (predicted, pooling_result) = model.forward(input_graph);
     let loss_result = compute_structural_loss(&predicted, target_graph, config);
-    model.backward(input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+    // Backend-104: Use activation_gradients for proper gradient chain
+    model.backward(input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
 
     let analytical_grad = model.merge_threshold.grad;
     let original_threshold = model.merge_threshold.value;
@@ -141,7 +142,8 @@ fn test_single_embedding_gradient(
     model.zero_grad();
     let (predicted, pooling_result) = model.forward(input_graph);
     let loss_result = compute_structural_loss(&predicted, target_graph, config);
-    model.backward(input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+    // Backend-104: Use activation_gradients for proper gradient chain
+    model.backward(input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
 
     let analytical_grad = model.embedding.grad.as_ref()
         .map(|g| g[[char_idx, dim]])

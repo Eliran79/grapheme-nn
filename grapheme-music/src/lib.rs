@@ -69,7 +69,7 @@ impl NoteName {
 
 /// Music node types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum MusicNode {
+pub enum MusicNodeType {
     /// A musical note
     Note {
         name: NoteName,
@@ -97,6 +97,46 @@ pub enum MusicNode {
     Dynamic(DynamicLevel),
     /// Articulation
     Articulation(ArticulationType),
+}
+
+/// A music node with activation for gradient flow
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicNode {
+    /// The type of this music node
+    pub node_type: MusicNodeType,
+    /// Activation value for gradient flow during training
+    pub activation: f32,
+}
+
+impl MusicNode {
+    /// Create a new music node with default activation based on type
+    pub fn new(node_type: MusicNodeType) -> Self {
+        let activation = Self::type_activation(&node_type);
+        Self {
+            node_type,
+            activation,
+        }
+    }
+
+    /// Get default activation value based on node type importance
+    fn type_activation(node_type: &MusicNodeType) -> f32 {
+        match node_type {
+            // Melodic content - high importance
+            MusicNodeType::Note { .. } => 0.7,
+            MusicNodeType::Chord { .. } => 0.8,
+            MusicNodeType::Scale { .. } => 0.75,
+            // Structural markers - medium-high importance
+            MusicNodeType::TimeSignature { .. } => 0.6,
+            MusicNodeType::KeySignature { .. } => 0.85,
+            MusicNodeType::Tempo(_) => 0.5,
+            // Timing elements
+            MusicNodeType::Rest(_) => 0.4,
+            MusicNodeType::Measure(_) => 0.3,
+            // Expression - medium importance
+            MusicNodeType::Dynamic(_) => 0.55,
+            MusicNodeType::Articulation(_) => 0.5,
+        }
+    }
 }
 
 /// Note/rest duration
@@ -265,11 +305,11 @@ impl MusicGraph {
         // Parse octave
         let octave = rest.parse::<i8>().unwrap_or(4);
 
-        let node = graph.add_node(MusicNode::Note {
+        let node = graph.add_node(MusicNode::new(MusicNodeType::Note {
             name,
             octave,
             duration: Duration::Quarter,
-        });
+        }));
         graph.root = Some(node);
 
         Ok(graph)

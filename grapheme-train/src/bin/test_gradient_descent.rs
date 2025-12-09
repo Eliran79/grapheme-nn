@@ -77,7 +77,8 @@ fn test_single_step(
         let (predicted, pooling_result) = model.forward(&input_graph);
         let loss_result = compute_structural_loss(&predicted, &target_graph, config);
 
-        model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+        // Backend-104: Use activation_gradients for proper gradient chain
+        model.backward(&input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
     }
 
     // Update parameters
@@ -136,7 +137,8 @@ fn test_convergence(
             let (predicted, pooling_result) = model.forward(&input_graph);
             let loss_result = compute_structural_loss(&predicted, &target_graph, config);
 
-            model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+            // Backend-104: Use activation_gradients for proper gradient chain
+        model.backward(&input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
         }
 
         // Update

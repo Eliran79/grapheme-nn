@@ -20,6 +20,10 @@ grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }
 grapheme-core = { path = "../grapheme-core" }
+grapheme-code = { path = "../grapheme-code" }
+grapheme-law = { path = "../grapheme-law" }
+grapheme-music = { path = "../grapheme-music" }
+grapheme-chem = { path = "../grapheme-chem" }
 
 [dev-dependencies]
 criterion.workspace = true

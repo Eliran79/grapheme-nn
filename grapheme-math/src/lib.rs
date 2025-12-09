@@ -41,7 +41,7 @@ pub type MathGraphResult<T> = Result<T, MathGraphError>;
 /// Typed node for mathematical expressions
 /// These are semantic types, not embeddings - still vocabulary-free
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum MathNode {
+pub enum MathNodeType {
     /// Integer literal
     Integer(i64),
     /// Floating-point literal
@@ -54,6 +54,70 @@ pub enum MathNode {
     Function(MathFn),
     /// Result placeholder
     Result,
+}
+
+/// Math node with activation for gradient flow (Backend-104)
+///
+/// Wraps MathNodeType with a learned activation value that enables
+/// gradient-based training through the structural loss function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MathNode {
+    /// The semantic type of this node
+    pub node_type: MathNodeType,
+    /// Learned activation value for gradient flow
+    /// Default: derived from node type (type_activation)
+    pub activation: f32,
+}
+
+impl MathNode {
+    /// Create a new math node with default activation based on type
+    pub fn new(node_type: MathNodeType) -> Self {
+        let activation = Self::type_activation(&node_type);
+        Self { node_type, activation }
+    }
+
+    /// Create node with explicit activation value
+    pub fn with_activation(node_type: MathNodeType, activation: f32) -> Self {
+        Self { node_type, activation }
+    }
+
+    /// Get default activation based on node type
+    /// This provides initial differentiation between node categories
+    fn type_activation(node_type: &MathNodeType) -> f32 {
+        match node_type {
+            MathNodeType::Integer(_) => 0.1,
+            MathNodeType::Float(_) => 0.2,
+            MathNodeType::Symbol(_) => 0.3,
+            MathNodeType::Operator(_) => 0.5,
+            MathNodeType::Function(_) => 0.7,
+            MathNodeType::Result => 0.9,
+        }
+    }
+
+    /// Check if this is an integer node
+    pub fn is_integer(&self) -> bool {
+        matches!(self.node_type, MathNodeType::Integer(_))
+    }
+
+    /// Check if this is a float node
+    pub fn is_float(&self) -> bool {
+        matches!(self.node_type, MathNodeType::Float(_))
+    }
+
+    /// Check if this is a symbol node
+    pub fn is_symbol(&self) -> bool {
+        matches!(self.node_type, MathNodeType::Symbol(_))
+    }
+
+    /// Check if this is an operator node
+    pub fn is_operator(&self) -> bool {
+        matches!(self.node_type, MathNodeType::Operator(_))
+    }
+
+    /// Check if this is a function node
+    pub fn is_function(&self) -> bool {
+        matches!(self.node_type, MathNodeType::Function(_))
+    }
 }
 
 /// Edge types in the math graph
@@ -105,7 +169,7 @@ impl MathGraph {
         match expr {
             Expr::Value(v) => self.add_value(v),
             Expr::BinOp { op, left, right } => {
-                let op_node = self.graph.add_node(MathNode::Operator(*op));
+                let op_node = self.graph.add_node(MathNode::new(MathNodeType::Operator(*op)));
                 let left_node = self.add_expr(left);
                 let right_node = self.add_expr(right);
                 self.graph
@@ -115,14 +179,14 @@ impl MathGraph {
                 op_node
             }
             Expr::UnaryOp { op, operand } => {
-                let op_node = self.graph.add_node(MathNode::Operator(*op));
+                let op_node = self.graph.add_node(MathNode::new(MathNodeType::Operator(*op)));
                 let operand_node = self.add_expr(operand);
                 self.graph
                     .add_edge(op_node, operand_node, MathEdge::LeftOperand);
                 op_node
             }
             Expr::Function { func, args } => {
-                let func_node = self.graph.add_node(MathNode::Function(*func));
+                let func_node = self.graph.add_node(MathNode::new(MathNodeType::Function(*func)));
                 for (i, arg) in args.iter().enumerate() {
                     let arg_node = self.add_expr(arg);
                     self.graph
@@ -134,13 +198,13 @@ impl MathGraph {
     }
 
     fn add_value(&mut self, value: &Value) -> NodeIndex {
-        let node = match value {
-            Value::Integer(i) => MathNode::Integer(*i),
-            Value::Float(f) => MathNode::Float(*f),
-            Value::Symbol(s) => MathNode::Symbol(s.clone()),
-            Value::Rational(n, d) => MathNode::Float(*n as f64 / *d as f64),
+        let node_type = match value {
+            Value::Integer(i) => MathNodeType::Integer(*i),
+            Value::Float(f) => MathNodeType::Float(*f),
+            Value::Symbol(s) => MathNodeType::Symbol(s.clone()),
+            Value::Rational(n, d) => MathNodeType::Float(*n as f64 / *d as f64),
         };
-        self.graph.add_node(node)
+        self.graph.add_node(MathNode::new(node_type))
     }
 
     /// Convert the graph back to an expression
@@ -154,11 +218,11 @@ impl MathGraph {
     fn node_to_expr(&self, node: NodeIndex) -> MathGraphResult<Expr> {
         let math_node = &self.graph[node];
 
-        match math_node {
-            MathNode::Integer(i) => Ok(Expr::Value(Value::Integer(*i))),
-            MathNode::Float(f) => Ok(Expr::Value(Value::Float(*f))),
-            MathNode::Symbol(s) => Ok(Expr::Value(Value::Symbol(s.clone()))),
-            MathNode::Operator(op) => {
+        match &math_node.node_type {
+            MathNodeType::Integer(i) => Ok(Expr::Value(Value::Integer(*i))),
+            MathNodeType::Float(f) => Ok(Expr::Value(Value::Float(*f))),
+            MathNodeType::Symbol(s) => Ok(Expr::Value(Value::Symbol(s.clone()))),
+            MathNodeType::Operator(op) => {
                 let mut left = None;
                 let mut right = None;
 
@@ -191,7 +255,7 @@ impl MathGraph {
                     })
                 }
             }
-            MathNode::Function(func) => {
+            MathNodeType::Function(func) => {
                 let mut args: Vec<(usize, Expr)> = Vec::new();
 
                 for edge in self.graph.edges(node) {
@@ -205,7 +269,7 @@ impl MathGraph {
 
                 Ok(Expr::Function { func: *func, args })
             }
-            MathNode::Result => Err(MathGraphError::InvalidStructure(
+            MathNodeType::Result => Err(MathGraphError::InvalidStructure(
                 "Result node cannot be converted to expression".into(),
             )),
         }

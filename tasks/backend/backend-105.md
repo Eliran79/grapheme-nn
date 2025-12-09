@@ -1,7 +1,7 @@
 ---
 id: backend-105
 title: Implement learnable edge weights (synaptic strength)
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -168,25 +168,38 @@ for edge in graph.edges() {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **grapheme-core/src/lib.rs** - Added edge weight initialization:
+  - `Edge::xavier(fan_in, fan_out, edge_type)` - Xavier/Glorot initialization for edges
+  - `Edge::he(fan_in, edge_type)` - He initialization for edges (better for ReLU)
+  - `Edge::sequential_xavier()`, `Edge::skip_xavier()` - Convenience methods
+  - `DagNN::init_edge_weights(strategy)` - Reinitialize all edge weights in a graph
+  - `DagNN::init_edge_weights_xavier()`, `DagNN::init_edge_weights_he()` - Convenience methods
+- **Tests added**: 6 new tests for edge weight initialization and gradient flow
+- **Runtime behavior**: Edge weights can now be initialized with proper neural network initialization
+  - Xavier: w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))
+  - He: w ~ N(0, sqrt(2/fan_in))
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Edge weights flow through backward pass (already implemented in `DagNN::backward`)
+- `backward_and_update` applies gradient descent: `weight -= lr * grad`
+- Gradient computation: `edge_grad = activation[source] * node_grad[target]`
+- No new async flows - all operations are synchronous
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses existing `InitStrategy` enum (Xavier, He, Uniform, Zero)
+- Integrates with existing `BackwardPass` trait implementation on DagNN
+- Edge weights stored in `Edge.weight` field on graph edges
+- Edge gradients accumulated in `NodeGradients.edge_grads` HashMap
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-core test_edge_` to verify edge weight initialization
+- Run `cargo test -p grapheme-core test_dag_init` to verify DagNN integration
+- Tests verify: Xavier bounds, He finiteness, gradient flow, training updates
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **For backend-107 (neuromorphic forward pass)**: Use `dag.init_edge_weights_xavier()` before training
+- **For backend-108 (edge weight pruning)**: Edge weights are accessible via `dag.graph[edge_idx].weight`
+- **Important decision**: Edge weights stored directly in `Edge` struct on graph edges (not separate HashMap)
+  - This matches existing backward pass implementation at line 4390
+  - Enables O(1) edge weight lookup during forward/backward passes
+- **Gotcha**: When using Xavier init, fan_in/fan_out are computed from node degree, not layer dimensions

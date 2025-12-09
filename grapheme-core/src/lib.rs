@@ -241,6 +241,56 @@ impl Edge {
     pub fn clique(weight: f32) -> Self {
         Self::new(weight, EdgeType::Clique)
     }
+
+    /// Create edge with Xavier initialization (backend-105)
+    ///
+    /// Xavier/Glorot initialization: w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))
+    /// For edge weights, we use fan_in and fan_out as the degree bounds.
+    ///
+    /// # Arguments
+    /// * `fan_in` - Number of incoming connections at source node
+    /// * `fan_out` - Number of outgoing connections at target node
+    /// * `edge_type` - Type of edge to create
+    pub fn xavier(fan_in: usize, fan_out: usize, edge_type: EdgeType) -> Self {
+        let fan_in = fan_in.max(1) as f32;
+        let fan_out = fan_out.max(1) as f32;
+        let limit = (6.0 / (fan_in + fan_out)).sqrt();
+
+        // Random uniform in [-limit, limit]
+        let weight = rand::random::<f32>() * 2.0 * limit - limit;
+        Self::new(weight, edge_type)
+    }
+
+    /// Create edge with He initialization (backend-105)
+    ///
+    /// He initialization (for ReLU): w ~ N(0, sqrt(2/fan_in))
+    /// Better for networks with ReLU activations.
+    ///
+    /// # Arguments
+    /// * `fan_in` - Number of incoming connections at source node
+    /// * `edge_type` - Type of edge to create
+    pub fn he(fan_in: usize, edge_type: EdgeType) -> Self {
+        let fan_in = fan_in.max(1) as f32;
+        let std_dev = (2.0 / fan_in).sqrt();
+
+        // Random normal with mean 0 and std std_dev
+        // Using Box-Muller transform for normal distribution
+        let u1: f32 = rand::random::<f32>().max(1e-10);
+        let u2: f32 = rand::random();
+        let normal = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+
+        Self::new(normal * std_dev, edge_type)
+    }
+
+    /// Create a sequential edge with Xavier initialization
+    pub fn sequential_xavier(fan_in: usize, fan_out: usize) -> Self {
+        Self::xavier(fan_in, fan_out, EdgeType::Sequential)
+    }
+
+    /// Create a skip edge with Xavier initialization
+    pub fn skip_xavier(fan_in: usize, fan_out: usize) -> Self {
+        Self::xavier(fan_in, fan_out, EdgeType::Skip)
+    }
 }
 
 // ============================================================================
@@ -520,6 +570,67 @@ impl DagNN {
     pub fn update_topology(&mut self) -> GraphemeResult<()> {
         self.topology = TopologicalOrder::from_graph(&self.graph)?;
         Ok(())
+    }
+
+    /// Initialize all edge weights using Xavier initialization (backend-105)
+    ///
+    /// This method reinitializes all edge weights in the graph using Xavier/Glorot
+    /// initialization, which helps with gradient flow during training.
+    ///
+    /// Xavier initialization: w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))
+    ///
+    /// # Arguments
+    /// * `strategy` - Initialization strategy to use
+    pub fn init_edge_weights(&mut self, strategy: InitStrategy) {
+        use petgraph::Direction;
+
+        // Collect edge info first to avoid borrow conflicts
+        let edge_info: Vec<_> = self
+            .graph
+            .edge_indices()
+            .map(|edge_idx| {
+                let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+                let fan_in = self.graph.edges_directed(source, Direction::Incoming).count();
+                let fan_out = self.graph.edges_directed(target, Direction::Outgoing).count();
+                let edge_type = self.graph[edge_idx].edge_type;
+                (edge_idx, fan_in, fan_out, edge_type)
+            })
+            .collect();
+
+        // Update edge weights
+        for (edge_idx, fan_in, fan_out, edge_type) in edge_info {
+            let new_weight = match strategy {
+                InitStrategy::Xavier => {
+                    let fan_in = fan_in.max(1) as f32;
+                    let fan_out = fan_out.max(1) as f32;
+                    let limit = (6.0 / (fan_in + fan_out)).sqrt();
+                    rand::random::<f32>() * 2.0 * limit - limit
+                }
+                InitStrategy::He => {
+                    let fan_in = fan_in.max(1) as f32;
+                    let std_dev = (2.0 / fan_in).sqrt();
+                    let u1: f32 = rand::random::<f32>().max(1e-10);
+                    let u2: f32 = rand::random();
+                    let normal =
+                        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                    normal * std_dev
+                }
+                InitStrategy::Uniform(scale) => rand::random::<f32>() * 2.0 * scale - scale,
+                InitStrategy::Zero => 0.0,
+            };
+
+            self.graph[edge_idx] = Edge::new(new_weight, edge_type);
+        }
+    }
+
+    /// Initialize edge weights with Xavier initialization (convenience method)
+    pub fn init_edge_weights_xavier(&mut self) {
+        self.init_edge_weights(InitStrategy::Xavier);
+    }
+
+    /// Initialize edge weights with He initialization (convenience method)
+    pub fn init_edge_weights_he(&mut self) {
+        self.init_edge_weights(InitStrategy::He);
     }
 
     /// Get the number of nodes
@@ -5164,25 +5275,45 @@ impl GraphTransformNet {
     ///   3. Embedding update: ∂L/∂embeddings for each character
     ///
     /// This is THE KEY to Sabag algorithm working with Sinkhorn!
+    /// Backward pass using activation gradients (Backend-104 fix)
+    ///
+    /// This is the correct backward pass that uses proper gradient chain:
+    /// 1. activation_gradients[i] = ∂L/∂activation[i] (computed by structural loss)
+    /// 2. ∂L/∂H_new[i,j] = activation_gradients[i] / D (broadcast to all dims)
+    /// 3. ∂L/∂H = S^T · ∂L/∂H_new (route through Sabag)
+    /// 4. Update embeddings with ∂L/∂H
+    ///
+    /// # Arguments
+    /// * `input_graph` - Original input graph with n nodes
+    /// * `pooling_result` - Forward pass result containing S matrix
+    /// * `activation_gradients` - ∂L/∂activation for each coarsened node (length k)
+    /// * `embed_dim` - Dimension of embeddings
     pub fn backward(
         &mut self,
         input_graph: &GraphemeGraph,
         pooling_result: &PoolingResult,
-        node_gradients: &[f32],
+        activation_gradients: &[f32],
         embed_dim: usize,
     ) {
         let n = input_graph.input_nodes.len();  // Original input nodes
-        let k = pooling_result.graph.input_nodes.len();  // Output nodes
+        let k = pooling_result.graph.input_nodes.len();  // Output/coarsened nodes
         let S = &pooling_result.assignment;  // Sabag soft assignment S ∈ ℝ^{k×n}
 
-        // Reshape node_gradients from Sinkhorn (flat k×d) to Array2<f32>
-        // Each row is gradient for one output node
+        // Backend-104 FIX: Convert activation gradients to feature gradients
+        //
+        // Forward: activation[i] = mean(H_new[i,:]) = Σⱼ H_new[i,j] / D
+        // Backward: ∂L/∂H_new[i,j] = (∂L/∂activation[i]) * (∂activation[i]/∂H_new[i,j])
+        //                         = activation_gradients[i] * (1/D)
+        //
+        // This broadcasts the scalar gradient to all dimensions
+        let d = embed_dim as f32;
         let mut grad_k = Array2::zeros((k, embed_dim));
         for i in 0..k {
-            for j in 0..embed_dim {
-                let idx = i * embed_dim + j;
-                if idx < node_gradients.len() {
-                    grad_k[[i, j]] = node_gradients[idx];
+            if i < activation_gradients.len() {
+                let grad_act = activation_gradients[i];
+                // Broadcast to all dimensions: ∂L/∂H_new[i,j] = grad_act / D
+                for j in 0..embed_dim {
+                    grad_k[[i, j]] = grad_act / d;
                 }
             }
         }
@@ -5193,9 +5324,6 @@ impl GraphTransformNet {
         let grad_n = S.t().dot(&grad_k);  // Transpose and multiply!
 
         // Compute gradient w.r.t. query matrix Q
-        // This is stored in pooling_result and used during backward pass
-        // We need to pass the input embeddings that were used in forward pass
-        // These should be stored in pooling_result or recomputed here
         if let Some(ref mut sabag) = self.sabag_pooling {
             // Reconstruct the input embeddings H that were used in forward pass
             let mut H = Array2::zeros((n, embed_dim));
@@ -5209,7 +5337,7 @@ impl GraphTransformNet {
             }
 
             // Proper gradient computation through attention
-            // Forward: out = S · H where S = softmax(Q · H^T)
+            // Forward: out = S · H where S = softmax(Q · H^T / T)
             // Backward: ∂L/∂Q requires gradient through softmax
             //
             // Step 1: ∂L/∂S (gradient w.r.t. assignment matrix)
@@ -5227,7 +5355,7 @@ impl GraphTransformNet {
             sabag.accumulate_query_grad(&Q_grad);
         }
 
-        // Now route gradients to character embeddings
+        // Route gradients to character embeddings
         // For each original input node, update its character embedding
         for (idx, &node_id) in input_graph.input_nodes.iter().enumerate() {
             if let NodeType::Input(ch) = input_graph.graph[node_id].node_type {
@@ -5241,14 +5369,13 @@ impl GraphTransformNet {
             }
         }
 
-        // Update merge threshold gradient
-        // Heuristic: if loss is high, adjust threshold
-        let avg_grad = node_gradients.iter().map(|g| g.abs()).sum::<f32>()
-                       / node_gradients.len().max(1) as f32;
+        // Update merge threshold gradient (simplified heuristic)
+        let avg_grad = activation_gradients.iter().map(|g| g.abs()).sum::<f32>()
+                       / activation_gradients.len().max(1) as f32;
         let threshold_val = self.merge_threshold.value;
         let sigmoid = 1.0 / (1.0 + (-threshold_val).exp());
         let sigmoid_deriv = sigmoid * (1.0 - sigmoid);
-        let threshold_grad = -sigmoid_deriv * avg_grad * 0.01; // Small learning rate for threshold
+        let threshold_grad = -sigmoid_deriv * avg_grad * 0.01;
 
         self.merge_threshold.accumulate_grad(threshold_grad);
     }
@@ -8019,6 +8146,8 @@ mod tests {
 
     #[test]
     fn test_model_header_fields() {
+        // Note: 4th param is num_clusters for Sabag pooling, not num_layers
+        // The network uses a fixed 2 message-passing layers
         let net = GraphTransformNet::new(256, 32, 64, 3);
         let header = net.header();
 
@@ -8027,7 +8156,7 @@ mod tests {
         assert_eq!(header.vocab_size, 256);
         assert_eq!(header.embed_dim, 32);
         assert_eq!(header.hidden_dim, 64);
-        assert_eq!(header.num_layers, 3);
+        assert_eq!(header.num_layers, 2);  // Fixed 2 layers in implementation
     }
 
     #[test]
@@ -8228,5 +8357,215 @@ mod tests {
         // Check version is tracked
         let module_checkpoint = checkpoint.modules.get("GraphTransformNet").unwrap();
         assert_eq!(module_checkpoint.version, MODEL_PERSISTENCE_VERSION);
+    }
+
+    // ============================================================================
+    // Backend-105: Edge Weight Initialization Tests
+    // ============================================================================
+
+    #[test]
+    fn test_edge_xavier_initialization() {
+        // Create edges with Xavier initialization
+        let edge1 = Edge::xavier(2, 3, EdgeType::Sequential);
+        let edge2 = Edge::xavier(10, 10, EdgeType::Skip);
+        let edge3 = Edge::xavier(1, 1, EdgeType::Clique);
+
+        // Verify edge types preserved
+        assert_eq!(edge1.edge_type, EdgeType::Sequential);
+        assert_eq!(edge2.edge_type, EdgeType::Skip);
+        assert_eq!(edge3.edge_type, EdgeType::Clique);
+
+        // Xavier weights should be bounded by sqrt(6/(fan_in + fan_out))
+        // For fan_in=2, fan_out=3: limit = sqrt(6/5) ≈ 1.095
+        let limit1 = (6.0_f32 / 5.0).sqrt();
+        assert!(
+            edge1.weight.abs() <= limit1 + 0.01,
+            "Xavier weight {} exceeds limit {}",
+            edge1.weight,
+            limit1
+        );
+
+        // For fan_in=10, fan_out=10: limit = sqrt(6/20) ≈ 0.548
+        let limit2 = (6.0_f32 / 20.0).sqrt();
+        assert!(
+            edge2.weight.abs() <= limit2 + 0.01,
+            "Xavier weight {} exceeds limit {}",
+            edge2.weight,
+            limit2
+        );
+    }
+
+    #[test]
+    fn test_edge_he_initialization() {
+        // Create edges with He initialization
+        let edge1 = Edge::he(2, EdgeType::Sequential);
+        let edge2 = Edge::he(10, EdgeType::Skip);
+
+        // Verify edge types preserved
+        assert_eq!(edge1.edge_type, EdgeType::Sequential);
+        assert_eq!(edge2.edge_type, EdgeType::Skip);
+
+        // He weights are normally distributed, so we just verify they're finite
+        assert!(edge1.weight.is_finite());
+        assert!(edge2.weight.is_finite());
+    }
+
+    #[test]
+    fn test_dag_init_edge_weights_xavier() {
+        // Create a simple graph
+        let mut dag = DagNN::from_text("hello").unwrap();
+        let initial_edges = dag.edge_count();
+
+        // Store initial weights
+        let initial_weights: Vec<f32> = dag
+            .graph
+            .edge_indices()
+            .map(|e| dag.graph[e].weight)
+            .collect();
+
+        // Initialize with Xavier
+        dag.init_edge_weights_xavier();
+
+        // Verify same number of edges
+        assert_eq!(dag.edge_count(), initial_edges);
+
+        // Verify weights changed (with high probability)
+        let new_weights: Vec<f32> = dag
+            .graph
+            .edge_indices()
+            .map(|e| dag.graph[e].weight)
+            .collect();
+
+        // At least some weights should have changed
+        let changed = initial_weights
+            .iter()
+            .zip(new_weights.iter())
+            .filter(|(&a, &b)| (a - b).abs() > 1e-6)
+            .count();
+        assert!(
+            changed > 0,
+            "Expected at least some weights to change after init"
+        );
+    }
+
+    #[test]
+    fn test_dag_init_edge_weights_he() {
+        // Create a simple graph
+        let mut dag = DagNN::from_text("test").unwrap();
+
+        // Initialize with He
+        dag.init_edge_weights_he();
+
+        // Verify all weights are finite
+        for edge_idx in dag.graph.edge_indices() {
+            assert!(
+                dag.graph[edge_idx].weight.is_finite(),
+                "He-initialized weight should be finite"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dag_init_edge_weights_zero() {
+        // Create a simple graph
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Initialize with Zero
+        dag.init_edge_weights(InitStrategy::Zero);
+
+        // Verify all weights are zero
+        for edge_idx in dag.graph.edge_indices() {
+            assert!(
+                (dag.graph[edge_idx].weight).abs() < 1e-10,
+                "Zero-initialized weight should be 0.0"
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_gradient_flow() {
+        use std::collections::HashMap;
+
+        // Create a simple graph: a -> b -> c
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Set known edge weights
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 0.5;
+        }
+
+        // Set known activations
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        for &node in &nodes {
+            dag.graph[node].activation = 1.0;
+        }
+
+        // Compute backward pass with output gradient
+        let mut output_grad = HashMap::new();
+        let last_node = *nodes.last().unwrap();
+        output_grad.insert(last_node, Array1::from_vec(vec![1.0]));
+
+        let mut emb = Embedding::xavier(256, 1);
+        let grads = dag.backward(&output_grad, &mut emb);
+
+        // Verify edge gradients were computed
+        assert!(
+            !grads.edge_grads.is_empty(),
+            "Should have computed edge gradients"
+        );
+
+        // Check that gradients are finite
+        for (_, &grad) in &grads.edge_grads {
+            assert!(grad.is_finite(), "Edge gradient should be finite");
+        }
+    }
+
+    #[test]
+    fn test_edge_weight_training_step() {
+        use std::collections::HashMap;
+
+        // Create a simple graph
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Initialize with known weights
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 0.5;
+        }
+
+        // Store initial weights
+        let initial_weights: Vec<f32> = dag
+            .graph
+            .edge_indices()
+            .map(|e| dag.graph[e].weight)
+            .collect();
+
+        // Set activations
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        for &node in &nodes {
+            dag.graph[node].activation = 1.0;
+        }
+
+        // Backward pass with gradient descent update
+        let mut output_grad = HashMap::new();
+        let last_node = *nodes.last().unwrap();
+        output_grad.insert(last_node, Array1::from_vec(vec![1.0]));
+
+        let mut emb = Embedding::xavier(256, 1);
+        dag.backward_and_update(&output_grad, &mut emb, 0.1);
+
+        // Verify weights changed
+        let new_weights: Vec<f32> = dag
+            .graph
+            .edge_indices()
+            .map(|e| dag.graph[e].weight)
+            .collect();
+
+        // At least one weight should have changed
+        let changed = initial_weights
+            .iter()
+            .zip(new_weights.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-10);
+
+        assert!(changed, "Edge weights should change after training step");
     }
 }

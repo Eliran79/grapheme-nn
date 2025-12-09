@@ -1,7 +1,7 @@
 ---
 id: backend-104
 title: Implement DiffPool-style soft pooling for gradient routing
-status: todo
+status: done
 priority: critical
 tags:
 - backend

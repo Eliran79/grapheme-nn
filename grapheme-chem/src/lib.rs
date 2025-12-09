@@ -146,7 +146,7 @@ impl Element {
 
 /// Chemistry node types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ChemNode {
+pub enum ChemNodeType {
     /// An atom
     Atom {
         element: Element,
@@ -169,6 +169,41 @@ pub enum ChemNode {
         temperature: Option<f32>,
         pressure: Option<f32>,
     },
+}
+
+/// A chemistry node with activation for gradient flow
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChemNode {
+    /// The type of this chemistry node
+    pub node_type: ChemNodeType,
+    /// Activation value for gradient flow during training
+    pub activation: f32,
+}
+
+impl ChemNode {
+    /// Create a new chemistry node with default activation based on type
+    pub fn new(node_type: ChemNodeType) -> Self {
+        let activation = Self::type_activation(&node_type);
+        Self {
+            node_type,
+            activation,
+        }
+    }
+
+    /// Get default activation value based on node type importance
+    fn type_activation(node_type: &ChemNodeType) -> f32 {
+        match node_type {
+            // Structural elements - high importance
+            ChemNodeType::Atom { .. } => 0.7,
+            ChemNodeType::FunctionalGroup(_) => 0.8,
+            // Container/organization nodes
+            ChemNodeType::Molecule { .. } => 0.9,
+            ChemNodeType::Reaction { .. } => 0.85,
+            // Process-related nodes
+            ChemNodeType::Catalyst(_) => 0.75,
+            ChemNodeType::Conditions { .. } => 0.5,
+        }
+    }
 }
 
 /// Bond types
@@ -258,10 +293,10 @@ impl MolecularGraph {
         let mut graph = Self::new();
 
         // Create molecule container
-        let mol = graph.add_node(ChemNode::Molecule {
+        let mol = graph.add_node(ChemNode::new(ChemNodeType::Molecule {
             name: None,
             formula: Some(formula.to_string()),
-        });
+        }));
         graph.root = Some(mol);
 
         // Simple parser for formulas like H2O, CO2, CH4
@@ -296,11 +331,11 @@ impl MolecularGraph {
             // Add atoms
             if let Some(element) = Element::from_symbol(&symbol) {
                 for _ in 0..count {
-                    let atom = graph.add_node(ChemNode::Atom {
+                    let atom = graph.add_node(ChemNode::new(ChemNodeType::Atom {
                         element,
                         charge: 0,
                         isotope: None,
-                    });
+                    }));
                     graph.add_edge(mol, atom, ChemEdge::PartOf);
                 }
             }

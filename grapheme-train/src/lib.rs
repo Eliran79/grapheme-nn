@@ -22,7 +22,11 @@ use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{
     Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,
 };
-use grapheme_math::{MathGraph, MathNode};
+use grapheme_math::{MathGraph, MathNode, MathNodeType};
+use grapheme_code::{CodeGraph, CodeNode, CodeNodeType};
+use grapheme_law::{LegalGraph, LegalNode, LegalNodeType};
+use grapheme_music::{MusicGraph, MusicNode, MusicNodeType};
+use grapheme_chem::{MolecularGraph, ChemNode, ChemNodeType};
 use grapheme_polish::expr_to_polish;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -1305,28 +1309,28 @@ impl WeisfeilerLehmanKernel {
     /// Hash a MathNode to a color
     fn hash_math_node(&self, node: &MathNode) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        match node {
-            MathNode::Integer(i) => {
+        match &node.node_type {
+            MathNodeType::Integer(i) => {
                 "Integer".hash(&mut hasher);
                 i.hash(&mut hasher);
             }
-            MathNode::Float(f) => {
+            MathNodeType::Float(f) => {
                 "Float".hash(&mut hasher);
                 f.to_bits().hash(&mut hasher);
             }
-            MathNode::Symbol(s) => {
+            MathNodeType::Symbol(s) => {
                 "Symbol".hash(&mut hasher);
                 s.hash(&mut hasher);
             }
-            MathNode::Operator(op) => {
+            MathNodeType::Operator(op) => {
                 "Operator".hash(&mut hasher);
                 format!("{:?}", op).hash(&mut hasher);
             }
-            MathNode::Function(func) => {
+            MathNodeType::Function(func) => {
                 "Function".hash(&mut hasher);
                 format!("{:?}", func).hash(&mut hasher);
             }
-            MathNode::Result => {
+            MathNodeType::Result => {
                 "Result".hash(&mut hasher);
             }
         }
@@ -1702,26 +1706,26 @@ impl GraphEditDistance {
     }
 
     /// Check if two math nodes are equal
-    fn math_nodes_equal(n1: &MathNode, n2: &MathNode) -> bool {
-        match (n1, n2) {
-            (MathNode::Integer(a), MathNode::Integer(b)) => a == b,
-            (MathNode::Float(a), MathNode::Float(b)) => (a - b).abs() < 1e-10,
-            (MathNode::Symbol(a), MathNode::Symbol(b)) => a == b,
-            (MathNode::Operator(a), MathNode::Operator(b)) => a == b,
-            (MathNode::Function(a), MathNode::Function(b)) => a == b,
-            (MathNode::Result, MathNode::Result) => true,
+    pub fn math_nodes_equal(n1: &MathNode, n2: &MathNode) -> bool {
+        match (&n1.node_type, &n2.node_type) {
+            (MathNodeType::Integer(a), MathNodeType::Integer(b)) => a == b,
+            (MathNodeType::Float(a), MathNodeType::Float(b)) => (a - b).abs() < 1e-10,
+            (MathNodeType::Symbol(a), MathNodeType::Symbol(b)) => a == b,
+            (MathNodeType::Operator(a), MathNodeType::Operator(b)) => a == b,
+            (MathNodeType::Function(a), MathNodeType::Function(b)) => a == b,
+            (MathNodeType::Result, MathNodeType::Result) => true,
             _ => false,
         }
     }
 
     /// Get category of a math node (for partial matching)
-    fn math_node_category(node: &MathNode) -> u8 {
-        match node {
-            MathNode::Integer(_) | MathNode::Float(_) => 0, // Numeric
-            MathNode::Symbol(_) => 1,                       // Variable
-            MathNode::Operator(_) => 2,                     // Operator
-            MathNode::Function(_) => 3,                     // Function
-            MathNode::Result => 4,                          // Result
+    pub fn math_node_category(node: &MathNode) -> u8 {
+        match &node.node_type {
+            MathNodeType::Integer(_) | MathNodeType::Float(_) => 0, // Numeric
+            MathNodeType::Symbol(_) => 1,                       // Variable
+            MathNodeType::Operator(_) => 2,                     // Operator
+            MathNodeType::Function(_) => 3,                     // Function
+            MathNodeType::Result => 4,                          // Result
         }
     }
 
@@ -1913,10 +1917,13 @@ pub struct StructuralLossResult {
     pub n1: usize,
     /// Number of columns in assignment matrix
     pub n2: usize,
-    /// Gradients w.r.t. predicted node features (flattened)
+    /// Gradients w.r.t. cost matrix (n1 × n2, flattened) - legacy field
     pub node_gradients: Vec<f32>,
     /// Gradients w.r.t. predicted edge weights
     pub edge_gradients: Vec<f32>,
+    /// Gradients w.r.t. predicted node activations (n1, one per node) - Backend-104
+    /// These are proper ∂L/∂activation gradients that can be backpropagated
+    pub activation_gradients: Vec<f32>,
 }
 
 impl StructuralLossResult {
@@ -2088,6 +2095,8 @@ fn compute_soft_node_costs(
 /// Compute differentiable node cost from soft assignment
 ///
 /// node_cost = sum_i min_j(P_ij * C_ij) + insertion_penalty + deletion_penalty
+///
+/// Returns (total_cost, cost_gradients) where cost_gradients[idx] = ∂L/∂C[i,j]
 fn compute_differentiable_node_cost(
     cost_matrix: &[f32],
     assignment: &[f32],
@@ -2120,6 +2129,60 @@ fn compute_differentiable_node_cost(
     total_cost += size_diff;
 
     (total_cost, gradients)
+}
+
+/// Compute gradients w.r.t. predicted node activations (Backend-104)
+///
+/// This chains the gradient through:
+///   ∂L/∂act_pred[i] = Σⱼ (∂L/∂C[i,j]) * (∂C[i,j]/∂act_pred[i])
+///
+/// where:
+///   ∂L/∂C[i,j] = P[i,j] (assignment probability)
+///   ∂C[i,j]/∂act_pred[i] = 0.7 * sign(act_pred[i] - act_target[j])
+///
+/// Returns Vec<f32> of length n1 (gradient per predicted node)
+fn compute_activation_gradients(
+    predicted: &GraphemeGraph,
+    target: &GraphemeGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut activation_grads = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let act_pred = predicted.graph[idx1].activation;
+        let mut grad_sum = 0.0f32;
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let act_target = target.graph[idx2].activation;
+            let p = assignment[i * n2 + j];  // P[i,j]
+
+            // ∂cost/∂act_pred = 0.7 * sign(act_pred - act_target)
+            // Using smooth sign approximation for better gradients
+            let diff = act_pred - act_target;
+            let sign_deriv = if diff.abs() < 0.01 {
+                // Linear region near zero for smooth gradients
+                diff / 0.01
+            } else {
+                diff.signum()
+            };
+
+            // Chain: ∂L/∂act_pred[i] += P[i,j] * 0.7 * sign_deriv
+            grad_sum += p * 0.7 * sign_deriv;
+        }
+
+        activation_grads[i] = grad_sum;
+    }
+
+    activation_grads
 }
 
 /// Compute differentiable edge cost from soft assignment
@@ -2346,6 +2409,7 @@ pub fn compute_structural_loss(
             n2: 0,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2362,6 +2426,7 @@ pub fn compute_structural_loss(
             n2,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2378,6 +2443,7 @@ pub fn compute_structural_loss(
             n2: 0,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2396,6 +2462,9 @@ pub fn compute_structural_loss(
     // Uses degree distribution moments - O(n) complexity for DAGs
     let clique_cost = compute_clique_alignment_cost(predicted, target);
 
+    // Backend-104: Compute proper activation gradients for backpropagation
+    let activation_gradients = compute_activation_gradients(predicted, target, &assignment, n1, n2);
+
     // Total weighted loss: α·node + β·edge + γ·clique
     let total_loss =
         config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
@@ -2410,6 +2479,7 @@ pub fn compute_structural_loss(
         n2,
         node_gradients,
         edge_gradients,
+        activation_gradients,
     }
 }
 
@@ -2432,6 +2502,7 @@ pub fn compute_structural_loss_math(
             n2: 0,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2447,6 +2518,7 @@ pub fn compute_structural_loss_math(
             n2,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2462,6 +2534,7 @@ pub fn compute_structural_loss_math(
             n2: 0,
             node_gradients: Vec::new(),
             edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
         };
     }
 
@@ -2478,6 +2551,9 @@ pub fn compute_structural_loss_math(
     let total_loss =
         config.alpha * node_cost + config.beta * edge_cost + config.gamma * clique_cost;
 
+    // Backend-104: Compute proper activation gradients for MathGraph learning
+    let activation_gradients = compute_activation_gradients_math(predicted, target, &assignment, n1, n2);
+
     StructuralLossResult {
         total_loss,
         node_cost,
@@ -2488,10 +2564,17 @@ pub fn compute_structural_loss_math(
         n2,
         node_gradients,
         edge_gradients,
+        activation_gradients,
     }
 }
 
-/// Compute soft node costs for MathGraphs
+/// Compute soft node costs for MathGraphs (Backend-104 updated)
+///
+/// Now includes activation_cost for gradient flow, similar to GraphemeGraph.
+/// Cost weights:
+/// - 0.3 type_cost (discrete, no gradient)
+/// - 0.5 activation_cost (LEARNED, gradient flows here!)
+/// - 0.2 degree_cost (discrete, no gradient)
 fn compute_soft_node_costs_math(
     predicted: &MathGraph,
     target: &MathGraph,
@@ -2526,15 +2609,73 @@ fn compute_soft_node_costs_math(
                 1.0
             };
 
+            // Activation difference cost (LEARNED - gradients flow here!)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
             // Degree difference cost
             let max_degree = degree1.max(degree2).max(1);
             let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
 
-            costs[i * n2 + j] = 0.7 * type_cost + 0.3 * degree_cost;
+            // Updated weights: activation gets 0.5 for gradient flow
+            costs[i * n2 + j] = 0.3 * type_cost + 0.5 * activation_cost + 0.2 * degree_cost;
         }
     }
 
     (costs, n1, n2)
+}
+
+/// Compute gradients w.r.t. predicted MathNode activations (Backend-104)
+///
+/// This chains the gradient through:
+///   ∂L/∂act_pred[i] = Σⱼ (∂L/∂C[i,j]) * (∂C[i,j]/∂act_pred[i])
+///
+/// where:
+///   ∂L/∂C[i,j] = P[i,j] (assignment probability)
+///   ∂C[i,j]/∂act_pred[i] = 0.5 * sign(act_pred[i] - act_target[j])
+///
+/// Returns Vec<f32> of length n1 (gradient per predicted node)
+fn compute_activation_gradients_math(
+    predicted: &MathGraph,
+    target: &MathGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut activation_grads = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let act_pred = predicted.graph[idx1].activation;
+        let mut grad_sum = 0.0f32;
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let act_target = target.graph[idx2].activation;
+            let p = assignment[i * n2 + j];  // P[i,j]
+
+            // ∂cost/∂act_pred = 0.5 * sign(act_pred - act_target)
+            // Using smooth sign approximation for better gradients
+            let diff = act_pred - act_target;
+            let sign_deriv = if diff.abs() < 0.01 {
+                // Linear region near zero for smooth gradients
+                diff / 0.01
+            } else {
+                diff.signum()
+            };
+
+            // Chain: ∂L/∂act_pred[i] += P[i,j] * 0.5 * sign_deriv
+            grad_sum += p * 0.5 * sign_deriv;
+        }
+
+        activation_grads[i] = grad_sum;
+    }
+
+    activation_grads
 }
 
 /// Compute differentiable edge cost for MathGraphs
@@ -2591,6 +2732,971 @@ fn compute_differentiable_edge_cost_math(
 
     let target_edge_count = target.edge_count();
     let predicted_edge_count = predicted.edge_count();
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+// ============================================================================
+// CodeGraph Structural Loss (Backend-117)
+// ============================================================================
+
+/// Compute structural loss for CodeGraph (Backend-117)
+///
+/// Similar to MathGraph, enables gradient-based learning for code AST structures.
+pub fn compute_structural_loss_code(
+    predicted: &CodeGraph,
+    target: &CodeGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    let (cost_matrix, n1, n2) = compute_soft_node_costs_code(predicted, target);
+
+    if n1 == 0 && n2 == 0 {
+        return StructuralLossResult {
+            total_loss: 0.0,
+            node_cost: 0.0,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
+        };
+    }
+
+    if n1 == 0 {
+        let insertion_cost = n2 as f32 + target.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * insertion_cost,
+            node_cost: n2 as f32,
+            edge_cost: target.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1: 0,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
+        };
+    }
+
+    if n2 == 0 {
+        let deletion_cost = n1 as f32 + predicted.edge_count() as f32;
+        return StructuralLossResult {
+            total_loss: config.alpha * deletion_cost,
+            node_cost: n1 as f32,
+            edge_cost: predicted.edge_count() as f32,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2: 0,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: Vec::new(),
+        };
+    }
+
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost_code(predicted, target, &assignment, n1, n2);
+
+    // Total weighted loss: α·node + β·edge (no clique for AST)
+    let total_loss = config.alpha * node_cost + config.beta * edge_cost;
+
+    // Backend-117: Compute proper activation gradients for CodeGraph learning
+    let activation_gradients = compute_activation_gradients_code(predicted, target, &assignment, n1, n2);
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost: 0.0,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+        activation_gradients,
+    }
+}
+
+/// Compute soft node costs for CodeGraphs (Backend-117)
+///
+/// Cost weights:
+/// - 0.3 type_cost (discrete, no gradient)
+/// - 0.5 activation_cost (LEARNED, gradient flows here!)
+/// - 0.2 degree_cost (discrete, no gradient)
+fn compute_soft_node_costs_code(
+    predicted: &CodeGraph,
+    target: &CodeGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost
+            let type_cost = code_node_type_cost(&node1.node_type, &node2.node_type);
+
+            // Activation difference cost (LEARNED - gradients flow here!)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
+            // Degree difference cost
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            // Weighted combination: activation gets 0.5 for gradient flow
+            costs[i * n2 + j] = 0.3 * type_cost + 0.5 * activation_cost + 0.2 * degree_cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute type mismatch cost for CodeNodes
+fn code_node_type_cost(a: &CodeNodeType, b: &CodeNodeType) -> f32 {
+    use CodeNodeType::*;
+
+    // Same type = 0 cost
+    if std::mem::discriminant(a) == std::mem::discriminant(b) {
+        return 0.0;
+    }
+
+    // Same category = 0.5 cost
+    let category_a = code_node_category(a);
+    let category_b = code_node_category(b);
+
+    if category_a == category_b {
+        0.5
+    } else {
+        1.0
+    }
+}
+
+/// Get category for CodeNodeType (for similarity comparison)
+fn code_node_category(node: &CodeNodeType) -> u8 {
+    use CodeNodeType::*;
+    match node {
+        Module { .. } => 0,                    // Module
+        Function { .. } | Call { .. } => 1,    // Function-related
+        Variable { .. } | Identifier(_) => 2,  // Variables/identifiers
+        Literal(_) => 3,                       // Literals
+        BinaryOp(_) | UnaryOp(_) => 4,         // Operations
+        If | Loop { .. } | Return => 5,        // Control flow
+        Block | ExprStmt => 6,                 // Structural
+        Type(_) => 7,                          // Types
+        Comment(_) => 8,                       // Comments
+        Assignment => 4,                       // Also operations
+    }
+}
+
+/// Compute gradients w.r.t. predicted CodeNode activations (Backend-117)
+fn compute_activation_gradients_code(
+    predicted: &CodeGraph,
+    target: &CodeGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut activation_grads = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let act_pred = predicted.graph[idx1].activation;
+        let mut grad_sum = 0.0f32;
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let act_target = target.graph[idx2].activation;
+            let p = assignment[i * n2 + j];  // P[i,j]
+
+            // ∂cost/∂act_pred = 0.5 * sign(act_pred - act_target)
+            let diff = act_pred - act_target;
+            let sign_deriv = if diff.abs() < 0.01 {
+                diff / 0.01
+            } else {
+                diff.signum()
+            };
+
+            // Chain: ∂L/∂act_pred[i] += P[i,j] * 0.5 * sign_deriv
+            grad_sum += p * 0.5 * sign_deriv;
+        }
+
+        activation_grads[i] = grad_sum;
+    }
+
+    activation_grads
+}
+
+/// Compute differentiable edge cost for CodeGraphs
+fn compute_differentiable_edge_cost_code(
+    predicted: &CodeGraph,
+    target: &CodeGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.edge_count();
+        let e2 = target.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            let mut match_prob = 0.0f32;
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    let target_edge_count = target.edge_count();
+    let predicted_edge_count = predicted.edge_count();
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+// ============================================================================
+// LegalGraph Structural Loss (Backend-118)
+// ============================================================================
+
+/// Compute structural loss for LegalGraphs with activation gradients
+///
+/// Uses the Backend-104 pattern for differentiable graph-to-graph loss:
+/// - Soft node assignment via Sinkhorn normalization
+/// - Differentiable edge matching
+/// - Activation gradients for learning
+pub fn compute_structural_loss_legal(
+    predicted: &LegalGraph,
+    target: &LegalGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    let (cost_matrix, n1, n2) = compute_soft_node_costs_legal(predicted, target);
+
+    if n1 == 0 || n2 == 0 {
+        return StructuralLossResult {
+            total_loss: (n1 + n2) as f32,
+            node_cost: (n1 + n2) as f32,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: vec![0.0; n1],
+        };
+    }
+
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost_legal(predicted, target, &assignment, n1, n2);
+
+    // Total weighted loss: α·node + β·edge (no clique for legal graphs)
+    let total_loss = config.alpha * node_cost + config.beta * edge_cost;
+
+    // Backend-118: Compute proper activation gradients for LegalGraph learning
+    let activation_gradients = compute_activation_gradients_legal(predicted, target, &assignment, n1, n2);
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost: 0.0,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+        activation_gradients,
+    }
+}
+
+/// Compute soft node costs for LegalGraphs (Backend-118)
+///
+/// Cost weights:
+/// - 0.3 type_cost (discrete, no gradient)
+/// - 0.5 activation_cost (LEARNED, gradient flows here!)
+/// - 0.2 degree_cost (discrete, no gradient)
+fn compute_soft_node_costs_legal(
+    predicted: &LegalGraph,
+    target: &LegalGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost
+            let type_cost = legal_node_type_cost(&node1.node_type, &node2.node_type);
+
+            // Activation difference cost (LEARNED - gradients flow here!)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
+            // Degree difference cost
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            // Weighted combination: activation gets 0.5 for gradient flow
+            costs[i * n2 + j] = 0.3 * type_cost + 0.5 * activation_cost + 0.2 * degree_cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute type mismatch cost for LegalNodes
+fn legal_node_type_cost(a: &LegalNodeType, b: &LegalNodeType) -> f32 {
+    // Same type = 0 cost
+    if std::mem::discriminant(a) == std::mem::discriminant(b) {
+        return 0.0;
+    }
+
+    // Same category = 0.5 cost
+    let category_a = legal_node_category(a);
+    let category_b = legal_node_category(b);
+
+    if category_a == category_b {
+        0.5
+    } else {
+        1.0
+    }
+}
+
+/// Get category for LegalNodeType (for similarity comparison)
+fn legal_node_category(node: &LegalNodeType) -> u8 {
+    match node {
+        LegalNodeType::Citation { .. } | LegalNodeType::Statute { .. } => 0, // Authority
+        LegalNodeType::Holding(_) | LegalNodeType::Rule(_) => 1,             // Legal principles
+        LegalNodeType::Argument { .. } | LegalNodeType::Application(_) => 2, // Reasoning
+        LegalNodeType::Issue(_) | LegalNodeType::Fact(_) => 3,               // Case elements
+        LegalNodeType::Party { .. } => 4,                                    // Parties
+        LegalNodeType::Conclusion(_) | LegalNodeType::Opinion { .. } => 5,   // Outcomes
+    }
+}
+
+/// Compute gradients w.r.t. predicted LegalNode activations (Backend-118)
+fn compute_activation_gradients_legal(
+    predicted: &LegalGraph,
+    target: &LegalGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut activation_grads = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let act_pred = predicted.graph[idx1].activation;
+        let mut grad_sum = 0.0f32;
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let act_target = target.graph[idx2].activation;
+            let p = assignment[i * n2 + j];  // P[i,j]
+
+            // ∂cost/∂act_pred = 0.5 * sign(act_pred - act_target)
+            let diff = act_pred - act_target;
+            let sign_deriv = if diff.abs() < 0.01 {
+                diff / 0.01
+            } else {
+                diff.signum()
+            };
+
+            // Chain: ∂L/∂act_pred[i] += P[i,j] * 0.5 * sign_deriv
+            grad_sum += p * 0.5 * sign_deriv;
+        }
+
+        activation_grads[i] = grad_sum;
+    }
+
+    activation_grads
+}
+
+/// Compute differentiable edge cost for LegalGraphs
+fn compute_differentiable_edge_cost_legal(
+    predicted: &LegalGraph,
+    target: &LegalGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.edge_count();
+        let e2 = target.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            let mut match_prob = 0.0f32;
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    let target_edge_count = target.edge_count();
+    let predicted_edge_count = predicted.edge_count();
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+// ============================================================================
+// MusicGraph Structural Loss (Backend-119)
+// ============================================================================
+
+/// Compute structural loss between two MusicGraphs with activation gradients
+pub fn compute_structural_loss_music(
+    predicted: &MusicGraph,
+    target: &MusicGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    let (cost_matrix, n1, n2) = compute_soft_node_costs_music(predicted, target);
+
+    if n1 == 0 || n2 == 0 {
+        return StructuralLossResult {
+            total_loss: (n1 + n2) as f32,
+            node_cost: (n1 + n2) as f32,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: vec![0.0; n1],
+        };
+    }
+
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost_music(predicted, target, &assignment, n1, n2);
+
+    // Total weighted loss: α·node + β·edge (no clique for music graphs)
+    let total_loss = config.alpha * node_cost + config.beta * edge_cost;
+
+    // Backend-119: Compute proper activation gradients for MusicGraph learning
+    let activation_gradients = compute_activation_gradients_music(predicted, target, &assignment, n1, n2);
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost: 0.0,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+        activation_gradients,
+    }
+}
+
+/// Compute soft node costs for MusicGraphs (Backend-119)
+///
+/// Cost weights:
+/// - 0.3 type_cost (discrete, no gradient)
+/// - 0.5 activation_cost (LEARNED, gradient flows here!)
+/// - 0.2 degree_cost (discrete, no gradient)
+fn compute_soft_node_costs_music(
+    predicted: &MusicGraph,
+    target: &MusicGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost
+            let type_cost = music_node_type_cost(&node1.node_type, &node2.node_type);
+
+            // Activation difference cost (LEARNED - gradients flow here!)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
+            // Degree difference cost
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            // Weighted combination: activation gets 0.5 for gradient flow
+            costs[i * n2 + j] = 0.3 * type_cost + 0.5 * activation_cost + 0.2 * degree_cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute type-based cost between two MusicNodeTypes
+fn music_node_type_cost(a: &MusicNodeType, b: &MusicNodeType) -> f32 {
+    if std::mem::discriminant(a) == std::mem::discriminant(b) {
+        0.0 // Same type
+    } else if music_node_category(a) == music_node_category(b) {
+        0.5 // Same category
+    } else {
+        1.0 // Different category
+    }
+}
+
+/// Get category for MusicNodeType (for partial matching)
+fn music_node_category(node: &MusicNodeType) -> u8 {
+    match node {
+        // Melodic content
+        MusicNodeType::Note { .. } | MusicNodeType::Chord { .. } | MusicNodeType::Scale { .. } => 0,
+        // Timing/structure
+        MusicNodeType::TimeSignature { .. } | MusicNodeType::Tempo(_) | MusicNodeType::Measure(_) => 1,
+        // Key-related
+        MusicNodeType::KeySignature { .. } => 2,
+        // Silence
+        MusicNodeType::Rest(_) => 3,
+        // Expression
+        MusicNodeType::Dynamic(_) | MusicNodeType::Articulation(_) => 4,
+    }
+}
+
+/// Compute activation gradients for MusicGraph nodes
+fn compute_activation_gradients_music(
+    predicted: &MusicGraph,
+    target: &MusicGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut gradients = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+
+        // Gradient from activation difference
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let weight = assignment[i * n2 + j];
+
+            // ∂cost/∂activation = weight * sign(activation_diff)
+            let diff = node1.activation - node2.activation;
+            gradients[i] += weight * diff.signum() * 0.5;
+        }
+    }
+
+    gradients
+}
+
+/// Compute differentiable edge cost for MusicGraph
+fn compute_differentiable_edge_cost_music(
+    predicted: &MusicGraph,
+    target: &MusicGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.graph.edge_count();
+        let e2 = target.graph.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in predicted.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    // Also add actual target edges
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            let mut match_prob = 0.0f32;
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    let target_edge_count = target.graph.edge_count();
+    let predicted_edge_count = predicted.graph.edge_count();
+    if target_edge_count > predicted_edge_count {
+        edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
+    }
+
+    (edge_cost, edge_gradients)
+}
+
+// ============================================================================
+// MolecularGraph Structural Loss (Backend-120)
+// ============================================================================
+
+/// Compute structural loss between two MolecularGraphs with activation gradients
+pub fn compute_structural_loss_molecular(
+    predicted: &MolecularGraph,
+    target: &MolecularGraph,
+    config: &StructuralLossConfig,
+) -> StructuralLossResult {
+    let (cost_matrix, n1, n2) = compute_soft_node_costs_molecular(predicted, target);
+
+    if n1 == 0 || n2 == 0 {
+        return StructuralLossResult {
+            total_loss: (n1 + n2) as f32,
+            node_cost: (n1 + n2) as f32,
+            edge_cost: 0.0,
+            clique_cost: 0.0,
+            assignment_matrix: Vec::new(),
+            n1,
+            n2,
+            node_gradients: Vec::new(),
+            edge_gradients: Vec::new(),
+            activation_gradients: vec![0.0; n1],
+        };
+    }
+
+    let assignment = sinkhorn_normalize(&cost_matrix, n1, n2, &config.sinkhorn);
+    let (node_cost, node_gradients) =
+        compute_differentiable_node_cost(&cost_matrix, &assignment, n1, n2);
+    let (edge_cost, edge_gradients) =
+        compute_differentiable_edge_cost_molecular(predicted, target, &assignment, n1, n2);
+
+    // Total weighted loss: α·node + β·edge (no clique for molecular graphs)
+    let total_loss = config.alpha * node_cost + config.beta * edge_cost;
+
+    // Backend-120: Compute proper activation gradients for MolecularGraph learning
+    let activation_gradients = compute_activation_gradients_molecular(predicted, target, &assignment, n1, n2);
+
+    StructuralLossResult {
+        total_loss,
+        node_cost,
+        edge_cost,
+        clique_cost: 0.0,
+        assignment_matrix: assignment,
+        n1,
+        n2,
+        node_gradients,
+        edge_gradients,
+        activation_gradients,
+    }
+}
+
+/// Compute soft node costs for MolecularGraphs (Backend-120)
+///
+/// Cost weights:
+/// - 0.3 type_cost (discrete, no gradient)
+/// - 0.5 activation_cost (LEARNED, gradient flows here!)
+/// - 0.2 degree_cost (discrete, no gradient)
+fn compute_soft_node_costs_molecular(
+    predicted: &MolecularGraph,
+    target: &MolecularGraph,
+) -> (Vec<f32>, usize, usize) {
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+    let n1 = indices1.len();
+    let n2 = indices2.len();
+
+    if n1 == 0 || n2 == 0 {
+        return (Vec::new(), n1, n2);
+    }
+
+    let mut costs = vec![0.0f32; n1 * n2];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+        let degree1 = predicted.graph.edges(idx1).count();
+
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let degree2 = target.graph.edges(idx2).count();
+
+            // Type mismatch cost
+            let type_cost = chem_node_type_cost(&node1.node_type, &node2.node_type);
+
+            // Activation difference cost (LEARNED - gradients flow here!)
+            let activation_cost = (node1.activation - node2.activation).abs().min(1.0);
+
+            // Degree difference cost
+            let max_degree = degree1.max(degree2).max(1);
+            let degree_cost = (degree1 as f32 - degree2 as f32).abs() / max_degree as f32;
+
+            // Weighted combination: activation gets 0.5 for gradient flow
+            costs[i * n2 + j] = 0.3 * type_cost + 0.5 * activation_cost + 0.2 * degree_cost;
+        }
+    }
+
+    (costs, n1, n2)
+}
+
+/// Compute type-based cost between two ChemNodeTypes
+fn chem_node_type_cost(a: &ChemNodeType, b: &ChemNodeType) -> f32 {
+    if std::mem::discriminant(a) == std::mem::discriminant(b) {
+        0.0 // Same type
+    } else if chem_node_category(a) == chem_node_category(b) {
+        0.5 // Same category
+    } else {
+        1.0 // Different category
+    }
+}
+
+/// Get category for ChemNodeType (for partial matching)
+fn chem_node_category(node: &ChemNodeType) -> u8 {
+    match node {
+        // Structural elements
+        ChemNodeType::Atom { .. } | ChemNodeType::FunctionalGroup(_) => 0,
+        // Container nodes
+        ChemNodeType::Molecule { .. } | ChemNodeType::Reaction { .. } => 1,
+        // Process-related
+        ChemNodeType::Catalyst(_) | ChemNodeType::Conditions { .. } => 2,
+    }
+}
+
+/// Compute activation gradients for MolecularGraph nodes
+fn compute_activation_gradients_molecular(
+    predicted: &MolecularGraph,
+    target: &MolecularGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> Vec<f32> {
+    if n1 == 0 || n2 == 0 {
+        return vec![0.0; n1];
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    let mut gradients = vec![0.0f32; n1];
+
+    for (i, &idx1) in indices1.iter().enumerate() {
+        let node1 = &predicted.graph[idx1];
+
+        // Gradient from activation difference
+        for (j, &idx2) in indices2.iter().enumerate() {
+            let node2 = &target.graph[idx2];
+            let weight = assignment[i * n2 + j];
+
+            // ∂cost/∂activation = weight * sign(activation_diff)
+            let diff = node1.activation - node2.activation;
+            gradients[i] += weight * diff.signum() * 0.5;
+        }
+    }
+
+    gradients
+}
+
+/// Compute differentiable edge cost for MolecularGraph
+fn compute_differentiable_edge_cost_molecular(
+    predicted: &MolecularGraph,
+    target: &MolecularGraph,
+    assignment: &[f32],
+    n1: usize,
+    n2: usize,
+) -> (f32, Vec<f32>) {
+    if n1 == 0 || n2 == 0 {
+        let e1 = predicted.graph.edge_count();
+        let e2 = target.graph.edge_count();
+        return ((e1 + e2) as f32, Vec::new());
+    }
+
+    let indices1: Vec<_> = predicted.graph.node_indices().collect();
+    let indices2: Vec<_> = target.graph.node_indices().collect();
+
+    // Build target adjacency
+    let mut target_adj = vec![vec![false; n2]; n2];
+    for edge in target.graph.edge_references() {
+        if let (Some(si), Some(ti)) = (
+            indices2.iter().position(|&idx| idx == edge.source()),
+            indices2.iter().position(|&idx| idx == edge.target()),
+        ) {
+            target_adj[si][ti] = true;
+            target_adj[ti][si] = true;
+        }
+    }
+
+    let mut edge_cost = 0.0f32;
+    let mut edge_gradients = Vec::new();
+
+    for edge in predicted.graph.edge_references() {
+        let src_pos = indices1.iter().position(|&idx| idx == edge.source());
+        let dst_pos = indices1.iter().position(|&idx| idx == edge.target());
+
+        if let (Some(u), Some(v)) = (src_pos, dst_pos) {
+            let mut match_prob = 0.0f32;
+            for i in 0..n2 {
+                for j in 0..n2 {
+                    if target_adj[i][j] {
+                        let p_u_to_i = assignment[u * n2 + i];
+                        let p_v_to_j = assignment[v * n2 + j];
+                        match_prob += p_u_to_i * p_v_to_j;
+                    }
+                }
+            }
+            edge_cost += 1.0 - match_prob;
+            edge_gradients.push(match_prob);
+        }
+    }
+
+    let target_edge_count = target.graph.edge_count();
+    let predicted_edge_count = predicted.graph.edge_count();
     if target_edge_count > predicted_edge_count {
         edge_cost += (target_edge_count - predicted_edge_count) as f32 * 0.5;
     }
@@ -6110,5 +7216,227 @@ mod tests {
 
         // Cleanup
         fs::remove_file(&temp_path).ok();
+    }
+
+    #[test]
+    fn test_code_graph_activation_gradients() {
+        use grapheme_code::{CodeGraph, CodeNode, CodeNodeType, CodeEdge, LiteralValue};
+
+        // Create predicted CodeGraph
+        let mut predicted = CodeGraph::new();
+        let p0 = predicted.add_node(CodeNode::new(CodeNodeType::Function {
+            name: "foo".into(),
+            params: vec!["x".into()],
+            return_type: Some("int".into()),
+        }));
+        let p1 = predicted.add_node(CodeNode::new(CodeNodeType::Variable {
+            name: "x".into(),
+            var_type: Some("int".into()),
+        }));
+        let p2 = predicted.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(42))));
+        predicted.add_edge(p0, p1, CodeEdge::Child(0));
+        predicted.add_edge(p1, p2, CodeEdge::DataFlow);
+
+        // Create target CodeGraph (slightly different)
+        let mut target = CodeGraph::new();
+        let t0 = target.add_node(CodeNode::new(CodeNodeType::Function {
+            name: "bar".into(),
+            params: vec!["y".into()],
+            return_type: Some("float".into()),
+        }));
+        let t1 = target.add_node(CodeNode::new(CodeNodeType::Variable {
+            name: "y".into(),
+            var_type: Some("float".into()),
+        }));
+        let t2 = target.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Float(3.14))));
+        target.add_edge(t0, t1, CodeEdge::Child(0));
+        target.add_edge(t1, t2, CodeEdge::DataFlow);
+
+        let config = StructuralLossConfig::default();
+        let result = compute_structural_loss_code(&predicted, &target, &config);
+
+        // Verify we get non-zero activation gradients (Backend-117)
+        assert_eq!(result.activation_gradients.len(), 3, "Should have gradients for all 3 nodes");
+
+        let non_zero_grads = result.activation_gradients.iter()
+            .filter(|&&g| g.abs() > 1e-6)
+            .count();
+
+        assert!(non_zero_grads > 0, "CodeGraph must have non-zero activation gradients for learning!");
+
+        // Verify loss is computed
+        assert!(result.total_loss >= 0.0, "Loss should be non-negative");
+        assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
+    }
+
+    #[test]
+    fn test_legal_graph_activation_gradients() {
+        use grapheme_law::{LegalGraph, LegalNode, LegalNodeType, LegalEdge};
+
+        // Create predicted LegalGraph
+        let mut predicted = LegalGraph::new();
+        let p0 = predicted.add_node(LegalNode::new(LegalNodeType::Citation {
+            case_name: "Brown v. Board".into(),
+            year: Some(1954),
+            volume: None,
+            page: None,
+        }));
+        let p1 = predicted.add_node(LegalNode::new(LegalNodeType::Holding(
+            "Separate is inherently unequal".into()
+        )));
+        let p2 = predicted.add_node(LegalNode::new(LegalNodeType::Rule(
+            "Equal protection clause".into()
+        )));
+        predicted.add_edge(p0, p1, LegalEdge::LeadsTo);
+        predicted.add_edge(p1, p2, LegalEdge::Supports);
+
+        // Create target LegalGraph (slightly different)
+        let mut target = LegalGraph::new();
+        let t0 = target.add_node(LegalNode::new(LegalNodeType::Citation {
+            case_name: "Plessy v. Ferguson".into(),
+            year: Some(1896),
+            volume: None,
+            page: None,
+        }));
+        let t1 = target.add_node(LegalNode::new(LegalNodeType::Holding(
+            "Separate but equal".into()
+        )));
+        let t2 = target.add_node(LegalNode::new(LegalNodeType::Conclusion(
+            "Upheld segregation".into()
+        )));
+        target.add_edge(t0, t1, LegalEdge::LeadsTo);
+        target.add_edge(t1, t2, LegalEdge::LeadsTo);
+
+        let config = StructuralLossConfig::default();
+        let result = compute_structural_loss_legal(&predicted, &target, &config);
+
+        // Verify we get non-zero activation gradients (Backend-118)
+        assert_eq!(result.activation_gradients.len(), 3, "Should have gradients for all 3 nodes");
+
+        let non_zero_grads = result.activation_gradients.iter()
+            .filter(|&&g| g.abs() > 1e-6)
+            .count();
+
+        assert!(non_zero_grads > 0, "LegalGraph must have non-zero activation gradients for learning!");
+
+        // Verify loss is computed
+        assert!(result.total_loss >= 0.0, "Loss should be non-negative");
+        assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
+    }
+
+    #[test]
+    fn test_music_graph_activation_gradients() {
+        use grapheme_music::{MusicGraph, MusicNode, MusicNodeType, MusicEdge, NoteName, Duration, ChordQuality, ScaleMode};
+
+        // Create predicted MusicGraph
+        let mut predicted = MusicGraph::new();
+        let p0 = predicted.add_node(MusicNode::new(MusicNodeType::Note {
+            name: NoteName::C,
+            octave: 4,
+            duration: Duration::Quarter,
+        }));
+        let p1 = predicted.add_node(MusicNode::new(MusicNodeType::Chord {
+            root: NoteName::C,
+            quality: ChordQuality::Major,
+        }));
+        let p2 = predicted.add_node(MusicNode::new(MusicNodeType::Scale {
+            root: NoteName::C,
+            mode: ScaleMode::Major,
+        }));
+        predicted.add_edge(p0, p1, MusicEdge::PartOf);
+        predicted.add_edge(p1, p2, MusicEdge::Next);
+
+        // Create target MusicGraph (slightly different)
+        let mut target = MusicGraph::new();
+        let t0 = target.add_node(MusicNode::new(MusicNodeType::Note {
+            name: NoteName::G,
+            octave: 4,
+            duration: Duration::Half,
+        }));
+        let t1 = target.add_node(MusicNode::new(MusicNodeType::Chord {
+            root: NoteName::G,
+            quality: ChordQuality::Minor,
+        }));
+        let t2 = target.add_node(MusicNode::new(MusicNodeType::KeySignature {
+            root: NoteName::G,
+            mode: ScaleMode::Minor,
+        }));
+        target.add_edge(t0, t1, MusicEdge::PartOf);
+        target.add_edge(t1, t2, MusicEdge::Next);
+
+        let config = StructuralLossConfig::default();
+        let result = compute_structural_loss_music(&predicted, &target, &config);
+
+        // Verify we get non-zero activation gradients (Backend-119)
+        assert_eq!(result.activation_gradients.len(), 3, "Should have gradients for all 3 nodes");
+
+        let non_zero_grads = result.activation_gradients.iter()
+            .filter(|&&g| g.abs() > 1e-6)
+            .count();
+
+        assert!(non_zero_grads > 0, "MusicGraph must have non-zero activation gradients for learning!");
+
+        // Verify loss is computed
+        assert!(result.total_loss >= 0.0, "Loss should be non-negative");
+        assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
+    }
+
+    #[test]
+    fn test_molecular_graph_activation_gradients() {
+        use grapheme_chem::{MolecularGraph, ChemNode, ChemNodeType, ChemEdge, Element, BondType};
+
+        // Create predicted MolecularGraph (H2O)
+        let mut predicted = MolecularGraph::new();
+        let p0 = predicted.add_node(ChemNode::new(ChemNodeType::Molecule {
+            name: Some("Water".into()),
+            formula: Some("H2O".into()),
+        }));
+        let p1 = predicted.add_node(ChemNode::new(ChemNodeType::Atom {
+            element: Element::O,
+            charge: 0,
+            isotope: None,
+        }));
+        let p2 = predicted.add_node(ChemNode::new(ChemNodeType::Atom {
+            element: Element::H,
+            charge: 0,
+            isotope: None,
+        }));
+        predicted.add_edge(p0, p1, ChemEdge::PartOf);
+        predicted.add_edge(p1, p2, ChemEdge::Bond(BondType::Single));
+
+        // Create target MolecularGraph (CO2 - different)
+        let mut target = MolecularGraph::new();
+        let t0 = target.add_node(ChemNode::new(ChemNodeType::Molecule {
+            name: Some("Carbon Dioxide".into()),
+            formula: Some("CO2".into()),
+        }));
+        let t1 = target.add_node(ChemNode::new(ChemNodeType::Atom {
+            element: Element::C,
+            charge: 0,
+            isotope: None,
+        }));
+        let t2 = target.add_node(ChemNode::new(ChemNodeType::Atom {
+            element: Element::O,
+            charge: 0,
+            isotope: None,
+        }));
+        target.add_edge(t0, t1, ChemEdge::PartOf);
+        target.add_edge(t1, t2, ChemEdge::Bond(BondType::Double));
+
+        let config = StructuralLossConfig::default();
+        let result = compute_structural_loss_molecular(&predicted, &target, &config);
+
+        // Verify we get non-zero activation gradients (Backend-120)
+        assert_eq!(result.activation_gradients.len(), 3, "Should have gradients for all 3 nodes");
+
+        let non_zero_grads = result.activation_gradients.iter()
+            .filter(|&&g| g.abs() > 1e-6)
+            .count();
+
+        assert!(non_zero_grads > 0, "MolecularGraph must have non-zero activation gradients for learning!");
+
+        // Verify loss is computed
+        assert!(result.total_loss >= 0.0, "Loss should be non-negative");
+        assert!(result.node_cost >= 0.0, "Node cost should be non-negative");
     }
 }

@@ -103,8 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Compute structural loss
             let loss_result = compute_structural_loss(&predicted, &target_graph, &config);
 
-            // Backward pass
-            model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+            // Backend-104: Use activation_gradients for proper gradient chain
+            model.backward(&input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
 
             total_loss += loss_result.total_loss;
         }

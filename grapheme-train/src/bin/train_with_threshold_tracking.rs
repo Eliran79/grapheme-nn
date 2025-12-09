@@ -65,8 +65,8 @@ fn main() {
 
             total_loss += loss_result.total_loss;
 
-            // Backward pass (includes threshold gradient)
-            model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+            // Backend-104: Use activation_gradients for proper gradient chain
+            model.backward(&input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
         }
 
         let avg_loss = total_loss / training_data.len() as f32;

@@ -349,8 +349,8 @@ fn main() -> anyhow::Result<()> {
                     };
                     total_accuracy += accuracy;
 
-                    // Backward pass: Route gradients through soft pooling (backend-104)
-                    model.backward(&input_graph, &pooling_result, &loss_result.node_gradients, EMBED_DIM);
+                    // Backend-104: Use activation_gradients for proper gradient chain
+                    model.backward(&input_graph, &pooling_result, &loss_result.activation_gradients, EMBED_DIM);
                 }
 
                 batch_loss /= inputs.len() as f32;

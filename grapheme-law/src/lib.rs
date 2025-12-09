@@ -48,7 +48,7 @@ pub enum Jurisdiction {
 
 /// Legal document types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum LegalNode {
+pub enum LegalNodeType {
     /// Case citation
     Citation {
         case_name: String,
@@ -80,6 +80,41 @@ pub enum LegalNode {
     Conclusion(String),
     /// Concurrence or dissent
     Opinion { author: String, kind: OpinionKind },
+}
+
+/// Legal node with activation for gradient flow (Backend-118)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LegalNode {
+    /// The type of legal node
+    pub node_type: LegalNodeType,
+    /// Activation value for gradient-based learning
+    pub activation: f32,
+}
+
+impl LegalNode {
+    /// Create a new legal node with default activation based on type
+    pub fn new(node_type: LegalNodeType) -> Self {
+        let activation = Self::type_activation(&node_type);
+        Self { node_type, activation }
+    }
+
+    /// Get the default activation value for a node type
+    /// Higher values indicate more important legal elements
+    fn type_activation(node_type: &LegalNodeType) -> f32 {
+        match node_type {
+            LegalNodeType::Citation { .. } => 0.8,      // Citations are foundational
+            LegalNodeType::Statute { .. } => 0.9,       // Statutes are authoritative
+            LegalNodeType::Holding(_) => 0.85,          // Holdings are key outcomes
+            LegalNodeType::Argument { .. } => 0.7,      // Arguments support conclusions
+            LegalNodeType::Party { .. } => 0.4,         // Parties are contextual
+            LegalNodeType::Issue(_) => 0.75,            // Issues frame the case
+            LegalNodeType::Fact(_) => 0.5,              // Facts are evidence
+            LegalNodeType::Rule(_) => 0.8,              // Rules are authoritative
+            LegalNodeType::Application(_) => 0.6,       // Application connects rule to facts
+            LegalNodeType::Conclusion(_) => 0.85,       // Conclusions are key outcomes
+            LegalNodeType::Opinion { .. } => 0.7,       // Opinions provide reasoning
+        }
+    }
 }
 
 /// Role of a party in legal proceedings
@@ -189,12 +224,12 @@ impl LegalGraph {
             None
         };
 
-        let node = graph.add_node(LegalNode::Citation {
+        let node = graph.add_node(LegalNode::new(LegalNodeType::Citation {
             case_name: trimmed.to_string(),
             year,
             volume: None,
             page: None,
-        });
+        }));
         graph.root = Some(node);
 
         Ok(graph)
@@ -308,7 +343,7 @@ impl LawBrain {
 
         // Check for orphan citations (citations with no connections)
         for node_idx in graph.graph.node_indices() {
-            if let LegalNode::Citation { case_name, .. } = &graph.graph[node_idx] {
+            if let LegalNode { node_type: LegalNodeType::Citation { case_name, .. }, .. } = &graph.graph[node_idx] {
                 let incoming = graph
                     .graph
                     .edges_directed(node_idx, petgraph::Direction::Incoming)
@@ -591,7 +626,7 @@ mod tests {
     fn test_parse_citation() {
         let graph = LegalGraph::parse_citation("Brown v. Board of Education (1954)").unwrap();
         assert_eq!(graph.node_count(), 1);
-        if let LegalNode::Citation { year, .. } = &graph.graph[graph.root.unwrap()] {
+        if let LegalNode { node_type: LegalNodeType::Citation { year, .. }, .. } = &graph.graph[graph.root.unwrap()] {
             assert_eq!(*year, Some(1954));
         } else {
             panic!("Expected Citation node");
