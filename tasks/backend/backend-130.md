@@ -1,7 +1,7 @@
 ---
 id: backend-130
 title: Migrate grapheme-code to use brain-common abstractions
-status: todo
+status: done
 priority: medium
 tags:
 - backend

@@ -11,7 +11,15 @@
 //! Future enhancements:
 //! - Tree-sitter integration for multi-language parsing
 //! - Full compilation and execution support
+//!
+//! ## Migration to brain-common
+//!
+//! This crate uses shared abstractions from `grapheme-brain-common`:
+//! - `ActivatedNode<CodeNodeType>` - Generic node wrapper (aliased as `CodeNode`)
+//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
+//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
+use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
     ValidationSeverity,
@@ -100,51 +108,79 @@ pub enum CodeNodeType {
     ExprStmt,
 }
 
-/// Code node with activation for gradient flow (Backend-117)
+/// Get default activation based on code node type.
+/// Higher values for more semantically important constructs.
 ///
-/// Wraps CodeNodeType with a learned activation value that enables
-/// gradients to flow through structural loss during training.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CodeNode {
-    /// The underlying node type
-    pub node_type: CodeNodeType,
-    /// Learned activation value for gradient flow
-    pub activation: f32,
+/// Used by `new_code_node()` to compute initial activation from type.
+pub fn code_type_activation(node_type: &CodeNodeType) -> f32 {
+    match node_type {
+        CodeNodeType::Module { .. } => 0.9,      // Root structure
+        CodeNodeType::Function { .. } => 0.8,   // Key construct
+        CodeNodeType::Variable { .. } => 0.4,   // Data storage
+        CodeNodeType::Literal(_) => 0.2,        // Constants
+        CodeNodeType::BinaryOp(_) => 0.5,       // Operations
+        CodeNodeType::UnaryOp(_) => 0.4,        // Operations
+        CodeNodeType::Call { .. } => 0.7,       // Function invocation
+        CodeNodeType::If => 0.6,                // Control flow
+        CodeNodeType::Loop { .. } => 0.6,       // Control flow
+        CodeNodeType::Return => 0.5,            // Control flow
+        CodeNodeType::Block => 0.3,             // Structural
+        CodeNodeType::Type(_) => 0.4,           // Type annotation
+        CodeNodeType::Comment(_) => 0.1,        // Documentation
+        CodeNodeType::Identifier(_) => 0.3,     // Reference
+        CodeNodeType::Assignment => 0.5,        // State change
+        CodeNodeType::ExprStmt => 0.3,          // Expression wrapper
+    }
 }
 
-impl CodeNode {
-    /// Create a new code node with default activation based on type
-    pub fn new(node_type: CodeNodeType) -> Self {
-        let activation = Self::type_activation(&node_type);
-        Self { node_type, activation }
+/// Code node with activation for gradient flow (Backend-117)
+///
+/// This is a type alias for `ActivatedNode<CodeNodeType>` from brain-common.
+/// The generic wrapper handles activation storage and propagation while
+/// maintaining the domain-specific node type.
+///
+/// ## Migration Note
+///
+/// Previously this was a standalone struct. Now it uses the shared
+/// `ActivatedNode<T>` abstraction. The `new_code_node()` function provides
+/// backward compatibility with the previous `new_code_node()` API.
+pub type CodeNode = ActivatedNode<CodeNodeType>;
+
+/// Create a new code node with default activation based on type.
+///
+/// This is the primary constructor for CodeNode, providing backward
+/// compatibility with the previous `new_code_node()` API.
+pub fn new_code_node(node_type: CodeNodeType) -> CodeNode {
+    ActivatedNode::with_type_activation(node_type, code_type_activation)
+}
+
+/// Extension trait for CodeNode-specific convenience methods.
+pub trait CodeNodeExt {
+    /// Check if this is a literal node
+    fn is_literal(&self) -> bool;
+    /// Check if this is a function node
+    fn is_function(&self) -> bool;
+    /// Check if this is an identifier node
+    fn is_identifier(&self) -> bool;
+    /// Check if this is a binary operation node
+    fn is_binary_op(&self) -> bool;
+}
+
+impl CodeNodeExt for CodeNode {
+    fn is_literal(&self) -> bool {
+        matches!(self.node_type, CodeNodeType::Literal(_))
     }
 
-    /// Create node with explicit activation value
-    pub fn with_activation(node_type: CodeNodeType, activation: f32) -> Self {
-        Self { node_type, activation }
+    fn is_function(&self) -> bool {
+        matches!(self.node_type, CodeNodeType::Function { .. })
     }
 
-    /// Get default activation based on node type
-    /// Higher values for more semantically important constructs
-    fn type_activation(node_type: &CodeNodeType) -> f32 {
-        match node_type {
-            CodeNodeType::Module { .. } => 0.9,      // Root structure
-            CodeNodeType::Function { .. } => 0.8,   // Key construct
-            CodeNodeType::Variable { .. } => 0.4,   // Data storage
-            CodeNodeType::Literal(_) => 0.2,        // Constants
-            CodeNodeType::BinaryOp(_) => 0.5,       // Operations
-            CodeNodeType::UnaryOp(_) => 0.4,        // Operations
-            CodeNodeType::Call { .. } => 0.7,       // Function invocation
-            CodeNodeType::If => 0.6,                // Control flow
-            CodeNodeType::Loop { .. } => 0.6,       // Control flow
-            CodeNodeType::Return => 0.5,            // Control flow
-            CodeNodeType::Block => 0.3,             // Structural
-            CodeNodeType::Type(_) => 0.4,           // Type annotation
-            CodeNodeType::Comment(_) => 0.1,        // Documentation
-            CodeNodeType::Identifier(_) => 0.3,     // Reference
-            CodeNodeType::Assignment => 0.5,        // State change
-            CodeNodeType::ExprStmt => 0.3,          // Expression wrapper
-        }
+    fn is_identifier(&self) -> bool {
+        matches!(self.node_type, CodeNodeType::Identifier(_))
+    }
+
+    fn is_binary_op(&self) -> bool {
+        matches!(self.node_type, CodeNodeType::BinaryOp(_))
     }
 }
 
@@ -918,25 +954,25 @@ impl CodeGraph {
 
         // Try to parse as a number
         if let Ok(n) = trimmed.parse::<i64>() {
-            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(n))));
+            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Integer(n))));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         if let Ok(n) = trimmed.parse::<f64>() {
-            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Float(n))));
+            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Float(n))));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         // Try to parse as a boolean
         if trimmed == "true" {
-            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Boolean(true))));
+            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Boolean(true))));
             graph.root = Some(node);
             return Ok(graph);
         }
         if trimmed == "false" {
-            let node = graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Boolean(false))));
+            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Boolean(false))));
             graph.root = Some(node);
             return Ok(graph);
         }
@@ -964,7 +1000,7 @@ impl CodeGraph {
                     let right_graph = Self::from_simple_expr(right_str)?;
 
                     // Create the binary op node
-                    let op_node = graph.add_node(CodeNode::new(CodeNodeType::BinaryOp(op)));
+                    let op_node = graph.add_node(new_code_node(CodeNodeType::BinaryOp(op)));
 
                     // Add left and right as children (simplified - just copy root values)
                     if let Some(left_root) = left_graph.root {
@@ -983,7 +1019,7 @@ impl CodeGraph {
         }
 
         // Treat as identifier
-        let node = graph.add_node(CodeNode::new(CodeNodeType::Identifier(trimmed.to_string())));
+        let node = graph.add_node(new_code_node(CodeNodeType::Identifier(trimmed.to_string())));
         graph.root = Some(node);
         Ok(graph)
     }
@@ -1017,7 +1053,7 @@ impl CodeGraph {
 
     /// Add a type annotation edge from a node to its type
     pub fn annotate_type(&mut self, node: NodeIndex, type_str: &str) -> NodeIndex {
-        let type_node = self.add_node(CodeNode::new(CodeNodeType::Type(type_str.to_string())));
+        let type_node = self.add_node(new_code_node(CodeNodeType::Type(type_str.to_string())));
         self.add_edge(node, type_node, CodeEdge::HasType);
         type_node
     }
@@ -1052,8 +1088,45 @@ impl TypeInferenceResult {
 // Code Brain
 // ============================================================================
 
-/// The Code Brain that processes source code as graphs
+/// Create the code domain configuration.
+///
+/// This configures keywords for capability detection, text normalization,
+/// and other domain-specific settings using brain-common utilities.
+fn create_code_config() -> DomainConfig {
+    // Code keywords for can_process detection
+    let keywords = vec![
+        "fn ", "def ", "function ", "func ",
+        "let ", "var ", "const ",
+        "if ", "else ", "while ", "for ", "return ",
+        "class ", "struct ", "import ", "from ", "use ",
+        "->", "=>", "::", "{", "}", "(", ")",
+    ];
+
+    // Create normalizer for code formatting
+    let normalizer = TextNormalizer::new()
+        .add_replacements(vec![
+            ("\r\n", "\n"),  // Windows line endings
+            ("\r", "\n"),    // Old Mac line endings
+            ("\t", "    "),  // Tabs to spaces
+        ])
+        .trim_whitespace(true);
+
+    DomainConfig::new("code", "Source Code", keywords)
+        .with_version("0.1.0")
+        .with_normalizer(normalizer)
+        .with_annotation_prefix("// @code:")
+}
+
+/// The Code Brain that processes source code as graphs.
+///
+/// ## Migration Note
+///
+/// This brain now uses `DomainConfig` from brain-common for keyword
+/// detection and text normalization. It implements `BaseDomainBrain`
+/// to access default implementations.
 pub struct CodeBrain {
+    /// Domain configuration (keywords, normalizer, etc.)
+    config: DomainConfig,
     /// Supported languages
     languages: Vec<Language>,
 }
@@ -1077,6 +1150,7 @@ impl CodeBrain {
     /// Create a new code brain
     pub fn new() -> Self {
         Self {
+            config: create_code_config(),
             languages: vec![
                 Language::Rust,
                 Language::Python,
@@ -1085,38 +1159,6 @@ impl CodeBrain {
                 Language::Generic,
             ],
         }
-    }
-
-    /// Check if code contains function-like syntax
-    fn looks_like_code(&self, input: &str) -> bool {
-        let code_patterns = [
-            "fn ",
-            "def ",
-            "function ",
-            "func ",
-            "let ",
-            "var ",
-            "const ",
-            "if ",
-            "else ",
-            "while ",
-            "for ",
-            "return ",
-            "class ",
-            "struct ",
-            "import ",
-            "from ",
-            "use ",
-            "->",
-            "=>",
-            "::",
-            "{",
-            "}",
-            "(",
-            ")",
-        ];
-        let lower = input.to_lowercase();
-        code_patterns.iter().any(|p| lower.contains(p))
     }
 
     /// Detect language from code snippet
@@ -1132,19 +1174,6 @@ impl CodeBrain {
         } else {
             Language::Generic
         }
-    }
-
-    /// Normalize code text for domain processing
-    /// Handles whitespace, removes empty lines, normalizes line endings
-    fn normalize_code_text(&self, text: &str) -> String {
-        // Normalize line endings to LF
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-
-        // Remove trailing whitespace from each line
-        let lines: Vec<&str> = normalized.lines().map(|line| line.trim_end()).collect();
-
-        // Join and trim overall
-        lines.join("\n").trim().to_string()
     }
 
     /// Parse code into a CodeGraph
@@ -1329,63 +1358,50 @@ impl CodeBrain {
 }
 
 // ============================================================================
+// BaseDomainBrain Implementation
+// ============================================================================
+
+impl BaseDomainBrain for CodeBrain {
+    fn config(&self) -> &DomainConfig {
+        &self.config
+    }
+}
+
+// ============================================================================
 // DomainBrain Implementation
 // ============================================================================
 
 impl DomainBrain for CodeBrain {
     fn domain_id(&self) -> &str {
-        "code"
+        &self.config.domain_id
     }
 
     fn domain_name(&self) -> &str {
-        "Source Code"
+        &self.config.domain_name
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        &self.config.version
     }
 
     fn can_process(&self, input: &str) -> bool {
-        self.looks_like_code(input)
+        // Use default keyword-based detection from config
+        self.default_can_process(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        DagNN::from_text(input).map_err(|e| e.into())
+        self.default_parse(input)
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert core DagNN to code domain representation
-        // Normalize code formatting for processing
-        let text = graph.to_text();
-
-        // Apply code-specific normalization
-        let normalized = self.normalize_code_text(&text);
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        // Use default from_core which applies config's normalizer
+        self.default_from_core(graph)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert code domain representation back to generic core format
-        // Clean up any domain-specific artifacts
-        let text = graph.to_text();
-
-        // Remove any domain-specific metadata comments
-        let cleaned = text
-            .lines()
-            .filter(|line| !line.trim().starts_with("// @code:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if cleaned != text {
-            DagNN::from_text(&cleaned).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        // Use default to_core which filters by annotation prefix
+        self.default_to_core(graph)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
@@ -1703,7 +1719,7 @@ pub mod tree_sitter_parser {
                     text.chars().take(50).collect::<String>()
                 )),
             };
-            CodeNode::new(node_type)
+            new_code_node(node_type)
         }
 
         /// Map Python-specific AST nodes.
@@ -1743,7 +1759,7 @@ pub mod tree_sitter_parser {
                     text.chars().take(50).collect::<String>()
                 )),
             };
-            CodeNode::new(node_type)
+            new_code_node(node_type)
         }
 
         /// Map JavaScript-specific AST nodes.
@@ -1792,7 +1808,7 @@ pub mod tree_sitter_parser {
                     text.chars().take(50).collect::<String>()
                 )),
             };
-            CodeNode::new(node_type)
+            new_code_node(node_type)
         }
 
         /// Map C-specific AST nodes.
@@ -1856,7 +1872,7 @@ pub mod tree_sitter_parser {
                     text.chars().take(50).collect::<String>()
                 )),
             };
-            CodeNode::new(node_type)
+            new_code_node(node_type)
         }
     }
 }
@@ -1956,7 +1972,7 @@ mod tests {
         assert_eq!(issues.len(), 1); // Empty graph warning
 
         // Add a node to make it non-empty
-        graph.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(42))));
+        graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Integer(42))));
         let issues = brain.validate_code(&graph);
         assert!(issues.is_empty());
     }
@@ -2198,7 +2214,7 @@ mod tests {
     #[test]
     fn test_code_graph_annotate_type() {
         let mut graph = CodeGraph::new();
-        let var_node = graph.add_node(CodeNode::new(CodeNodeType::Variable {
+        let var_node = graph.add_node(new_code_node(CodeNodeType::Variable {
             name: "x".to_string(),
             var_type: None,
         }));
@@ -2254,7 +2270,7 @@ mod tests {
     #[test]
     fn test_infer_variable_with_type() {
         let mut graph = CodeGraph::new();
-        let var = graph.add_node(CodeNode::new(CodeNodeType::Variable {
+        let var = graph.add_node(new_code_node(CodeNodeType::Variable {
             name: "x".to_string(),
             var_type: Some("i32".to_string()),
         }));
@@ -2267,7 +2283,7 @@ mod tests {
     #[test]
     fn test_infer_function_type() {
         let mut graph = CodeGraph::new();
-        let func = graph.add_node(CodeNode::new(CodeNodeType::Function {
+        let func = graph.add_node(new_code_node(CodeNodeType::Function {
             name: "add".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             return_type: Some("i32".to_string()),
