@@ -296,6 +296,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-brain-common"
+version = "0.1.0"
+dependencies = [
+ "grapheme-core",
+ "petgraph",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-chem"
 version = "0.1.0"
 dependencies = [

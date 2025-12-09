@@ -19,6 +19,7 @@ members = [
     "grapheme-music",
     "grapheme-chem",
     "grapheme-tests",
+    "grapheme-brain-common",
 ]
 
 [workspace.package]
