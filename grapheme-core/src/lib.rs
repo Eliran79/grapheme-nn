@@ -5645,6 +5645,398 @@ impl BackwardPass for DagNN {
     }
 }
 
+// ============================================================================
+// Hebbian Learning (backend-111)
+// ============================================================================
+
+/// Configuration for Hebbian learning
+///
+/// Hebbian learning follows the principle "neurons that fire together wire together".
+/// This implementation supports:
+/// - Classic Hebbian: Δw = η * pre * post
+/// - Oja's rule: Δw = η * post * (pre - w * post) - adds weight normalization
+/// - BCM rule: Δw = η * pre * post * (post - θ) - sliding threshold for bidirectional plasticity
+#[derive(Debug, Clone)]
+pub struct HebbianConfig {
+    /// Learning rate for Hebbian updates
+    pub learning_rate: f32,
+    /// Weight decay factor (0.0 = no decay, 1.0 = full decay)
+    pub weight_decay: f32,
+    /// Maximum absolute weight value (for stability)
+    pub max_weight: f32,
+    /// Minimum absolute weight value (for pruning threshold)
+    pub min_weight: f32,
+    /// Hebbian learning rule type
+    pub rule: HebbianRule,
+    /// BCM sliding threshold (for BCM rule)
+    pub bcm_threshold: f32,
+}
+
+impl Default for HebbianConfig {
+    fn default() -> Self {
+        Self {
+            learning_rate: 0.01,
+            weight_decay: 0.0001,
+            max_weight: 10.0,
+            min_weight: 0.0,
+            rule: HebbianRule::Classic,
+            bcm_threshold: 0.5,
+        }
+    }
+}
+
+impl HebbianConfig {
+    /// Create a new HebbianConfig with specified learning rate
+    pub fn new(learning_rate: f32) -> Self {
+        Self {
+            learning_rate,
+            ..Default::default()
+        }
+    }
+
+    /// Use Oja's rule for weight normalization
+    pub fn with_oja_rule(mut self) -> Self {
+        self.rule = HebbianRule::Oja;
+        self
+    }
+
+    /// Use BCM rule for bidirectional plasticity
+    pub fn with_bcm_rule(mut self, threshold: f32) -> Self {
+        self.rule = HebbianRule::BCM;
+        self.bcm_threshold = threshold;
+        self
+    }
+
+    /// Set weight decay
+    pub fn with_weight_decay(mut self, decay: f32) -> Self {
+        self.weight_decay = decay;
+        self
+    }
+
+    /// Set weight bounds
+    pub fn with_weight_bounds(mut self, min: f32, max: f32) -> Self {
+        self.min_weight = min;
+        self.max_weight = max;
+        self
+    }
+}
+
+/// Hebbian learning rule variants
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HebbianRule {
+    /// Classic Hebbian: Δw = η * pre * post
+    Classic,
+    /// Oja's rule: Δw = η * post * (pre - w * post)
+    /// Provides automatic weight normalization
+    Oja,
+    /// BCM rule: Δw = η * pre * post * (post - θ)
+    /// Bidirectional plasticity with sliding threshold
+    BCM,
+    /// Anti-Hebbian: Δw = -η * pre * post
+    /// Used for decorrelation and competitive learning
+    AntiHebbian,
+}
+
+/// Configuration for hybrid gradient descent + Hebbian learning
+#[derive(Debug, Clone)]
+pub struct HybridLearningConfig {
+    /// Learning rate for gradient descent
+    pub gradient_lr: f32,
+    /// Hebbian configuration
+    pub hebbian: HebbianConfig,
+    /// Weight for gradient descent contribution (0.0 to 1.0)
+    pub gradient_weight: f32,
+    /// Weight for Hebbian contribution (0.0 to 1.0)
+    pub hebbian_weight: f32,
+    /// Whether to apply gradient clipping
+    pub clip_gradients: bool,
+    /// Maximum gradient norm for clipping
+    pub max_grad_norm: f32,
+}
+
+impl Default for HybridLearningConfig {
+    fn default() -> Self {
+        Self {
+            gradient_lr: 0.001,
+            hebbian: HebbianConfig::default(),
+            gradient_weight: 0.7,
+            hebbian_weight: 0.3,
+            clip_gradients: true,
+            max_grad_norm: 1.0,
+        }
+    }
+}
+
+impl HybridLearningConfig {
+    /// Create config with custom gradient/Hebbian balance
+    pub fn new(gradient_weight: f32, hebbian_weight: f32) -> Self {
+        Self {
+            gradient_weight,
+            hebbian_weight,
+            ..Default::default()
+        }
+    }
+
+    /// Set learning rates
+    pub fn with_learning_rates(mut self, gradient_lr: f32, hebbian_lr: f32) -> Self {
+        self.gradient_lr = gradient_lr;
+        self.hebbian.learning_rate = hebbian_lr;
+        self
+    }
+}
+
+/// Trait for Hebbian learning on DagNN
+pub trait HebbianLearning {
+    /// Apply pure Hebbian learning update to edge weights
+    ///
+    /// Updates weights based on pre-synaptic and post-synaptic activations:
+    /// - Classic: Δw = η * pre * post
+    /// - Oja: Δw = η * post * (pre - w * post)
+    /// - BCM: Δw = η * pre * post * (post - θ)
+    fn backward_hebbian(&mut self, config: &HebbianConfig) -> HebbianResult;
+
+    /// Apply hybrid gradient descent + Hebbian learning
+    ///
+    /// Combines gradient-based learning with Hebbian updates for biologically
+    /// plausible learning that maintains good optimization properties.
+    fn backward_hybrid(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+        config: &HybridLearningConfig,
+    ) -> HybridResult;
+
+    /// Compute Hebbian weight delta for a single edge
+    fn compute_hebbian_delta(
+        &self,
+        source: NodeId,
+        target: NodeId,
+        current_weight: f32,
+        config: &HebbianConfig,
+    ) -> f32;
+
+    /// Apply competitive learning (lateral inhibition)
+    ///
+    /// Implements winner-take-all dynamics where strongly activated nodes
+    /// suppress their neighbors, leading to sparse representations.
+    fn apply_competitive_learning(&mut self, inhibition_strength: f32);
+}
+
+/// Result of Hebbian learning step
+#[derive(Debug, Default)]
+pub struct HebbianResult {
+    /// Number of edges updated
+    pub edges_updated: usize,
+    /// Average absolute weight change
+    pub avg_delta: f32,
+    /// Maximum absolute weight change
+    pub max_delta: f32,
+    /// Number of edges that hit weight bounds
+    pub bounded_count: usize,
+}
+
+/// Result of hybrid learning step
+#[derive(Debug, Default)]
+pub struct HybridResult {
+    /// Gradient descent contribution
+    pub gradient_result: NodeGradients,
+    /// Hebbian contribution
+    pub hebbian_result: HebbianResult,
+    /// Total edges updated
+    pub total_edges_updated: usize,
+}
+
+impl HebbianLearning for DagNN {
+    fn backward_hebbian(&mut self, config: &HebbianConfig) -> HebbianResult {
+        let mut result = HebbianResult::default();
+        let mut deltas = Vec::new();
+
+        // Collect all edge updates first (to avoid borrow conflicts)
+        for edge_idx in self.graph.edge_indices() {
+            let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+            let current_weight = self.graph[edge_idx].weight;
+
+            let delta = self.compute_hebbian_delta(source, target, current_weight, config);
+            deltas.push((edge_idx, delta));
+        }
+
+        // Apply updates
+        for (edge_idx, delta) in deltas {
+            if delta.abs() < 1e-10 {
+                continue;
+            }
+
+            let current_weight = self.graph[edge_idx].weight;
+            let mut new_weight = current_weight + delta;
+
+            // Apply weight decay
+            new_weight *= 1.0 - config.weight_decay;
+
+            // Apply weight bounds
+            let was_bounded = new_weight.abs() > config.max_weight
+                || (config.min_weight > 0.0 && new_weight.abs() < config.min_weight);
+
+            if new_weight.abs() > config.max_weight {
+                new_weight = new_weight.signum() * config.max_weight;
+            }
+            if config.min_weight > 0.0 && new_weight.abs() < config.min_weight {
+                new_weight = 0.0; // Prune weak connections
+            }
+
+            self.graph[edge_idx].weight = new_weight;
+
+            result.edges_updated += 1;
+            result.avg_delta += delta.abs();
+            result.max_delta = result.max_delta.max(delta.abs());
+            if was_bounded {
+                result.bounded_count += 1;
+            }
+        }
+
+        if result.edges_updated > 0 {
+            result.avg_delta /= result.edges_updated as f32;
+        }
+
+        result
+    }
+
+    fn backward_hybrid(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+        config: &HybridLearningConfig,
+    ) -> HybridResult {
+        let mut result = HybridResult::default();
+
+        // Step 1: Compute gradient-based updates
+        let grads = self.backward(output_grad, embedding);
+
+        // Step 2: Compute and apply combined updates
+        let mut edge_updates: HashMap<(NodeId, NodeId), f32> = HashMap::new();
+
+        // Gradient contribution
+        for ((from, to), edge_grad) in &grads.edge_grads {
+            let mut grad = *edge_grad;
+
+            // Optional gradient clipping
+            if config.clip_gradients {
+                if grad.abs() > config.max_grad_norm {
+                    grad = grad.signum() * config.max_grad_norm;
+                }
+            }
+
+            let gradient_update = -config.gradient_lr * grad * config.gradient_weight;
+            *edge_updates.entry((*from, *to)).or_default() += gradient_update;
+        }
+
+        // Hebbian contribution
+        for edge_idx in self.graph.edge_indices() {
+            let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+            let current_weight = self.graph[edge_idx].weight;
+
+            let hebbian_delta =
+                self.compute_hebbian_delta(source, target, current_weight, &config.hebbian);
+            let hebbian_update = hebbian_delta * config.hebbian_weight;
+
+            *edge_updates.entry((source, target)).or_default() += hebbian_update;
+        }
+
+        // Apply combined updates
+        for ((from, to), total_delta) in edge_updates {
+            if let Some(edge_idx) = self.graph.find_edge(from, to) {
+                let current_weight = self.graph[edge_idx].weight;
+                let mut new_weight = current_weight + total_delta;
+
+                // Apply weight decay
+                new_weight *= 1.0 - config.hebbian.weight_decay;
+
+                // Apply weight bounds
+                new_weight = new_weight.clamp(-config.hebbian.max_weight, config.hebbian.max_weight);
+
+                self.graph[edge_idx].weight = new_weight;
+                result.total_edges_updated += 1;
+            }
+        }
+
+        result.gradient_result = grads;
+        result
+    }
+
+    fn compute_hebbian_delta(
+        &self,
+        source: NodeId,
+        target: NodeId,
+        current_weight: f32,
+        config: &HebbianConfig,
+    ) -> f32 {
+        let pre = self.graph[source].activation;
+        let post = self.graph[target].activation;
+        let lr = config.learning_rate;
+
+        match config.rule {
+            HebbianRule::Classic => {
+                // Classic Hebbian: Δw = η * pre * post
+                lr * pre * post
+            }
+            HebbianRule::Oja => {
+                // Oja's rule: Δw = η * post * (pre - w * post)
+                // This provides automatic weight normalization
+                lr * post * (pre - current_weight * post)
+            }
+            HebbianRule::BCM => {
+                // BCM rule: Δw = η * pre * post * (post - θ)
+                // When post > θ: LTP (strengthening)
+                // When post < θ: LTD (weakening)
+                lr * pre * post * (post - config.bcm_threshold)
+            }
+            HebbianRule::AntiHebbian => {
+                // Anti-Hebbian: Δw = -η * pre * post
+                // Used for decorrelation
+                -lr * pre * post
+            }
+        }
+    }
+
+    fn apply_competitive_learning(&mut self, inhibition_strength: f32) {
+        // Group nodes by their topological level
+        let mut level_nodes: HashMap<usize, Vec<NodeId>> = HashMap::new();
+        for (i, &node) in self.topology.order.iter().enumerate() {
+            level_nodes.entry(i / 10).or_default().push(node); // Group by approximate level
+        }
+
+        // Apply lateral inhibition within each level
+        for (_level, nodes) in level_nodes {
+            if nodes.len() < 2 {
+                continue;
+            }
+
+            // Find winner (highest activation) in this level
+            let winner = nodes
+                .iter()
+                .max_by(|a, b| {
+                    self.graph[**a]
+                        .activation
+                        .partial_cmp(&self.graph[**b].activation)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .copied();
+
+            if let Some(winner_node) = winner {
+                let winner_activation = self.graph[winner_node].activation;
+
+                // Suppress other nodes in proportion to winner's activation
+                for &node in &nodes {
+                    if node != winner_node {
+                        let current = self.graph[node].activation;
+                        let inhibition = inhibition_strength * winner_activation;
+                        self.graph[node].activation = (current - inhibition).max(0.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Utility functions for gradient computation
 pub mod grad_utils {
     use super::*;
@@ -10874,5 +11266,479 @@ mod tests {
         let removed = dag.remove_orphaned_nodes();
 
         assert!(removed >= 2, "Should remove the grown nodes after pruning");
+    }
+
+    // ========================================================================
+    // Hebbian Learning Tests (Backend-111)
+    // ========================================================================
+
+    #[test]
+    fn test_hebbian_config_default() {
+        let config = HebbianConfig::default();
+
+        assert_eq!(config.learning_rate, 0.01);
+        assert_eq!(config.weight_decay, 0.0001);
+        assert_eq!(config.max_weight, 10.0);
+        assert_eq!(config.min_weight, 0.0);
+        assert_eq!(config.rule, HebbianRule::Classic);
+    }
+
+    #[test]
+    fn test_hebbian_config_builder() {
+        let config = HebbianConfig::new(0.05)
+            .with_oja_rule()
+            .with_weight_decay(0.001)
+            .with_weight_bounds(0.01, 5.0);
+
+        assert_eq!(config.learning_rate, 0.05);
+        assert_eq!(config.rule, HebbianRule::Oja);
+        assert_eq!(config.weight_decay, 0.001);
+        assert_eq!(config.min_weight, 0.01);
+        assert_eq!(config.max_weight, 5.0);
+    }
+
+    #[test]
+    fn test_hebbian_config_bcm() {
+        let config = HebbianConfig::new(0.01).with_bcm_rule(0.3);
+
+        assert_eq!(config.rule, HebbianRule::BCM);
+        assert_eq!(config.bcm_threshold, 0.3);
+    }
+
+    #[test]
+    fn test_hybrid_config_default() {
+        let config = HybridLearningConfig::default();
+
+        assert_eq!(config.gradient_lr, 0.001);
+        assert_eq!(config.gradient_weight, 0.7);
+        assert_eq!(config.hebbian_weight, 0.3);
+        assert!(config.clip_gradients);
+    }
+
+    #[test]
+    fn test_hybrid_config_builder() {
+        let config = HybridLearningConfig::new(0.5, 0.5)
+            .with_learning_rates(0.01, 0.02);
+
+        assert_eq!(config.gradient_weight, 0.5);
+        assert_eq!(config.hebbian_weight, 0.5);
+        assert_eq!(config.gradient_lr, 0.01);
+        assert_eq!(config.hebbian.learning_rate, 0.02);
+    }
+
+    #[test]
+    fn test_compute_hebbian_delta_classic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set activations
+        dag.graph[inputs[0]].activation = 0.8;
+        dag.graph[inputs[1]].activation = 0.6;
+
+        let config = HebbianConfig::new(0.1);
+
+        // Classic: Δw = η * pre * post = 0.1 * 0.8 * 0.6 = 0.048
+        let delta = dag.compute_hebbian_delta(inputs[0], inputs[1], 0.5, &config);
+
+        assert!((delta - 0.048).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_hebbian_delta_oja() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set activations
+        dag.graph[inputs[0]].activation = 0.8;  // pre
+        dag.graph[inputs[1]].activation = 0.6;  // post
+
+        let config = HebbianConfig::new(0.1).with_oja_rule();
+        let current_weight = 0.5;
+
+        // Oja: Δw = η * post * (pre - w * post) = 0.1 * 0.6 * (0.8 - 0.5 * 0.6)
+        // = 0.1 * 0.6 * (0.8 - 0.3) = 0.1 * 0.6 * 0.5 = 0.03
+        let delta = dag.compute_hebbian_delta(inputs[0], inputs[1], current_weight, &config);
+
+        assert!((delta - 0.03).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_hebbian_delta_bcm() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set activations
+        dag.graph[inputs[0]].activation = 0.8;  // pre
+        dag.graph[inputs[1]].activation = 0.6;  // post
+
+        let config = HebbianConfig::new(0.1).with_bcm_rule(0.5);
+
+        // BCM: Δw = η * pre * post * (post - θ) = 0.1 * 0.8 * 0.6 * (0.6 - 0.5)
+        // = 0.1 * 0.8 * 0.6 * 0.1 = 0.0048
+        let delta = dag.compute_hebbian_delta(inputs[0], inputs[1], 0.5, &config);
+
+        assert!((delta - 0.0048).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_hebbian_delta_bcm_ltd() {
+        // Test Long-Term Depression (when post < threshold)
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        dag.graph[inputs[0]].activation = 0.8;  // pre
+        dag.graph[inputs[1]].activation = 0.3;  // post < threshold
+
+        let config = HebbianConfig::new(0.1).with_bcm_rule(0.5);
+
+        // BCM: Δw = 0.1 * 0.8 * 0.3 * (0.3 - 0.5) = 0.1 * 0.8 * 0.3 * (-0.2) = -0.0048
+        let delta = dag.compute_hebbian_delta(inputs[0], inputs[1], 0.5, &config);
+
+        assert!(delta < 0.0, "BCM should weaken when post < threshold");
+        assert!((delta - (-0.0048)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_hebbian_delta_anti() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        dag.graph[inputs[0]].activation = 0.8;
+        dag.graph[inputs[1]].activation = 0.6;
+
+        let config = HebbianConfig {
+            learning_rate: 0.1,
+            rule: HebbianRule::AntiHebbian,
+            ..Default::default()
+        };
+
+        // Anti-Hebbian: Δw = -η * pre * post = -0.1 * 0.8 * 0.6 = -0.048
+        let delta = dag.compute_hebbian_delta(inputs[0], inputs[1], 0.5, &config);
+
+        assert!(delta < 0.0, "Anti-Hebbian should always decrease weight");
+        assert!((delta - (-0.048)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_backward_hebbian_basic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set activations to trigger Hebbian learning
+        dag.graph[inputs[0]].activation = 1.0;
+        dag.graph[inputs[1]].activation = 1.0;
+
+        // Get initial edge weight
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        let config = HebbianConfig::new(0.1);
+        let result = dag.backward_hebbian(&config);
+
+        // Weight should increase (both neurons active)
+        let new_weight = dag.graph[edge_idx].weight;
+
+        assert!(result.edges_updated > 0, "Should update at least 1 edge");
+        assert!(new_weight > initial_weight, "Weight should increase with active neurons");
+    }
+
+    #[test]
+    fn test_backward_hebbian_no_change_zero_activation() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set zero activations
+        dag.graph[inputs[0]].activation = 0.0;
+        dag.graph[inputs[1]].activation = 0.0;
+
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        let config = HebbianConfig::new(0.1);
+        let _result = dag.backward_hebbian(&config);
+
+        // Weight should NOT change when Hebbian delta is zero
+        // (edges with zero delta are skipped, including decay)
+        let new_weight = dag.graph[edge_idx].weight;
+
+        assert!(
+            (new_weight - initial_weight).abs() < 1e-6,
+            "Weight should not change when activations are zero"
+        );
+    }
+
+    #[test]
+    fn test_backward_hebbian_weight_bounds() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set high activations
+        dag.graph[inputs[0]].activation = 10.0;
+        dag.graph[inputs[1]].activation = 10.0;
+
+        // Set initial weight close to max
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        dag.graph[edge_idx].weight = 9.9;
+
+        let config = HebbianConfig::new(1.0); // High learning rate
+        let result = dag.backward_hebbian(&config);
+
+        // Weight should be clamped to max_weight
+        let new_weight = dag.graph[edge_idx].weight;
+
+        assert!(
+            new_weight <= config.max_weight,
+            "Weight should be bounded by max_weight"
+        );
+        assert!(result.bounded_count > 0, "Should report bounded edges");
+    }
+
+    #[test]
+    fn test_backward_hebbian_min_weight_pruning() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set very low activation
+        dag.graph[inputs[0]].activation = 0.001;
+        dag.graph[inputs[1]].activation = 0.001;
+
+        // Set small initial weight
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        dag.graph[edge_idx].weight = 0.001;
+
+        let config = HebbianConfig::new(0.0001).with_weight_bounds(0.01, 10.0);
+        dag.backward_hebbian(&config);
+
+        // Weight should be set to 0 (pruned) since it's below min_weight
+        let new_weight = dag.graph[edge_idx].weight;
+
+        assert_eq!(new_weight, 0.0, "Weight below min should be pruned to 0");
+    }
+
+    #[test]
+    fn test_backward_hebbian_result_stats() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Set varied activations
+        for node in dag.topology.order.clone() {
+            dag.graph[node].activation = 0.5;
+        }
+
+        let config = HebbianConfig::new(0.1);
+        let result = dag.backward_hebbian(&config);
+
+        assert!(result.edges_updated > 0, "Should update edges");
+        assert!(result.avg_delta > 0.0, "Should have positive avg delta");
+        assert!(result.max_delta >= result.avg_delta, "Max should be >= avg");
+    }
+
+    #[test]
+    fn test_backward_hybrid_basic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set activations
+        dag.graph[inputs[0]].activation = 0.8;
+        dag.graph[inputs[1]].activation = 0.6;
+        dag.update_topology().unwrap();
+
+        // Create output gradient
+        let mut output_grad = HashMap::new();
+        output_grad.insert(inputs[1], Array1::from_vec(vec![0.1]));
+
+        let mut embedding = Embedding::new(256, 8, InitStrategy::Zero);
+        let config = HybridLearningConfig::default();
+
+        let result = dag.backward_hybrid(&output_grad, &mut embedding, &config);
+
+        assert!(result.total_edges_updated > 0, "Should update edges");
+    }
+
+    #[test]
+    fn test_backward_hybrid_gradient_dominance() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        dag.update_topology().unwrap();
+
+        dag.graph[inputs[0]].activation = 1.0;
+        dag.graph[inputs[1]].activation = 1.0;
+
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        // Large output gradient
+        let mut output_grad = HashMap::new();
+        output_grad.insert(inputs[1], Array1::from_vec(vec![10.0]));
+
+        let mut embedding = Embedding::new(256, 8, InitStrategy::Zero);
+
+        // High gradient weight, low Hebbian weight
+        let config = HybridLearningConfig::new(0.9, 0.1)
+            .with_learning_rates(0.1, 0.01);
+
+        dag.backward_hybrid(&output_grad, &mut embedding, &config);
+
+        let new_weight = dag.graph[edge_idx].weight;
+
+        // Weight should decrease significantly (gradient descent direction)
+        assert!(
+            (new_weight - initial_weight).abs() > 0.01,
+            "Gradient should dominate weight update"
+        );
+    }
+
+    #[test]
+    fn test_backward_hybrid_hebbian_contribution() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        dag.update_topology().unwrap();
+
+        // High activations for strong Hebbian signal
+        dag.graph[inputs[0]].activation = 2.0;
+        dag.graph[inputs[1]].activation = 2.0;
+
+        let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        // Zero gradient (no gradient contribution)
+        let mut output_grad = HashMap::new();
+        output_grad.insert(inputs[1], Array1::from_vec(vec![0.0]));
+
+        let mut embedding = Embedding::new(256, 8, InitStrategy::Zero);
+
+        // Only Hebbian contribution
+        let config = HybridLearningConfig::new(0.0, 1.0)
+            .with_learning_rates(0.0, 0.1);
+
+        dag.backward_hybrid(&output_grad, &mut embedding, &config);
+
+        let new_weight = dag.graph[edge_idx].weight;
+
+        // Weight should increase (Hebbian with positive activations)
+        assert!(
+            new_weight > initial_weight,
+            "Hebbian should increase weight when neurons fire together"
+        );
+    }
+
+    #[test]
+    fn test_competitive_learning_basic() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Set one node as "winner" with high activation
+        dag.graph[inputs[0]].activation = 1.0;
+        dag.graph[inputs[1]].activation = 0.5;
+        dag.graph[inputs[2]].activation = 0.3;
+
+        dag.apply_competitive_learning(0.5);
+
+        // Winner should maintain activation, others should be suppressed
+        // (but note: depends on grouping, so this is a basic test)
+        assert!(
+            dag.graph[inputs[0]].activation >= dag.graph[inputs[1]].activation,
+            "Winner should maintain higher activation"
+        );
+    }
+
+    #[test]
+    fn test_competitive_learning_no_negative_activation() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        dag.graph[inputs[0]].activation = 1.0;
+        dag.graph[inputs[1]].activation = 0.1;
+
+        dag.apply_competitive_learning(0.9);
+
+        // Activation should never go negative
+        assert!(
+            dag.graph[inputs[1]].activation >= 0.0,
+            "Activation should be non-negative after inhibition"
+        );
+    }
+
+    #[test]
+    fn test_hebbian_integration_forward_backward() {
+        // Full integration: forward pass, then Hebbian backward
+        let mut dag = DagNN::from_text("hello").unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let config = HebbianConfig::new(0.01);
+        let result = dag.backward_hebbian(&config);
+
+        assert!(result.edges_updated > 0, "Should update edges after forward pass");
+    }
+
+    #[test]
+    fn test_hybrid_integration_training_step() {
+        // Simulate a training step with hybrid learning
+        let mut dag = DagNN::from_text("ab").unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Get output node for gradient
+        let outputs = dag.output_nodes.clone();
+        let target_node = if outputs.is_empty() {
+            dag.input_nodes()[1]
+        } else {
+            outputs[0]
+        };
+
+        let mut output_grad = HashMap::new();
+        output_grad.insert(target_node, Array1::from_vec(vec![0.5]));
+
+        let mut embedding = Embedding::new(256, 8, InitStrategy::Zero);
+        let config = HybridLearningConfig::default();
+
+        // Multiple training steps
+        for _ in 0..5 {
+            dag.neuromorphic_forward().unwrap();
+            dag.backward_hybrid(&output_grad, &mut embedding, &config);
+        }
+
+        // Just verify no crashes and edges were updated
+        assert!(dag.edge_count() > 0);
+    }
+
+    #[test]
+    fn test_hebbian_multiple_rules_comparison() {
+        // Compare different Hebbian rules on same network
+        let base_dag = DagNN::from_text("ab").unwrap();
+        let inputs = base_dag.input_nodes().to_vec();
+
+        let rules = [
+            HebbianRule::Classic,
+            HebbianRule::Oja,
+            HebbianRule::BCM,
+            HebbianRule::AntiHebbian,
+        ];
+
+        let mut results = Vec::new();
+
+        for rule in rules {
+            let mut dag = base_dag.clone();
+            dag.graph[inputs[0]].activation = 0.8;
+            dag.graph[inputs[1]].activation = 0.6;
+
+            let edge_idx = dag.graph.find_edge(inputs[0], inputs[1]).unwrap();
+            let initial = dag.graph[edge_idx].weight;
+
+            let config = HebbianConfig {
+                learning_rate: 0.1,
+                rule,
+                ..Default::default()
+            };
+            dag.backward_hebbian(&config);
+
+            let final_weight = dag.graph[edge_idx].weight;
+            results.push((rule, initial, final_weight));
+        }
+
+        // Classic and Oja should increase (positive activations)
+        assert!(results[0].2 > results[0].1, "Classic should increase");
+        assert!(results[1].2 > results[1].1, "Oja should increase");
+
+        // AntiHebbian should decrease
+        assert!(results[3].2 < results[3].1, "AntiHebbian should decrease");
     }
 }

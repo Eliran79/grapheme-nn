@@ -1,7 +1,7 @@
 ---
 id: backend-111
 title: Implement backward pass with Hebbian + gradient descent
-status: todo
+status: done
 priority: critical
 tags:
 - backend
@@ -30,82 +30,155 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Implement a biologically-inspired backward pass that combines traditional gradient descent with Hebbian learning rules. This enables the neural network to learn through both error-driven (supervised) and correlation-driven (unsupervised) mechanisms.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Implement multiple Hebbian learning rules (Classic, Oja, BCM, Anti-Hebbian)
+- [x] Create hybrid learning combining gradient descent + Hebbian
+- [x] Add competitive learning (lateral inhibition)
+- [x] Ensure weight bounds and stability mechanisms
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create HebbianConfig struct with learning parameters
+- [x] Implement HebbianRule enum (Classic, Oja, BCM, AntiHebbian)
+- [x] Create HybridLearningConfig for combined learning
+- [x] Implement HebbianLearning trait with backward_hebbian()
+- [x] Implement backward_hybrid() combining gradient + Hebbian
+- [x] Implement compute_hebbian_delta() for individual edges
+- [x] Implement apply_competitive_learning() for lateral inhibition
+- [x] Add HebbianResult and HybridResult structs for diagnostics
+- [x] Write 23 comprehensive tests
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- All four Hebbian rules implemented and tested (Classic, Oja, BCM, AntiHebbian)
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Hybrid learning combines gradient descent and Hebbian updates correctly
+
+✅ **Criteria 3:**
+- Weight bounds, decay, and stability mechanisms work correctly
+
+✅ **Criteria 4:**
+- All 237 tests pass in grapheme-core
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+
+### Hebbian Rules Implemented:
+
+1. **Classic Hebbian**: `Δw = η * pre * post`
+   - "Neurons that fire together wire together"
+   - Simple correlation-based learning
+
+2. **Oja's Rule**: `Δw = η * post * (pre - w * post)`
+   - Adds automatic weight normalization
+   - Prevents unbounded weight growth
+
+3. **BCM Rule**: `Δw = η * pre * post * (post - θ)`
+   - Bidirectional plasticity with sliding threshold
+   - When post > θ: Long-Term Potentiation (strengthening)
+   - When post < θ: Long-Term Depression (weakening)
+
+4. **Anti-Hebbian**: `Δw = -η * pre * post`
+   - Used for decorrelation and competitive learning
+   - Weakens connections between co-active neurons
+
+### Key Structures:
+
+```rust
+pub struct HebbianConfig {
+    pub learning_rate: f32,      // η
+    pub weight_decay: f32,       // Regularization
+    pub max_weight: f32,         // Upper bound
+    pub min_weight: f32,         // Pruning threshold
+    pub rule: HebbianRule,       // Learning rule variant
+    pub bcm_threshold: f32,      // θ for BCM
+}
+
+pub struct HybridLearningConfig {
+    pub gradient_lr: f32,        // Gradient descent LR
+    pub hebbian: HebbianConfig,  // Hebbian config
+    pub gradient_weight: f32,    // Gradient contribution (0-1)
+    pub hebbian_weight: f32,     // Hebbian contribution (0-1)
+    pub clip_gradients: bool,    // Gradient clipping
+    pub max_grad_norm: f32,      // Max gradient norm
+}
+```
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for all Hebbian rule computations
+- [x] Write tests for config builders
+- [x] Write tests for backward_hebbian() updates
+- [x] Write tests for backward_hybrid() combined updates
+- [x] Write tests for competitive learning
+- [x] Write integration tests for full training steps
+- [x] All 237 tests pass
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] All tests pass (237 passed, 0 failed)
+- [x] No compilation errors
 
 ## Updates
 - 2025-12-08: Task created
+- 2025-12-09: Implementation completed
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added to `grapheme-core/src/lib.rs`:
+  - `HebbianConfig` struct (lines ~5652-5722)
+  - `HebbianRule` enum (lines ~5724-5738)
+  - `HybridLearningConfig` struct (lines ~5740-5786)
+  - `HebbianLearning` trait (lines ~5788-5823)
+  - `HebbianResult` and `HybridResult` structs (lines ~5825-5847)
+  - `impl HebbianLearning for DagNN` (lines ~5849-6038)
+  - 23 new tests for Hebbian learning (lines ~11271-11741)
+
+### New Public API:
+```rust
+// Pure Hebbian learning
+let config = HebbianConfig::new(0.01)
+    .with_oja_rule()
+    .with_weight_decay(0.001);
+let result = dag.backward_hebbian(&config);
+
+// Hybrid gradient + Hebbian
+let config = HybridLearningConfig::new(0.7, 0.3)
+    .with_learning_rates(0.001, 0.01);
+let result = dag.backward_hybrid(&output_grad, &mut embedding, &config);
+
+// Competitive learning
+dag.apply_competitive_learning(0.5);
+```
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Hebbian learning updates weights based on pre/post activations after forward pass
+- Forward pass must be run first to set activation values
+- Weight updates are synchronous (all edges updated in one call)
+- Competitive learning modifies activations (not weights)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Integrates with existing `BackwardPass` trait infrastructure
+- Uses existing `NodeGradients` for gradient-based updates
+- Works with the neuromorphic forward pass from backend-107
+- Complements edge pruning (backend-108) and neurogenesis (backend-110)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test --package grapheme-core` - should show 237 tests passing
+- Test individual Hebbian rules with known inputs to verify formulas
+- Test hybrid learning by varying gradient_weight/hebbian_weight ratios
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- The backward pass now supports three modes:
+  1. Pure gradient descent (`backward_and_update`)
+  2. Pure Hebbian learning (`backward_hebbian`)
+  3. Hybrid learning (`backward_hybrid`)
+- Default hybrid config uses 70% gradient, 30% Hebbian
+- Edges with zero delta are skipped entirely (including decay)
+- Weight bounds prevent unbounded growth (default max: 10.0)
+- min_weight > 0 enables automatic pruning of weak connections
