@@ -548,6 +548,7 @@ dependencies = [
  "grapheme-math",
  "grapheme-music",
  "grapheme-polish",
+ "grapheme-vision",
  "indicatif",
  "mnist",
  "ndarray",

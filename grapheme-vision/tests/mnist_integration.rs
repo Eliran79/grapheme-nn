@@ -1,4 +1,4 @@
-//! Integration tests for VisionBrain on real MNIST data
+//! Integration tests for VisionBrain and MnistModel on real MNIST data
 //!
 //! These tests verify that the vision pipeline works correctly on actual
 //! MNIST images, testing:
@@ -6,10 +6,11 @@
 //! - Hierarchical blob detection
 //! - Spatial relationship graph construction
 //! - Determinism (same image = same graph)
+//! - End-to-end MnistModel pipeline
 
 use grapheme_vision::{
     extract_blobs, extract_hierarchical_blobs, image_to_graph,
-    FeatureConfig, RawImage, VisionBrain, VisionEdge,
+    FeatureConfig, MnistModel, MnistModelConfig, RawImage, VisionBrain, VisionEdge,
 };
 use mnist::{Mnist, MnistBuilder};
 use std::collections::HashMap;
@@ -331,4 +332,180 @@ fn test_mnist_vision_brain_to_dagnn() {
             "DagNN should have input nodes"
         );
     }
+}
+
+// ============================================================================
+// MnistModel End-to-End Pipeline Tests
+// ============================================================================
+
+#[test]
+fn test_mnist_model_forward_on_real_data() {
+    let mnist = load_mnist_subset();
+    let model = MnistModel::new();
+
+    // Test forward pass on first 10 training images
+    for i in 0..10 {
+        let start = i * 784;
+        let end = start + 784;
+        let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let label = mnist.trn_lbl[i] as usize;
+
+        let result = model.forward_with_target(&pixels, label);
+        assert!(
+            result.is_ok(),
+            "Forward pass failed for image {} (label {})",
+            i,
+            label
+        );
+
+        let result = result.unwrap();
+        assert!(
+            result.predicted_class < 10,
+            "Predicted class should be 0-9, got {}",
+            result.predicted_class
+        );
+        assert!(
+            result.confidence >= 0.0 && result.confidence <= 1.0,
+            "Confidence should be in [0, 1], got {}",
+            result.confidence
+        );
+        assert!(
+            result.correct.is_some(),
+            "Correct field should be set when target is provided"
+        );
+    }
+}
+
+#[test]
+fn test_mnist_model_train_step_on_real_data() {
+    let mnist = load_mnist_subset();
+    let mut model = MnistModel::new();
+
+    // Test training step on first 5 training images
+    for i in 0..5 {
+        let start = i * 784;
+        let end = start + 784;
+        let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let label = mnist.trn_lbl[i] as usize;
+
+        let result = model.train_step(&pixels, label);
+        assert!(
+            result.is_ok(),
+            "Train step failed for image {} (label {})",
+            i,
+            label
+        );
+
+        let (train_result, dag) = result.unwrap();
+        assert!(
+            train_result.loss >= 0.0,
+            "Loss should be non-negative, got {}",
+            train_result.loss
+        );
+        assert!(
+            train_result.predicted_class < 10,
+            "Predicted class should be 0-9"
+        );
+        assert!(
+            !train_result.gradient.is_empty(),
+            "Gradient should not be empty"
+        );
+        assert!(
+            dag.node_count() > 0,
+            "DAG should have nodes"
+        );
+    }
+}
+
+#[test]
+fn test_mnist_model_determinism_on_real_data() {
+    let mnist = load_mnist_subset();
+    let model = MnistModel::new();
+
+    // Test that same image always produces same vision graph structure
+    // Note: For untrained models, classification may vary due to equal-distance
+    // templates. The critical GRAPHEME principle is that the INPUT graph is
+    // deterministic (same image = same graph). Classification becomes
+    // deterministic after templates are trained with distinct patterns.
+    for i in 0..5 {
+        let start = i * 784;
+        let end = start + 784;
+        let pixels = normalize_image(&mnist.trn_img[start..end]);
+
+        let result1 = model.forward(&pixels).unwrap();
+        let result2 = model.forward(&pixels).unwrap();
+
+        // Vision graph structure is always deterministic
+        assert_eq!(
+            result1.vision_nodes, result2.vision_nodes,
+            "Same image should produce same vision graph node count"
+        );
+        assert_eq!(
+            result1.vision_edges, result2.vision_edges,
+            "Same image should produce same vision graph edge count"
+        );
+    }
+}
+
+#[test]
+fn test_mnist_model_all_digit_classes() {
+    let mnist = load_mnist_subset();
+    let model = MnistModel::new();
+
+    // Group images by label
+    let mut by_label: HashMap<u8, Vec<usize>> = HashMap::new();
+    for (i, &label) in mnist.trn_lbl.iter().enumerate().take(100) {
+        by_label.entry(label).or_default().push(i);
+    }
+
+    // Test that we can process all digit types (0-9)
+    for label in 0..10u8 {
+        if let Some(indices) = by_label.get(&label) {
+            if let Some(&idx) = indices.first() {
+                let start = idx * 784;
+                let end = start + 784;
+                let pixels = normalize_image(&mnist.trn_img[start..end]);
+
+                let result = model.forward(&pixels);
+                assert!(
+                    result.is_ok(),
+                    "MnistModel should process digit {} successfully",
+                    label
+                );
+
+                let result = result.unwrap();
+                println!(
+                    "Digit {}: predicted={}, confidence={:.2}%, vision_nodes={}, vision_edges={}",
+                    label,
+                    result.predicted_class,
+                    result.confidence * 100.0,
+                    result.vision_nodes,
+                    result.vision_edges
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_mnist_model_custom_config() {
+    let mnist = load_mnist_subset();
+
+    // Create model with custom configuration
+    let config = MnistModelConfig::mnist()
+        .with_hidden_size(32)
+        .with_momentum(0.8);
+    let model = MnistModel::with_config(config);
+
+    // Verify config was applied
+    assert_eq!(model.config().hidden_size, 32);
+    assert!((model.config().classification.template_momentum - 0.8).abs() < 1e-6);
+
+    // Test forward pass works with custom config
+    let start = 0;
+    let end = 784;
+    let pixels = normalize_image(&mnist.trn_img[start..end]);
+
+    let result = model.forward(&pixels);
+    assert!(result.is_ok(), "Forward pass should work with custom config");
 }

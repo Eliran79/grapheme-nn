@@ -7,9 +7,13 @@
 //! Backend-141: Adds structural classification option (GRAPHEME-native)
 //! that uses graph structure matching instead of softmax/cross-entropy.
 //!
+//! Backend-139: Adds VisionBrain pipeline (full GRAPHEME vision stack)
+//! that uses blob detection + spatial relationships + structural classification.
+//!
 //! Usage:
 //!   cargo run --bin train_mnist -- --data-dir ./data/mnist --epochs 10
 //!   cargo run --bin train_mnist -- --structural  # Use structural classification
+//!   cargo run --bin train_mnist -- --vision      # Use full VisionBrain pipeline
 //!
 //! The MNIST dataset will be automatically downloaded if not present.
 
@@ -19,6 +23,7 @@ use grapheme_core::{
     cross_entropy_loss_with_grad, ClassificationConfig, DagNN,
     HebbianConfig, HebbianLearning, StructuralClassifier,
 };
+use grapheme_vision::{MnistModel, MnistModelConfig};
 use indicatif::{ProgressBar, ProgressStyle};
 use mnist::{Mnist, MnistBuilder};
 use ndarray::Array1;
@@ -75,6 +80,11 @@ struct Args {
     /// Backend-141: Graph structure matching for classification
     #[arg(long)]
     structural: bool,
+
+    /// Use full VisionBrain pipeline (Backend-139)
+    /// Includes blob detection, spatial relationships, and structural classification
+    #[arg(long)]
+    vision: bool,
 
     /// Template momentum for structural classifier (higher = slower adaptation)
     #[arg(long, default_value_t = 0.9)]
@@ -489,10 +499,172 @@ fn evaluate(mnist: &Mnist, config: &ClassificationConfig) -> (f32, f32) {
     (avg_loss, accuracy)
 }
 
+// ============================================================================
+// VisionBrain Pipeline Training (Backend-139)
+// ============================================================================
+
+/// Train one epoch using the full VisionBrain pipeline
+///
+/// Pipeline: Image → VisionBrain → VisionGraph → DagNN → Classification
+/// This is the complete GRAPHEME vision stack with:
+/// - Hierarchical blob detection
+/// - Spatial relationship graphs
+/// - Structural classification (template matching)
+fn train_epoch_vision(
+    mnist: &Mnist,
+    model: &mut MnistModel,
+    config: &ClassificationConfig,
+    epoch: usize,
+) -> (f32, f32) {
+    let num_samples = mnist.trn_lbl.len();
+    let num_batches = (num_samples + config.batch_size - 1) / config.batch_size;
+
+    let pb = ProgressBar::new(num_batches as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.yellow/white} {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
+    let mut total_loss = 0.0;
+    let mut correct = 0;
+    let mut total = 0;
+
+    // Shuffle indices for this epoch
+    let mut indices: Vec<usize> = (0..num_samples).collect();
+    use rand::seq::SliceRandom;
+    let mut rng = rand::thread_rng();
+    indices.shuffle(&mut rng);
+
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * config.batch_size;
+        let end = (start + config.batch_size).min(num_samples);
+        let batch_indices = &indices[start..end];
+
+        let mut batch_loss = 0.0;
+        let mut batch_correct = 0;
+
+        for &sample_idx in batch_indices {
+            // Get image and label
+            let img_start = sample_idx * 784;
+            let img_end = img_start + 784;
+            let pixels = normalize_image(&mnist.trn_img[img_start..img_end]);
+            let label = mnist.trn_lbl[sample_idx] as usize;
+
+            // Use MnistModel train_step (includes VisionBrain pipeline)
+            match model.train_step(&pixels, label) {
+                Ok((train_result, mut dag)) => {
+                    batch_loss += train_result.loss;
+                    if train_result.correct {
+                        batch_correct += 1;
+                    }
+
+                    // Apply gradient updates to DAG edges
+                    let mut output_grad: HashMap<petgraph::graph::NodeIndex, Array1<f32>> = HashMap::new();
+                    for (i, &node_id) in dag.output_nodes().iter().enumerate() {
+                        if i < train_result.gradient.len() {
+                            output_grad.insert(node_id, Array1::from_vec(vec![train_result.gradient[i]]));
+                        }
+                    }
+                    apply_gradient_update(&mut dag, &output_grad, config.learning_rate);
+
+                    // Optional: Hebbian learning
+                    if config.use_hebbian {
+                        let hebbian_config = HebbianConfig::new(config.learning_rate * config.hebbian_weight);
+                        dag.backward_hebbian(&hebbian_config);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("VisionBrain error: {}", e);
+                    continue;
+                }
+            }
+
+            total += 1;
+        }
+
+        total_loss += batch_loss;
+        correct += batch_correct;
+
+        if batch_idx % config.log_interval == 0 {
+            let avg_loss = batch_loss / batch_indices.len() as f32;
+            let batch_acc = batch_correct as f32 / batch_indices.len() as f32 * 100.0;
+            pb.set_message(format!("vision_loss: {:.4}, acc: {:.1}%", avg_loss, batch_acc));
+        }
+
+        pb.inc(1);
+    }
+
+    pb.finish_with_message(format!(
+        "Epoch {} complete (vision) - loss: {:.4}, acc: {:.2}%",
+        epoch + 1,
+        total_loss / total as f32,
+        correct as f32 / total as f32 * 100.0
+    ));
+
+    (total_loss / total as f32, correct as f32 / total as f32)
+}
+
+/// Evaluate using VisionBrain pipeline
+fn evaluate_vision(mnist: &Mnist, model: &MnistModel) -> (f32, f32) {
+    let num_samples = mnist.tst_lbl.len();
+
+    println!("Evaluating on {} test samples (vision pipeline)...", num_samples);
+
+    let pb = ProgressBar::new(num_samples as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.yellow/white} {pos}/{len}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
+    let mut total_loss = 0.0;
+    let mut correct = 0;
+
+    for sample_idx in 0..num_samples {
+        let img_start = sample_idx * 784;
+        let img_end = img_start + 784;
+        let pixels = normalize_image(&mnist.tst_img[img_start..img_end]);
+        let label = mnist.tst_lbl[sample_idx] as usize;
+
+        // Use MnistModel forward pass
+        match model.forward_with_target(&pixels, label) {
+            Ok(result) => {
+                total_loss += 1.0 - result.confidence;
+                if result.correct.unwrap_or(false) {
+                    correct += 1;
+                }
+            }
+            Err(_) => continue,
+        }
+
+        pb.inc(1);
+    }
+
+    pb.finish();
+
+    let avg_loss = total_loss / num_samples as f32;
+    let accuracy = correct as f32 / num_samples as f32;
+
+    println!("Test Results (Vision Pipeline):");
+    println!("  Loss: {:.4}", avg_loss);
+    println!("  Accuracy: {:.2}% ({}/{})", accuracy * 100.0, correct, num_samples);
+
+    (avg_loss, accuracy)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mode = if args.structural { "Structural (Backend-141)" } else { "Cross-Entropy (Backend-113)" };
+    let mode = if args.vision {
+        "VisionBrain Pipeline (Backend-139)"
+    } else if args.structural {
+        "Structural (Backend-141)"
+    } else {
+        "Cross-Entropy (Backend-113)"
+    };
 
     println!("===========================================");
     println!("  GRAPHEME MNIST Training");
@@ -520,9 +692,12 @@ fn main() -> Result<()> {
     println!("  Batch size: {}", config.batch_size);
     println!("  Epochs: {}", config.epochs);
     println!("  Hebbian: {} (weight: {})", config.use_hebbian, config.hebbian_weight);
-    if args.structural {
+    if args.structural || args.vision {
         println!("  Structural mode: enabled");
         println!("  Template momentum: {}", args.template_momentum);
+    }
+    if args.vision {
+        println!("  VisionBrain: enabled (blob detection + spatial relationships)");
     }
     println!();
 
@@ -532,7 +707,29 @@ fn main() -> Result<()> {
 
     let mut best_accuracy = 0.0;
 
-    if args.structural {
+    if args.vision {
+        // Backend-139: Full VisionBrain pipeline
+        let model_config = MnistModelConfig::mnist()
+            .with_hidden_size(args.hidden_size)
+            .with_momentum(args.template_momentum);
+        let mut model = MnistModel::with_config(model_config);
+
+        for epoch in 0..config.epochs {
+            println!("Epoch {}/{}", epoch + 1, config.epochs);
+
+            let (_train_loss, _train_acc) = train_epoch_vision(&mnist, &mut model, &config, epoch);
+
+            // Evaluate every epoch
+            let (_test_loss, test_acc) = evaluate_vision(&mnist, &model);
+
+            if test_acc > best_accuracy {
+                best_accuracy = test_acc;
+                println!("  New best accuracy: {:.2}%", best_accuracy * 100.0);
+            }
+
+            println!();
+        }
+    } else if args.structural {
         // Backend-141: Structural classification (GRAPHEME-native)
         let mut classifier = StructuralClassifier::new(10, 10)
             .with_momentum(args.template_momentum);

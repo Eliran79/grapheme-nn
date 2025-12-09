@@ -27,6 +27,7 @@ grapheme-code = { path = "../grapheme-code" }
 grapheme-law = { path = "../grapheme-law" }
 grapheme-music = { path = "../grapheme-music" }
 grapheme-chem = { path = "../grapheme-chem" }
+grapheme-vision = { path = "../grapheme-vision" }
 
 [dev-dependencies]
 criterion.workspace = true
