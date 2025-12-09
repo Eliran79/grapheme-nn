@@ -4,8 +4,12 @@
 //! graph-based architecture. Converts MNIST images to DAGs and trains
 //! using hybrid gradient descent + Hebbian learning.
 //!
+//! Backend-141: Adds structural classification option (GRAPHEME-native)
+//! that uses graph structure matching instead of softmax/cross-entropy.
+//!
 //! Usage:
 //!   cargo run --bin train_mnist -- --data-dir ./data/mnist --epochs 10
+//!   cargo run --bin train_mnist -- --structural  # Use structural classification
 //!
 //! The MNIST dataset will be automatically downloaded if not present.
 
@@ -13,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use grapheme_core::{
     cross_entropy_loss_with_grad, ClassificationConfig, DagNN,
-    HebbianConfig, HebbianLearning,
+    HebbianConfig, HebbianLearning, StructuralClassifier,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use mnist::{Mnist, MnistBuilder};
@@ -66,6 +70,15 @@ struct Args {
     /// Log interval (batches)
     #[arg(long, default_value_t = 100)]
     log_interval: usize,
+
+    /// Use structural classification (GRAPHEME-native) instead of softmax/cross-entropy
+    /// Backend-141: Graph structure matching for classification
+    #[arg(long)]
+    structural: bool,
+
+    /// Template momentum for structural classifier (higher = slower adaptation)
+    #[arg(long, default_value_t = 0.9)]
+    template_momentum: f32,
 }
 
 /// Load and preprocess MNIST dataset
@@ -239,6 +252,183 @@ fn apply_gradient_update(
     }
 }
 
+// ============================================================================
+// Structural Classification Training (Backend-141)
+// ============================================================================
+
+/// Train one epoch using structural classification (GRAPHEME-native)
+///
+/// Instead of softmax/cross-entropy, uses graph structure matching:
+/// - Each class has a learned template (activation pattern)
+/// - Loss is structural distance to target class template
+/// - Templates are updated with exponential moving average
+fn train_epoch_structural(
+    mnist: &Mnist,
+    config: &ClassificationConfig,
+    classifier: &mut StructuralClassifier,
+    epoch: usize,
+) -> (f32, f32) {
+    let num_samples = mnist.trn_lbl.len();
+    let num_batches = (num_samples + config.batch_size - 1) / config.batch_size;
+
+    let pb = ProgressBar::new(num_batches as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.magenta/white} {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
+    let mut total_loss = 0.0;
+    let mut correct = 0;
+    let mut total = 0;
+
+    // Shuffle indices for this epoch
+    let mut indices: Vec<usize> = (0..num_samples).collect();
+    use rand::seq::SliceRandom;
+    let mut rng = rand::thread_rng();
+    indices.shuffle(&mut rng);
+
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * config.batch_size;
+        let end = (start + config.batch_size).min(num_samples);
+        let batch_indices = &indices[start..end];
+
+        let mut batch_loss = 0.0;
+        let mut batch_correct = 0;
+
+        for &sample_idx in batch_indices {
+            // Get image and label
+            let img_start = sample_idx * 784;
+            let img_end = img_start + 784;
+            let pixels = normalize_image(&mnist.trn_img[img_start..img_end]);
+            let label = mnist.trn_lbl[sample_idx] as usize;
+
+            // Create DAG from image
+            let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Failed to create DAG: {}", e);
+                    continue;
+                }
+            };
+
+            // Forward pass
+            if let Err(e) = dag.neuromorphic_forward() {
+                eprintln!("Forward pass failed: {}", e);
+                continue;
+            }
+
+            // Structural classification step
+            let result = dag.structural_classification_step(classifier, label);
+            batch_loss += result.loss;
+
+            if result.correct {
+                batch_correct += 1;
+            }
+
+            // Update template with this sample's activations
+            let activations = dag.get_classification_logits();
+            classifier.update_template(label, &activations);
+
+            // Backward pass with structural gradient
+            let mut output_grad: HashMap<petgraph::graph::NodeIndex, Array1<f32>> = HashMap::new();
+            for (i, &node_id) in dag.output_nodes().iter().enumerate() {
+                if i < result.gradient.len() {
+                    output_grad.insert(node_id, Array1::from_vec(vec![result.gradient[i]]));
+                }
+            }
+
+            // Apply gradient updates to edges
+            apply_gradient_update(&mut dag, &output_grad, config.learning_rate);
+
+            // Optional: Hebbian learning
+            if config.use_hebbian {
+                let hebbian_config = HebbianConfig::new(config.learning_rate * config.hebbian_weight);
+                dag.backward_hebbian(&hebbian_config);
+            }
+
+            total += 1;
+        }
+
+        total_loss += batch_loss;
+        correct += batch_correct;
+
+        if batch_idx % config.log_interval == 0 {
+            let avg_loss = batch_loss / batch_indices.len() as f32;
+            let batch_acc = batch_correct as f32 / batch_indices.len() as f32 * 100.0;
+            pb.set_message(format!("struct_loss: {:.4}, acc: {:.1}%", avg_loss, batch_acc));
+        }
+
+        pb.inc(1);
+    }
+
+    pb.finish_with_message(format!(
+        "Epoch {} complete (structural) - loss: {:.4}, acc: {:.2}%",
+        epoch + 1,
+        total_loss / total as f32,
+        correct as f32 / total as f32 * 100.0
+    ));
+
+    (total_loss / total as f32, correct as f32 / total as f32)
+}
+
+/// Evaluate using structural classification
+fn evaluate_structural(mnist: &Mnist, config: &ClassificationConfig, classifier: &StructuralClassifier) -> (f32, f32) {
+    let num_samples = mnist.tst_lbl.len();
+
+    println!("Evaluating on {} test samples (structural)...", num_samples);
+
+    let pb = ProgressBar::new(num_samples as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.magenta/white} {pos}/{len}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
+    let mut total_loss = 0.0;
+    let mut correct = 0;
+
+    for sample_idx in 0..num_samples {
+        let img_start = sample_idx * 784;
+        let img_end = img_start + 784;
+        let pixels = normalize_image(&mnist.tst_img[img_start..img_end]);
+        let label = mnist.tst_lbl[sample_idx] as usize;
+
+        // Create DAG and run forward pass
+        let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        if dag.neuromorphic_forward().is_err() {
+            continue;
+        }
+
+        // Structural classification
+        let result = dag.structural_classification_step(classifier, label);
+        total_loss += result.loss;
+
+        if result.correct {
+            correct += 1;
+        }
+
+        pb.inc(1);
+    }
+
+    pb.finish();
+
+    let avg_loss = total_loss / num_samples as f32;
+    let accuracy = correct as f32 / num_samples as f32;
+
+    println!("Test Results (Structural):");
+    println!("  Structural Loss: {:.4}", avg_loss);
+    println!("  Accuracy: {:.2}% ({}/{})", accuracy * 100.0, correct, num_samples);
+
+    (avg_loss, accuracy)
+}
+
 /// Evaluate on test set
 fn evaluate(mnist: &Mnist, config: &ClassificationConfig) -> (f32, f32) {
     let num_samples = mnist.tst_lbl.len();
@@ -302,8 +492,11 @@ fn evaluate(mnist: &Mnist, config: &ClassificationConfig) -> (f32, f32) {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let mode = if args.structural { "Structural (Backend-141)" } else { "Cross-Entropy (Backend-113)" };
+
     println!("===========================================");
-    println!("  GRAPHEME MNIST Training (Backend-113)");
+    println!("  GRAPHEME MNIST Training");
+    println!("  Mode: {}", mode);
     println!("===========================================");
     println!();
 
@@ -327,6 +520,10 @@ fn main() -> Result<()> {
     println!("  Batch size: {}", config.batch_size);
     println!("  Epochs: {}", config.epochs);
     println!("  Hebbian: {} (weight: {})", config.use_hebbian, config.hebbian_weight);
+    if args.structural {
+        println!("  Structural mode: enabled");
+        println!("  Template momentum: {}", args.template_momentum);
+    }
     println!();
 
     // Training loop
@@ -335,20 +532,43 @@ fn main() -> Result<()> {
 
     let mut best_accuracy = 0.0;
 
-    for epoch in 0..config.epochs {
-        println!("Epoch {}/{}", epoch + 1, config.epochs);
+    if args.structural {
+        // Backend-141: Structural classification (GRAPHEME-native)
+        let mut classifier = StructuralClassifier::new(10, 10)
+            .with_momentum(args.template_momentum);
 
-        let (_train_loss, _train_acc) = train_epoch(&mnist, &config, epoch);
+        for epoch in 0..config.epochs {
+            println!("Epoch {}/{}", epoch + 1, config.epochs);
 
-        // Evaluate every epoch
-        let (_test_loss, test_acc) = evaluate(&mnist, &config);
+            let (_train_loss, _train_acc) = train_epoch_structural(&mnist, &config, &mut classifier, epoch);
 
-        if test_acc > best_accuracy {
-            best_accuracy = test_acc;
-            println!("  New best accuracy: {:.2}%", best_accuracy * 100.0);
+            // Evaluate every epoch
+            let (_test_loss, test_acc) = evaluate_structural(&mnist, &config, &classifier);
+
+            if test_acc > best_accuracy {
+                best_accuracy = test_acc;
+                println!("  New best accuracy: {:.2}%", best_accuracy * 100.0);
+            }
+
+            println!();
         }
+    } else {
+        // Backend-113: Cross-entropy classification (traditional)
+        for epoch in 0..config.epochs {
+            println!("Epoch {}/{}", epoch + 1, config.epochs);
 
-        println!();
+            let (_train_loss, _train_acc) = train_epoch(&mnist, &config, epoch);
+
+            // Evaluate every epoch
+            let (_test_loss, test_acc) = evaluate(&mnist, &config);
+
+            if test_acc > best_accuracy {
+                best_accuracy = test_acc;
+                println!("  New best accuracy: {:.2}%", best_accuracy * 100.0);
+            }
+
+            println!();
+        }
     }
 
     println!("===========================================");

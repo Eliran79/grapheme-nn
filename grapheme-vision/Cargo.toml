@@ -1,0 +1,24 @@
+[package]
+name = "grapheme-vision"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Vision Brain: Image-to-graph embedding for GRAPHEME (no CNN)"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+ndarray.workspace = true
+grapheme-core = { path = "../grapheme-core" }
+grapheme-brain-common = { path = "../grapheme-brain-common" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "vision_bench"
+harness = false

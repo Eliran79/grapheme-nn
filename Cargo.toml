@@ -18,6 +18,7 @@ members = [
     "grapheme-law",
     "grapheme-music",
     "grapheme-chem",
+    "grapheme-vision",
     "grapheme-tests",
     "grapheme-brain-common",
 ]

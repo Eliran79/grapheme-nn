@@ -561,6 +561,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-vision"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-brain-common",
+ "grapheme-core",
+ "ndarray",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-world"
 version = "0.1.0"
 dependencies = [

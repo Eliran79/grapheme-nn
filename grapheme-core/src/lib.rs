@@ -8289,6 +8289,367 @@ pub struct ClassificationStepResult {
 }
 
 // ============================================================================
+// Structural Classification (Backend-141: Graph Structure Matching)
+// ============================================================================
+//
+// GRAPHEME Vision: Classification through graph structure matching, not softmax.
+// "loss = α·node_insertion_cost + β·edge_deletion_cost + γ·clique_mismatch"
+//
+// Instead of cross-entropy on output node activations, we:
+// 1. Create class template graphs (learned activation patterns per class)
+// 2. Compare output graph activations to templates via structural similarity
+// 3. Classify based on best-matching template
+// 4. Train to minimize structural distance to correct class template
+
+/// A class template representing the learned activation pattern for a class.
+///
+/// In GRAPHEME, each class (e.g., digit 0-9) has a template that represents
+/// the expected output graph structure/activations for that class.
+#[derive(Debug, Clone)]
+pub struct ClassTemplate {
+    /// Class index (0-9 for MNIST)
+    pub class_id: usize,
+    /// Template activation pattern for output nodes
+    /// This is the "ideal" output pattern for this class
+    pub activation_pattern: Vec<f32>,
+    /// Number of samples used to build this template (for online updates)
+    pub sample_count: usize,
+}
+
+impl ClassTemplate {
+    /// Create a new class template with initial activation pattern
+    pub fn new(class_id: usize, num_outputs: usize) -> Self {
+        // Initialize with one-hot pattern: high activation at class_id position
+        let mut activation_pattern = vec![0.0; num_outputs];
+        if class_id < num_outputs {
+            activation_pattern[class_id] = 1.0;
+        }
+        Self {
+            class_id,
+            activation_pattern,
+            sample_count: 0,
+        }
+    }
+
+    /// Create from a specific activation pattern
+    pub fn from_pattern(class_id: usize, pattern: Vec<f32>) -> Self {
+        Self {
+            class_id,
+            activation_pattern: pattern,
+            sample_count: 1,
+        }
+    }
+
+    /// Update template with a new sample (exponential moving average)
+    pub fn update(&mut self, sample_activations: &[f32], momentum: f32) {
+        if sample_activations.len() != self.activation_pattern.len() {
+            return;
+        }
+
+        self.sample_count += 1;
+
+        // Exponential moving average update
+        for (template_val, &sample_val) in self.activation_pattern.iter_mut().zip(sample_activations) {
+            *template_val = momentum * *template_val + (1.0 - momentum) * sample_val;
+        }
+    }
+
+    /// Compute structural distance to a given activation pattern
+    ///
+    /// Uses L2 distance as a simple structural similarity metric.
+    /// Lower distance = better match.
+    pub fn distance(&self, activations: &[f32]) -> f32 {
+        if activations.len() != self.activation_pattern.len() {
+            return f32::MAX;
+        }
+
+        self.activation_pattern
+            .iter()
+            .zip(activations)
+            .map(|(t, a)| (t - a).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    /// Compute cosine similarity to a given activation pattern
+    ///
+    /// Returns value in [-1, 1] where 1 = identical direction.
+    pub fn cosine_similarity(&self, activations: &[f32]) -> f32 {
+        if activations.len() != self.activation_pattern.len() {
+            return -1.0;
+        }
+
+        let dot: f32 = self.activation_pattern.iter().zip(activations).map(|(t, a)| t * a).sum();
+        let norm_t: f32 = self.activation_pattern.iter().map(|t| t.powi(2)).sum::<f32>().sqrt();
+        let norm_a: f32 = activations.iter().map(|a| a.powi(2)).sum::<f32>().sqrt();
+
+        if norm_t < 1e-10 || norm_a < 1e-10 {
+            return 0.0;
+        }
+
+        dot / (norm_t * norm_a)
+    }
+}
+
+/// Structural classifier that uses graph pattern matching instead of softmax.
+///
+/// This is the GRAPHEME-native approach to classification:
+/// - Each class has a learned template (activation pattern)
+/// - Classification finds the best-matching template
+/// - Loss is structural distance, not cross-entropy
+#[derive(Debug, Clone)]
+pub struct StructuralClassifier {
+    /// Templates for each class
+    pub templates: Vec<ClassTemplate>,
+    /// Number of output nodes
+    pub num_outputs: usize,
+    /// Momentum for template updates (higher = slower adaptation)
+    pub template_momentum: f32,
+    /// Weights for structural loss components
+    pub loss_weights: StructuralLossWeights,
+}
+
+/// Weights for different components of structural loss
+#[derive(Debug, Clone, Copy)]
+pub struct StructuralLossWeights {
+    /// Weight for L2 distance component
+    pub l2_weight: f32,
+    /// Weight for cosine similarity component (negative because higher sim = lower loss)
+    pub cosine_weight: f32,
+    /// Weight for activation magnitude difference
+    pub magnitude_weight: f32,
+}
+
+impl Default for StructuralLossWeights {
+    fn default() -> Self {
+        Self {
+            l2_weight: 1.0,
+            cosine_weight: 0.5,
+            magnitude_weight: 0.1,
+        }
+    }
+}
+
+impl StructuralClassifier {
+    /// Create a new structural classifier for the given number of classes
+    pub fn new(num_classes: usize, num_outputs: usize) -> Self {
+        let templates = (0..num_classes)
+            .map(|class_id| ClassTemplate::new(class_id, num_outputs))
+            .collect();
+
+        Self {
+            templates,
+            num_outputs,
+            template_momentum: 0.9,
+            loss_weights: StructuralLossWeights::default(),
+        }
+    }
+
+    /// Set template momentum (higher = slower template adaptation)
+    pub fn with_momentum(mut self, momentum: f32) -> Self {
+        self.template_momentum = momentum.clamp(0.0, 0.999);
+        self
+    }
+
+    /// Set loss weights
+    pub fn with_loss_weights(mut self, weights: StructuralLossWeights) -> Self {
+        self.loss_weights = weights;
+        self
+    }
+
+    /// Classify by finding the template with minimum structural distance
+    ///
+    /// Returns (predicted_class, distance_to_best_match)
+    pub fn classify(&self, activations: &[f32]) -> (usize, f32) {
+        if self.templates.is_empty() {
+            return (0, f32::MAX);
+        }
+
+        self.templates
+            .iter()
+            .map(|t| (t.class_id, t.distance(activations)))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((0, f32::MAX))
+    }
+
+    /// Classify using cosine similarity (higher = better match)
+    ///
+    /// Returns (predicted_class, similarity_to_best_match)
+    pub fn classify_cosine(&self, activations: &[f32]) -> (usize, f32) {
+        if self.templates.is_empty() {
+            return (0, -1.0);
+        }
+
+        self.templates
+            .iter()
+            .map(|t| (t.class_id, t.cosine_similarity(activations)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((0, -1.0))
+    }
+
+    /// Compute structural loss between output activations and target class template
+    ///
+    /// This replaces cross-entropy loss with a graph-structure-based loss.
+    /// Loss = α·L2_distance + β·(1 - cosine_similarity) + γ·magnitude_diff
+    pub fn structural_loss(&self, activations: &[f32], target_class: usize) -> f32 {
+        if target_class >= self.templates.len() {
+            return f32::MAX;
+        }
+
+        let template = &self.templates[target_class];
+        let w = &self.loss_weights;
+
+        // L2 distance component
+        let l2_dist = template.distance(activations);
+
+        // Cosine similarity component (convert to loss: 1 - similarity)
+        let cosine_sim = template.cosine_similarity(activations);
+        let cosine_loss = 1.0 - cosine_sim;
+
+        // Magnitude difference (template vs actual)
+        let template_mag: f32 = template.activation_pattern.iter().map(|x| x.abs()).sum();
+        let actual_mag: f32 = activations.iter().map(|x| x.abs()).sum();
+        let mag_diff = (template_mag - actual_mag).abs() / (template_mag + 1e-10);
+
+        w.l2_weight * l2_dist + w.cosine_weight * cosine_loss + w.magnitude_weight * mag_diff
+    }
+
+    /// Compute structural loss with gradient w.r.t. activations
+    ///
+    /// Returns (loss, gradient) where gradient can be backpropagated.
+    pub fn structural_loss_with_grad(&self, activations: &[f32], target_class: usize) -> (f32, Vec<f32>) {
+        if target_class >= self.templates.len() || activations.len() != self.num_outputs {
+            return (f32::MAX, vec![0.0; activations.len()]);
+        }
+
+        let template = &self.templates[target_class];
+        let w = &self.loss_weights;
+        let n = activations.len();
+
+        // Compute loss components
+        let l2_dist = template.distance(activations);
+        let cosine_sim = template.cosine_similarity(activations);
+        let loss = w.l2_weight * l2_dist + w.cosine_weight * (1.0 - cosine_sim);
+
+        // Compute gradients
+        let mut grad = vec![0.0; n];
+
+        // ∂L2/∂a_i = (a_i - t_i) / L2_dist
+        if l2_dist > 1e-10 {
+            for i in 0..n {
+                grad[i] += w.l2_weight * (activations[i] - template.activation_pattern[i]) / l2_dist;
+            }
+        }
+
+        // ∂(1-cosine)/∂a_i = -∂cosine/∂a_i
+        // cosine = dot / (norm_t * norm_a)
+        // ∂cosine/∂a_i = t_i / (norm_t * norm_a) - a_i * dot / (norm_t * norm_a^3)
+        let dot: f32 = template.activation_pattern.iter().zip(activations).map(|(t, a)| t * a).sum();
+        let norm_t: f32 = template.activation_pattern.iter().map(|t| t.powi(2)).sum::<f32>().sqrt();
+        let norm_a: f32 = activations.iter().map(|a| a.powi(2)).sum::<f32>().sqrt();
+
+        if norm_t > 1e-10 && norm_a > 1e-10 {
+            let norm_ta = norm_t * norm_a;
+            let norm_a3 = norm_a.powi(3);
+            for i in 0..n {
+                let d_cosine = template.activation_pattern[i] / norm_ta
+                    - activations[i] * dot / (norm_t * norm_a3);
+                // Negative because loss = 1 - cosine
+                grad[i] -= w.cosine_weight * d_cosine;
+            }
+        }
+
+        (loss, grad)
+    }
+
+    /// Update template for a class with a new sample
+    pub fn update_template(&mut self, target_class: usize, activations: &[f32]) {
+        if target_class < self.templates.len() {
+            self.templates[target_class].update(activations, self.template_momentum);
+        }
+    }
+
+    /// Get all distances to all class templates
+    pub fn all_distances(&self, activations: &[f32]) -> Vec<f32> {
+        self.templates.iter().map(|t| t.distance(activations)).collect()
+    }
+
+    /// Get all similarities to all class templates
+    pub fn all_similarities(&self, activations: &[f32]) -> Vec<f32> {
+        self.templates.iter().map(|t| t.cosine_similarity(activations)).collect()
+    }
+
+    /// Convert distances to pseudo-probabilities (softmax over negative distances)
+    ///
+    /// This allows comparison with cross-entropy-based methods.
+    pub fn distance_to_probs(&self, activations: &[f32]) -> Vec<f32> {
+        let distances = self.all_distances(activations);
+        // Negate distances so lower distance = higher "logit"
+        let neg_distances: Vec<f32> = distances.iter().map(|d| -d).collect();
+        softmax(&neg_distances)
+    }
+}
+
+/// Result of structural classification
+#[derive(Debug, Clone)]
+pub struct StructuralClassificationResult {
+    /// Structural loss (lower = better match to target)
+    pub loss: f32,
+    /// Predicted class (best matching template)
+    pub predicted: usize,
+    /// Distance to predicted class template
+    pub distance: f32,
+    /// Whether prediction matches target
+    pub correct: bool,
+    /// Gradient for backpropagation (∂loss/∂activations)
+    pub gradient: Vec<f32>,
+}
+
+impl DagNN {
+    /// Classify using structural matching instead of softmax
+    ///
+    /// Backend-141: GRAPHEME-native classification through graph pattern matching.
+    ///
+    /// # Arguments
+    /// * `classifier` - The structural classifier with learned templates
+    ///
+    /// # Returns
+    /// (predicted_class, distance_to_best_match)
+    pub fn structural_classify(&self, classifier: &StructuralClassifier) -> (usize, f32) {
+        let activations = self.get_classification_logits();
+        classifier.classify(&activations)
+    }
+
+    /// Compute structural classification loss and gradient
+    ///
+    /// This replaces cross_entropy_loss_with_grad for GRAPHEME-native training.
+    ///
+    /// # Arguments
+    /// * `classifier` - The structural classifier
+    /// * `target_class` - The true class label
+    ///
+    /// # Returns
+    /// StructuralClassificationResult with loss, prediction, and gradient
+    pub fn structural_classification_step(
+        &self,
+        classifier: &StructuralClassifier,
+        target_class: usize,
+    ) -> StructuralClassificationResult {
+        let activations = self.get_classification_logits();
+        let (loss, gradient) = classifier.structural_loss_with_grad(&activations, target_class);
+        let (predicted, distance) = classifier.classify(&activations);
+
+        StructuralClassificationResult {
+            loss,
+            predicted,
+            distance,
+            correct: predicted == target_class,
+            gradient,
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -12665,5 +13026,152 @@ mod tests {
         assert_eq!(config.epochs, 20);
         assert!(config.use_hebbian);
         assert!((config.hebbian_weight - 0.2).abs() < 1e-6);
+    }
+
+    // ========================================================================
+    // Structural Classification Tests (Backend-141)
+    // ========================================================================
+
+    #[test]
+    fn test_class_template_new() {
+        let template = ClassTemplate::new(3, 10);
+        assert_eq!(template.class_id, 3);
+        assert_eq!(template.activation_pattern.len(), 10);
+        // Should be one-hot at position 3
+        assert!((template.activation_pattern[3] - 1.0).abs() < 1e-6);
+        assert!((template.activation_pattern[0] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_class_template_distance() {
+        let template = ClassTemplate::from_pattern(0, vec![1.0, 0.0, 0.0]);
+
+        // Exact match
+        let dist1 = template.distance(&[1.0, 0.0, 0.0]);
+        assert!(dist1 < 1e-6);
+
+        // Far from template
+        let dist2 = template.distance(&[0.0, 1.0, 0.0]);
+        assert!(dist2 > 1.0);
+    }
+
+    #[test]
+    fn test_class_template_cosine_similarity() {
+        let template = ClassTemplate::from_pattern(0, vec![1.0, 0.0, 0.0]);
+
+        // Identical direction
+        let sim1 = template.cosine_similarity(&[2.0, 0.0, 0.0]);
+        assert!((sim1 - 1.0).abs() < 1e-6);
+
+        // Orthogonal
+        let sim2 = template.cosine_similarity(&[0.0, 1.0, 0.0]);
+        assert!(sim2.abs() < 1e-6);
+
+        // Opposite direction
+        let sim3 = template.cosine_similarity(&[-1.0, 0.0, 0.0]);
+        assert!((sim3 - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_structural_classifier_new() {
+        let classifier = StructuralClassifier::new(10, 10);
+        assert_eq!(classifier.templates.len(), 10);
+        assert_eq!(classifier.num_outputs, 10);
+    }
+
+    #[test]
+    fn test_structural_classifier_classify() {
+        let classifier = StructuralClassifier::new(3, 3);
+
+        // Activation close to class 0 template (1,0,0)
+        let (pred, dist) = classifier.classify(&[0.9, 0.1, 0.0]);
+        assert_eq!(pred, 0);
+        assert!(dist < 0.2);
+
+        // Activation close to class 1 template (0,1,0)
+        let (pred, dist) = classifier.classify(&[0.1, 0.9, 0.0]);
+        assert_eq!(pred, 1);
+        assert!(dist < 0.2);
+
+        // Activation close to class 2 template (0,0,1)
+        let (pred, dist) = classifier.classify(&[0.0, 0.1, 0.9]);
+        assert_eq!(pred, 2);
+        assert!(dist < 0.2);
+    }
+
+    #[test]
+    fn test_structural_loss() {
+        let classifier = StructuralClassifier::new(3, 3);
+
+        // Loss when prediction matches target
+        let loss1 = classifier.structural_loss(&[0.9, 0.1, 0.0], 0);
+        // Loss when prediction doesn't match target
+        let loss2 = classifier.structural_loss(&[0.9, 0.1, 0.0], 1);
+
+        // Loss should be lower when activations match target class template
+        assert!(loss1 < loss2);
+    }
+
+    #[test]
+    fn test_structural_loss_with_grad() {
+        let classifier = StructuralClassifier::new(3, 3);
+        let activations = vec![0.5, 0.3, 0.2];
+
+        let (loss, grad) = classifier.structural_loss_with_grad(&activations, 0);
+
+        // Loss should be positive
+        assert!(loss > 0.0);
+
+        // Gradient should have same length as activations
+        assert_eq!(grad.len(), 3);
+
+        // Gradient should be finite
+        for g in &grad {
+            assert!(g.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_structural_classifier_update_template() {
+        let mut classifier = StructuralClassifier::new(3, 3);
+
+        // Initial template for class 0 is (1, 0, 0)
+        assert!((classifier.templates[0].activation_pattern[0] - 1.0).abs() < 1e-6);
+
+        // Update with new sample
+        classifier.update_template(0, &[0.8, 0.1, 0.1]);
+
+        // Template should have moved toward the sample
+        assert!(classifier.templates[0].activation_pattern[0] < 1.0);
+        assert!(classifier.templates[0].activation_pattern[1] > 0.0);
+    }
+
+    #[test]
+    fn test_structural_classifier_all_distances() {
+        let classifier = StructuralClassifier::new(3, 3);
+        let activations = vec![0.9, 0.1, 0.0];
+
+        let distances = classifier.all_distances(&activations);
+        assert_eq!(distances.len(), 3);
+
+        // Distance to class 0 should be smallest
+        assert!(distances[0] < distances[1]);
+        assert!(distances[0] < distances[2]);
+    }
+
+    #[test]
+    fn test_distance_to_probs() {
+        let classifier = StructuralClassifier::new(3, 3);
+        let activations = vec![0.9, 0.1, 0.0];
+
+        let probs = classifier.distance_to_probs(&activations);
+
+        // Should sum to 1
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5);
+
+        // Highest prob should be for class 0 (closest)
+        assert!(probs[0] > probs[1]);
+        assert!(probs[0] > probs[2]);
     }
 }
