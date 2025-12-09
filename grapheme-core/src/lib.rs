@@ -1090,6 +1090,269 @@ impl DagNN {
             .collect()
     }
 
+    // ========================================================================
+    // Orphaned Node Removal (Apoptosis) - Backend-109
+    // ========================================================================
+
+    /// Remove orphaned nodes (nodes with no edges) from the graph.
+    ///
+    /// In biological neural networks, neurons that lose all synaptic connections
+    /// undergo programmed cell death (apoptosis). This implements that mechanism
+    /// by removing nodes that have no incoming or outgoing edges.
+    ///
+    /// # Returns
+    /// Number of nodes removed
+    ///
+    /// # Note
+    /// - Input nodes are NEVER removed (they represent the input sequence)
+    /// - Output nodes are NEVER removed (they represent target outputs)
+    /// - Only hidden nodes with no connections are removed
+    /// - Topology is automatically updated after removal
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// // After pruning edges, some hidden nodes may become orphaned
+    /// dag.prune_edges_by_threshold(0.01);
+    /// let removed = dag.remove_orphaned_nodes();
+    /// println!("Removed {} orphaned neurons", removed);
+    /// ```
+    pub fn remove_orphaned_nodes(&mut self) -> usize {
+        use petgraph::Direction;
+
+        // Collect orphaned hidden nodes (not in input_nodes or output_nodes)
+        let orphaned: Vec<_> = self
+            .graph
+            .node_indices()
+            .filter(|&node| {
+                // Skip input and output nodes - they're never orphaned
+                if self.input_nodes_set.contains(&node) {
+                    return false;
+                }
+                if self.output_nodes.contains(&node) {
+                    return false;
+                }
+
+                // Check if truly orphaned (no edges in either direction)
+                let in_degree = self.graph.edges_directed(node, Direction::Incoming).count();
+                let out_degree = self.graph.edges_directed(node, Direction::Outgoing).count();
+
+                in_degree == 0 && out_degree == 0
+            })
+            .collect();
+
+        let removed_count = orphaned.len();
+
+        // Remove orphaned nodes (in reverse index order for safety)
+        let mut orphaned = orphaned;
+        orphaned.sort_by(|a, b| b.index().cmp(&a.index()));
+
+        for node in orphaned {
+            self.graph.remove_node(node);
+        }
+
+        // Update topology after structural change
+        if removed_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        removed_count
+    }
+
+    /// Remove nodes unreachable from input nodes.
+    ///
+    /// Finds all nodes that cannot be reached by following edges forward
+    /// from any input node, and removes them. This cleans up "floating"
+    /// subgraphs that have no connection to the input.
+    ///
+    /// # Returns
+    /// Number of nodes removed
+    ///
+    /// # Note
+    /// - Input nodes are always considered reachable
+    /// - Uses BFS/DFS from all input nodes
+    /// - More aggressive than `remove_orphaned_nodes` - removes entire
+    ///   disconnected subgraphs, not just isolated nodes
+    pub fn remove_unreachable_from_inputs(&mut self) -> usize {
+        use petgraph::visit::Bfs;
+        use std::collections::HashSet;
+
+        if self.input_nodes.is_empty() {
+            return 0;
+        }
+
+        // Find all nodes reachable from inputs using BFS
+        let mut reachable = HashSet::new();
+
+        for &input in &self.input_nodes {
+            let mut bfs = Bfs::new(&self.graph, input);
+            while let Some(node) = bfs.next(&self.graph) {
+                reachable.insert(node);
+            }
+        }
+
+        // Collect unreachable nodes
+        let unreachable: Vec<_> = self
+            .graph
+            .node_indices()
+            .filter(|node| !reachable.contains(node))
+            .collect();
+
+        let removed_count = unreachable.len();
+
+        // Remove unreachable nodes (in reverse index order)
+        let mut unreachable = unreachable;
+        unreachable.sort_by(|a, b| b.index().cmp(&a.index()));
+
+        for node in unreachable {
+            // Also remove from output_nodes if present
+            self.output_nodes.retain(|&n| n != node);
+            self.graph.remove_node(node);
+        }
+
+        if removed_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        removed_count
+    }
+
+    /// Remove dead-end nodes (nodes with no path to any output).
+    ///
+    /// Finds all nodes that cannot reach any output node by following
+    /// edges forward, and removes them. This cleans up computation
+    /// paths that don't contribute to the output.
+    ///
+    /// # Returns
+    /// Number of nodes removed
+    ///
+    /// # Note
+    /// - Output nodes are always kept
+    /// - If no output nodes are defined, this does nothing
+    /// - Uses reverse BFS from all output nodes
+    pub fn remove_dead_end_nodes(&mut self) -> usize {
+        use std::collections::HashSet;
+
+        if self.output_nodes.is_empty() {
+            return 0;
+        }
+
+        // Find all nodes that can reach outputs using reverse traversal
+        let mut can_reach_output = HashSet::new();
+
+        // Start from output nodes
+        for &output in &self.output_nodes {
+            can_reach_output.insert(output);
+        }
+
+        // Work backwards to find all nodes that can reach outputs
+        // We need to iterate until no new nodes are added
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            for node in self.graph.node_indices() {
+                if can_reach_output.contains(&node) {
+                    continue;
+                }
+
+                // Check if any successor can reach output
+                let can_reach = self
+                    .graph
+                    .neighbors(node)
+                    .any(|neighbor| can_reach_output.contains(&neighbor));
+
+                if can_reach {
+                    can_reach_output.insert(node);
+                    changed = true;
+                }
+            }
+        }
+
+        // Input nodes should always be kept even if they can't reach output
+        // (they represent the input sequence)
+        for &input in &self.input_nodes {
+            can_reach_output.insert(input);
+        }
+
+        // Collect dead-end nodes
+        let dead_ends: Vec<_> = self
+            .graph
+            .node_indices()
+            .filter(|node| !can_reach_output.contains(node))
+            .collect();
+
+        let removed_count = dead_ends.len();
+
+        // Remove dead-end nodes (in reverse index order)
+        let mut dead_ends = dead_ends;
+        dead_ends.sort_by(|a, b| b.index().cmp(&a.index()));
+
+        for node in dead_ends {
+            self.graph.remove_node(node);
+        }
+
+        if removed_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        removed_count
+    }
+
+    /// Remove all disconnected components - combines orphan, unreachable, and dead-end removal.
+    ///
+    /// Performs a complete cleanup of the graph by:
+    /// 1. Removing nodes unreachable from inputs
+    /// 2. Removing dead-end nodes (can't reach outputs)
+    /// 3. Removing any remaining orphaned nodes
+    ///
+    /// # Returns
+    /// Total number of nodes removed
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// // After aggressive edge pruning
+    /// dag.prune_edges_by_percentile(0.5);
+    /// // Clean up all disconnected nodes
+    /// let removed = dag.cleanup_disconnected();
+    /// ```
+    pub fn cleanup_disconnected(&mut self) -> usize {
+        let mut total_removed = 0;
+
+        // First pass: remove unreachable from inputs
+        total_removed += self.remove_unreachable_from_inputs();
+
+        // Second pass: remove dead-ends (only if we have outputs defined)
+        if !self.output_nodes.is_empty() {
+            total_removed += self.remove_dead_end_nodes();
+        }
+
+        // Final pass: remove any remaining orphans
+        total_removed += self.remove_orphaned_nodes();
+
+        total_removed
+    }
+
+    /// Get count of orphaned nodes (for diagnostics without removal).
+    pub fn count_orphaned_nodes(&self) -> usize {
+        use petgraph::Direction;
+
+        self.graph
+            .node_indices()
+            .filter(|&node| {
+                if self.input_nodes_set.contains(&node) || self.output_nodes.contains(&node) {
+                    return false;
+                }
+
+                let in_degree = self.graph.edges_directed(node, Direction::Incoming).count();
+                let out_degree = self.graph.edges_directed(node, Direction::Outgoing).count();
+
+                in_degree == 0 && out_degree == 0
+            })
+            .count()
+    }
+
     /// Get the number of nodes
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
@@ -1108,6 +1371,18 @@ impl DagNN {
     /// Get output nodes
     pub fn output_nodes(&self) -> &[NodeId] {
         &self.output_nodes
+    }
+
+    /// Set output nodes (replaces existing output nodes)
+    pub fn set_output_nodes(&mut self, nodes: Vec<NodeId>) {
+        self.output_nodes = nodes;
+    }
+
+    /// Add an output node
+    pub fn add_output_node(&mut self, node: NodeId) {
+        if !self.output_nodes.contains(&node) {
+            self.output_nodes.push(node);
+        }
     }
 
     /// Convert graph back to text
@@ -9852,5 +10127,223 @@ mod tests {
         let y_const = vec![3.0, 3.0, 3.0, 3.0, 3.0];
         let corr_zero = DagNN::pearson_correlation(&x, &y_const);
         assert!(corr_zero.abs() < 1e-6, "No correlation with constant should be 0.0");
+    }
+
+    // ========================================================================
+    // Orphaned Node Removal Tests (Backend-109)
+    // ========================================================================
+
+    #[test]
+    fn test_remove_orphaned_nodes_basic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let initial_nodes = dag.node_count();
+
+        // Add a hidden node with no connections (orphan)
+        let orphan = dag.add_hidden();
+        assert_eq!(dag.node_count(), initial_nodes + 1);
+
+        // Remove orphaned nodes
+        let removed = dag.remove_orphaned_nodes();
+
+        assert_eq!(removed, 1, "Should remove 1 orphaned node");
+        assert_eq!(dag.node_count(), initial_nodes);
+    }
+
+    #[test]
+    fn test_remove_orphaned_nodes_keeps_inputs() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Remove all edges to make input nodes "orphan-like"
+        dag.prune_edges_by_percentile(1.0);
+
+        // But input nodes should NOT be removed
+        let removed = dag.remove_orphaned_nodes();
+
+        assert_eq!(removed, 0, "Input nodes should never be removed");
+        assert_eq!(dag.node_count(), 3, "All 3 input nodes should remain");
+    }
+
+    #[test]
+    fn test_remove_orphaned_nodes_keeps_connected() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Add a connected hidden node
+        let hidden = dag.add_hidden();
+        let input = dag.input_nodes()[0];
+        dag.add_edge(input, hidden, Edge::sequential());
+        dag.update_topology().unwrap();
+
+        // No orphans - hidden is connected
+        let removed = dag.remove_orphaned_nodes();
+
+        assert_eq!(removed, 0, "Connected hidden node should not be removed");
+    }
+
+    #[test]
+    fn test_remove_orphaned_nodes_multiple() {
+        let mut dag = DagNN::from_text("a").unwrap();
+
+        // Add multiple orphans
+        dag.add_hidden();
+        dag.add_hidden();
+        dag.add_hidden();
+
+        assert_eq!(dag.node_count(), 4); // 1 input + 3 orphans
+
+        let removed = dag.remove_orphaned_nodes();
+
+        assert_eq!(removed, 3, "Should remove all 3 orphans");
+        assert_eq!(dag.node_count(), 1, "Only input should remain");
+    }
+
+    #[test]
+    fn test_count_orphaned_nodes() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Initially no orphans
+        assert_eq!(dag.count_orphaned_nodes(), 0);
+
+        // Add orphans
+        dag.add_hidden();
+        dag.add_hidden();
+
+        assert_eq!(dag.count_orphaned_nodes(), 2);
+
+        // Remove one
+        dag.remove_orphaned_nodes();
+        assert_eq!(dag.count_orphaned_nodes(), 0);
+    }
+
+    #[test]
+    fn test_remove_unreachable_from_inputs_basic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Add a hidden node connected only to itself (unreachable from inputs)
+        let h1 = dag.add_hidden();
+        let h2 = dag.add_hidden();
+        dag.add_edge(h1, h2, Edge::sequential());
+
+        // h1 and h2 are not reachable from inputs
+        let removed = dag.remove_unreachable_from_inputs();
+
+        assert_eq!(removed, 2, "Should remove 2 unreachable nodes");
+    }
+
+    #[test]
+    fn test_remove_unreachable_from_inputs_keeps_reachable() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Add a hidden node connected from input
+        let hidden = dag.add_hidden();
+        let input = dag.input_nodes()[0];
+        dag.add_edge(input, hidden, Edge::sequential());
+        dag.update_topology().unwrap();
+
+        let initial_nodes = dag.node_count();
+        let removed = dag.remove_unreachable_from_inputs();
+
+        assert_eq!(removed, 0, "Reachable nodes should not be removed");
+        assert_eq!(dag.node_count(), initial_nodes);
+    }
+
+    #[test]
+    fn test_remove_dead_end_nodes_no_outputs() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // No output nodes defined - should do nothing
+        let removed = dag.remove_dead_end_nodes();
+
+        assert_eq!(removed, 0, "No outputs means no dead-ends can be detected");
+    }
+
+    #[test]
+    fn test_remove_dead_end_nodes_with_outputs() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Add hidden nodes, one leading to output, one dead-end
+        let h_good = dag.add_hidden();
+        let h_dead = dag.add_hidden();
+
+        dag.add_edge(inputs[0], h_good, Edge::sequential());
+        dag.add_edge(inputs[1], h_dead, Edge::sequential());
+
+        // Set h_good as output
+        dag.set_output_nodes(vec![h_good]);
+        dag.update_topology().unwrap();
+
+        let initial_nodes = dag.node_count();
+        let removed = dag.remove_dead_end_nodes();
+
+        // h_dead should be removed (can't reach output h_good)
+        assert_eq!(removed, 1, "Should remove 1 dead-end node");
+        assert_eq!(dag.node_count(), initial_nodes - 1);
+    }
+
+    #[test]
+    fn test_cleanup_disconnected_combined() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Add various disconnected nodes
+        let orphan = dag.add_hidden();  // No edges at all
+        let unreachable = dag.add_hidden();  // Not reachable from inputs
+        let h2 = dag.add_hidden();
+        dag.add_edge(unreachable, h2, Edge::sequential());  // Unreachable subgraph
+
+        // Add a good path
+        let output = dag.add_hidden();
+        dag.add_edge(inputs[0], output, Edge::sequential());
+        dag.set_output_nodes(vec![output]);
+        dag.update_topology().unwrap();
+
+        let initial_nodes = dag.node_count();
+        let removed = dag.cleanup_disconnected();
+
+        // orphan, unreachable, and h2 should all be removed
+        assert!(removed >= 3, "Should remove at least 3 disconnected nodes");
+        assert!(dag.node_count() < initial_nodes);
+    }
+
+    #[test]
+    fn test_pruning_then_cleanup_integration() {
+        // Integration test: prune edges, then cleanup orphaned nodes
+        let mut dag = DagNN::from_text("abcd").unwrap();
+
+        // Add hidden nodes
+        let inputs = dag.input_nodes().to_vec();
+        let h1 = dag.add_hidden();
+        let h2 = dag.add_hidden();
+
+        // Connect with weak and strong edges
+        dag.graph.add_edge(inputs[0], h1, Edge::new(0.001, EdgeType::Sequential));  // Weak
+        dag.graph.add_edge(inputs[1], h2, Edge::new(1.0, EdgeType::Sequential));    // Strong
+        dag.update_topology().unwrap();
+
+        let nodes_before = dag.node_count();
+
+        // Prune weak edges
+        let edges_pruned = dag.prune_edges_by_threshold(0.01);
+        assert_eq!(edges_pruned, 1, "Should prune 1 weak edge");
+
+        // h1 is now orphaned
+        let nodes_removed = dag.remove_orphaned_nodes();
+        assert_eq!(nodes_removed, 1, "Should remove 1 orphaned node (h1)");
+
+        assert_eq!(dag.node_count(), nodes_before - 1);
+    }
+
+    #[test]
+    fn test_remove_orphaned_preserves_topology() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Add and remove orphans
+        dag.add_hidden();
+        dag.add_hidden();
+        dag.remove_orphaned_nodes();
+
+        // Topology should still be valid
+        let result = dag.update_topology();
+        assert!(result.is_ok(), "Topology should remain valid after orphan removal");
     }
 }
