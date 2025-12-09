@@ -7,7 +7,15 @@
 //! - Case law graph construction
 //! - Legal reasoning and precedent analysis
 //! - Argument structure representation
+//!
+//! ## Migration to brain-common
+//!
+//! This crate uses shared abstractions from `grapheme-brain-common`:
+//! - `ActivatedNode<LegalNodeType>` - Generic node wrapper (aliased as `LegalNode`)
+//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
+//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
+use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
     ValidationSeverity,
@@ -82,39 +90,34 @@ pub enum LegalNodeType {
     Opinion { author: String, kind: OpinionKind },
 }
 
-/// Legal node with activation for gradient flow (Backend-118)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LegalNode {
-    /// The type of legal node
-    pub node_type: LegalNodeType,
-    /// Activation value for gradient-based learning
-    pub activation: f32,
+/// Get the default activation value for a legal node type.
+/// Higher values indicate more important legal elements.
+///
+/// Used by `new_legal_node()` to compute initial activation from type.
+pub fn legal_type_activation(node_type: &LegalNodeType) -> f32 {
+    match node_type {
+        LegalNodeType::Citation { .. } => 0.8,      // Citations are foundational
+        LegalNodeType::Statute { .. } => 0.9,       // Statutes are authoritative
+        LegalNodeType::Holding(_) => 0.85,          // Holdings are key outcomes
+        LegalNodeType::Argument { .. } => 0.7,      // Arguments support conclusions
+        LegalNodeType::Party { .. } => 0.4,         // Parties are contextual
+        LegalNodeType::Issue(_) => 0.75,            // Issues frame the case
+        LegalNodeType::Fact(_) => 0.5,              // Facts are evidence
+        LegalNodeType::Rule(_) => 0.8,              // Rules are authoritative
+        LegalNodeType::Application(_) => 0.6,       // Application connects rule to facts
+        LegalNodeType::Conclusion(_) => 0.85,       // Conclusions are key outcomes
+        LegalNodeType::Opinion { .. } => 0.7,       // Opinions provide reasoning
+    }
 }
 
-impl LegalNode {
-    /// Create a new legal node with default activation based on type
-    pub fn new(node_type: LegalNodeType) -> Self {
-        let activation = Self::type_activation(&node_type);
-        Self { node_type, activation }
-    }
+/// Legal node with activation for gradient flow (Backend-118)
+///
+/// This is a type alias for `ActivatedNode<LegalNodeType>` from brain-common.
+pub type LegalNode = ActivatedNode<LegalNodeType>;
 
-    /// Get the default activation value for a node type
-    /// Higher values indicate more important legal elements
-    fn type_activation(node_type: &LegalNodeType) -> f32 {
-        match node_type {
-            LegalNodeType::Citation { .. } => 0.8,      // Citations are foundational
-            LegalNodeType::Statute { .. } => 0.9,       // Statutes are authoritative
-            LegalNodeType::Holding(_) => 0.85,          // Holdings are key outcomes
-            LegalNodeType::Argument { .. } => 0.7,      // Arguments support conclusions
-            LegalNodeType::Party { .. } => 0.4,         // Parties are contextual
-            LegalNodeType::Issue(_) => 0.75,            // Issues frame the case
-            LegalNodeType::Fact(_) => 0.5,              // Facts are evidence
-            LegalNodeType::Rule(_) => 0.8,              // Rules are authoritative
-            LegalNodeType::Application(_) => 0.6,       // Application connects rule to facts
-            LegalNodeType::Conclusion(_) => 0.85,       // Conclusions are key outcomes
-            LegalNodeType::Opinion { .. } => 0.7,       // Opinions provide reasoning
-        }
-    }
+/// Create a new legal node with default activation based on type.
+pub fn new_legal_node(node_type: LegalNodeType) -> LegalNode {
+    ActivatedNode::with_type_activation(node_type, legal_type_activation)
 }
 
 /// Role of a party in legal proceedings
@@ -224,7 +227,7 @@ impl LegalGraph {
             None
         };
 
-        let node = graph.add_node(LegalNode::new(LegalNodeType::Citation {
+        let node = graph.add_node(new_legal_node(LegalNodeType::Citation {
             case_name: trimmed.to_string(),
             year,
             volume: None,
@@ -240,8 +243,41 @@ impl LegalGraph {
 // Law Brain
 // ============================================================================
 
-/// The Law Brain for legal reasoning
+/// Create the law domain configuration.
+fn create_law_config() -> DomainConfig {
+    // Legal keywords for can_process detection
+    let keywords = vec![
+        " v. ", " vs. ", "plaintiff", "defendant", "appellant", "appellee",
+        "statute", "§", "U.S.C.", "U.S. ", "F.2d", "F.3d", "S.Ct.",
+        "court", "judge", "ruling", "precedent", "holding", "dissent",
+        "concur", "jurisdiction", "liable", "damages", "tort", "contract",
+        "constitutional", "amendment", "rights",
+    ];
+
+    // Create normalizer for legal citations
+    let normalizer = TextNormalizer::new()
+        .add_replacements(vec![
+            (" vs. ", " v. "),
+            (" vs ", " v. "),
+            ("U.S.C", "U.S.C."),
+            ("S. Ct.", "S.Ct."),
+            ("F. 2d", "F.2d"),
+            ("F. 3d", "F.3d"),
+        ])
+        .trim_whitespace(true);
+
+    DomainConfig::new("law", "Legal Reasoning", keywords)
+        .with_version("0.1.0")
+        .with_normalizer(normalizer)
+        .with_annotation_prefix("[legal:")
+}
+
+/// The Law Brain for legal reasoning.
+///
+/// Uses DomainConfig from brain-common for keyword detection and normalization.
 pub struct LawBrain {
+    /// Domain configuration
+    config: DomainConfig,
     /// Supported jurisdictions
     jurisdictions: Vec<Jurisdiction>,
 }
@@ -265,6 +301,7 @@ impl LawBrain {
     /// Create a new law brain
     pub fn new() -> Self {
         Self {
+            config: create_law_config(),
             jurisdictions: vec![
                 Jurisdiction::USFederal,
                 Jurisdiction::USState,
@@ -272,61 +309,6 @@ impl LawBrain {
                 Jurisdiction::EU,
             ],
         }
-    }
-
-    /// Check if text looks like legal content
-    fn looks_like_legal(&self, input: &str) -> bool {
-        let legal_patterns = [
-            " v. ",
-            " vs. ",
-            "plaintiff",
-            "defendant",
-            "appellant",
-            "appellee",
-            "statute",
-            "§",
-            "U.S.C.",
-            "U.S. ",
-            "F.2d",
-            "F.3d",
-            "S.Ct.",
-            "court",
-            "judge",
-            "ruling",
-            "precedent",
-            "holding",
-            "dissent",
-            "concur",
-            "jurisdiction",
-            "liable",
-            "damages",
-            "tort",
-            "contract",
-            "constitutional",
-            "amendment",
-            "rights",
-        ];
-        let lower = input.to_lowercase();
-        legal_patterns
-            .iter()
-            .any(|p| lower.contains(&p.to_lowercase()))
-    }
-
-    /// Normalize legal text for domain processing
-    /// Standardizes citation formats and legal terminology
-    fn normalize_legal_text(&self, text: &str) -> String {
-        // Normalize case citation format (vs. -> v.)
-        let normalized = text.replace(" vs. ", " v. ").replace(" vs ", " v. ");
-
-        // Normalize common citation abbreviations
-        let normalized = normalized
-            .replace("U.S.C", "U.S.C.")
-            .replace("S. Ct.", "S.Ct.")
-            .replace("F. 2d", "F.2d")
-            .replace("F. 3d", "F.3d");
-
-        // Trim and clean whitespace
-        normalized.trim().to_string()
     }
 
     /// Validate a legal graph
@@ -367,62 +349,47 @@ impl LawBrain {
 }
 
 // ============================================================================
+// BaseDomainBrain Implementation
+// ============================================================================
+
+impl BaseDomainBrain for LawBrain {
+    fn config(&self) -> &DomainConfig {
+        &self.config
+    }
+}
+
+// ============================================================================
 // DomainBrain Implementation
 // ============================================================================
 
 impl DomainBrain for LawBrain {
     fn domain_id(&self) -> &str {
-        "law"
+        &self.config.domain_id
     }
 
     fn domain_name(&self) -> &str {
-        "Legal Reasoning"
+        &self.config.domain_name
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        &self.config.version
     }
 
     fn can_process(&self, input: &str) -> bool {
-        self.looks_like_legal(input)
+        self.default_can_process(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        DagNN::from_text(input).map_err(|e| e.into())
+        self.default_parse(input)
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert core DagNN to legal domain representation
-        // Normalize legal citations and formatting
-        let text = graph.to_text();
-
-        // Apply legal-specific normalization
-        let normalized = self.normalize_legal_text(&text);
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        self.default_from_core(graph)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert legal domain representation back to generic core format
-        let text = graph.to_text();
-
-        // Remove any legal-specific annotations
-        let cleaned = text
-            .lines()
-            .filter(|line| !line.trim().starts_with("[legal:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if cleaned != text {
-            DagNN::from_text(&cleaned).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        self.default_to_core(graph)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
