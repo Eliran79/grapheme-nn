@@ -1,7 +1,7 @@
 ---
 id: backend-138
 title: Create ClassificationBrain for output graph to class label conversion
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -32,82 +32,104 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Create ClassificationBrain for converting GRAPHEME output graphs to class labels.
+Uses StructuralClassifier (from backend-141) for GRAPHEME-native classification.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Create ClassificationBrain implementing DomainBrain trait
+- [x] Support MNIST (10 classes) and custom classification tasks
+- [x] Integrate with StructuralClassifier for template-based matching
+- [x] Provide loss_and_gradient() for training integration
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Implement ClassificationConfig struct
+- [x] Implement ClassificationOutput struct
+- [x] Implement ClassificationBrain with StructuralClassifier
+- [x] Implement DomainBrain trait
+- [x] Add classify() for inference
+- [x] Add loss_and_gradient() for training
+- [x] Add 10 unit tests
+- [x] Update crate documentation
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- ClassificationBrain::mnist() creates 10-class classifier for MNIST
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- classify() returns ClassificationOutput with predicted_class, confidence, probabilities
+
+✅ **Criteria 3:**
+- loss_and_gradient() returns structural loss and gradient for training
+
+✅ **Criteria 4:**
+- Implements DomainBrain trait with execute() returning predicted class
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses StructuralClassifier from grapheme-core (added in backend-141)
+- Template-based matching: no softmax/cross-entropy
+- Confidence = exp(-distance) where distance is from structural matching
+- Supports custom labels (e.g., ["cat", "dog", "bird"])
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] test_classification_config_mnist
+- [x] test_classification_config_custom
+- [x] test_classification_brain_mnist
+- [x] test_classification_brain_with_labels
+- [x] test_classification_output_new
+- [x] test_classification_output_with_label
+- [x] test_classification_brain_classify
+- [x] test_classification_brain_domain_brain_trait
+- [x] test_classification_brain_classifier_access
+- [x] test_classification_brain_execute
 
 ## Version Control
-
-**⚠️ CRITICAL: Always test AND run before committing!**
-
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] Build passes
+- [x] All 20 grapheme-vision tests pass (10 VisionBrain + 10 ClassificationBrain)
+- [x] All workspace tests pass
 
 ## Updates
 - 2025-12-09: Task created
+- 2025-12-09: Implementation complete
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **grapheme-vision/src/lib.rs** (~300 new lines): Added ClassificationBrain
+  - `ClassificationConfig`: Configuration (num_classes, num_outputs, momentum, use_structural)
+  - `ClassificationOutput`: Result struct (predicted_class, confidence, probabilities, label)
+  - `ClassificationBrain`: Main brain implementing DomainBrain trait
+  - `classify(&DagNN) → ClassificationOutput`: Inference method
+  - `loss_and_gradient(&DagNN, target) → StructuralClassificationResult`: Training method
+  - `update_templates(activations, class)`: Template update during training
+  - `classifier() / classifier_mut()`: Access to underlying StructuralClassifier
+
+- Updated crate documentation with new pipeline diagram
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- ClassificationBrain wraps StructuralClassifier from grapheme-core
+- classify() extracts output activations via get_classification_logits()
+- Confidence is computed as exp(-distance) from structural matching
+- Template updates happen via classifier_mut().update_template()
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses: grapheme_core::StructuralClassifier (from backend-141)
+- Uses: DomainBrain trait from grapheme-brain-common
+- Exports: `ClassificationConfig`, `ClassificationOutput`, `ClassificationBrain`
+- Unblocks: backend-139 (MNIST pipeline needs both VisionBrain and ClassificationBrain)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+```bash
+# Run classification tests
+cargo test -p grapheme-vision test_classification
+
+# Test all grapheme-vision tests
+cargo test -p grapheme-vision
+```
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **backend-139 (MNIST Pipeline)**: Now has both input (VisionBrain) and output (ClassificationBrain) brains
+- Pipeline is: `RawImage → VisionBrain → VisionGraph → to_dagnn() → GRAPHEME Core → ClassificationBrain → class`
+- ClassificationBrain.classify() requires DagNN with output nodes (use from_mnist_with_classifier)
+- For training, use loss_and_gradient() to get structural loss and gradient
+- Templates adapt during training via update_templates() - momentum controls adaptation speed

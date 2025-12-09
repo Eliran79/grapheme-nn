@@ -3,16 +3,16 @@
 //! Vision Brain: Image-to-graph embedding for GRAPHEME (no CNN).
 //!
 //! This crate provides:
-//! - Raw image representation (any size, grayscale or RGB)
-//! - Hierarchical feature extraction (blob detection, edge detection)
-//! - Image-to-graph conversion (VisionBrain.to_graph())
+//! - `RawImage` - Raw image representation (any size, grayscale or RGB)
+//! - `VisionBrain` - Hierarchical feature extraction (blob detection, edge detection)
+//! - `ClassificationBrain` - Output graph to class label conversion
 //! - Deterministic: same image = same graph
 //!
 //! ## GRAPHEME Vision Principle
 //!
 //! ```text
-//! Image → VisionBrain.to_graph() → Input Graph → GRAPHEME Core → Output Graph
-//!              (deterministic)                      (learns)
+//! Image → VisionBrain → Input Graph → GRAPHEME Core → Output Graph → ClassificationBrain → Class
+//!       (deterministic)                  (learns)                    (structural matching)
 //! ```
 //!
 //! No CNN. No learned feature extraction. Pure signal processing to graph.
@@ -842,6 +842,300 @@ impl DomainBrain for VisionBrain {
 }
 
 // ============================================================================
+// ClassificationBrain - Output graph to class label conversion
+// ============================================================================
+
+/// Configuration for classification brain.
+#[derive(Debug, Clone)]
+pub struct ClassificationConfig {
+    /// Number of classes (e.g., 10 for MNIST digits)
+    pub num_classes: usize,
+    /// Number of output nodes in the GRAPHEME graph
+    pub num_outputs: usize,
+    /// Template update momentum (higher = slower adaptation)
+    pub template_momentum: f32,
+    /// Whether to use structural loss (vs cross-entropy)
+    pub use_structural: bool,
+}
+
+impl ClassificationConfig {
+    /// Create MNIST configuration (10 classes)
+    pub fn mnist() -> Self {
+        Self {
+            num_classes: 10,
+            num_outputs: 10,
+            template_momentum: 0.9,
+            use_structural: true,
+        }
+    }
+
+    /// Create custom configuration
+    pub fn new(num_classes: usize, num_outputs: usize) -> Self {
+        Self {
+            num_classes,
+            num_outputs,
+            template_momentum: 0.9,
+            use_structural: true,
+        }
+    }
+
+    /// Set template momentum
+    pub fn with_momentum(mut self, momentum: f32) -> Self {
+        self.template_momentum = momentum;
+        self
+    }
+
+    /// Enable/disable structural loss
+    pub fn with_structural(mut self, use_structural: bool) -> Self {
+        self.use_structural = use_structural;
+        self
+    }
+}
+
+impl Default for ClassificationConfig {
+    fn default() -> Self {
+        Self::mnist()
+    }
+}
+
+/// Classification result from ClassificationBrain.
+#[derive(Debug, Clone)]
+pub struct ClassificationOutput {
+    /// Predicted class index
+    pub predicted_class: usize,
+    /// Confidence score (0.0-1.0)
+    pub confidence: f32,
+    /// Probabilities for each class
+    pub probabilities: Vec<f32>,
+    /// Optional: class label string
+    pub label: Option<String>,
+}
+
+impl ClassificationOutput {
+    /// Create a new classification output
+    pub fn new(predicted_class: usize, confidence: f32, probabilities: Vec<f32>) -> Self {
+        Self {
+            predicted_class,
+            confidence,
+            probabilities,
+            label: None,
+        }
+    }
+
+    /// Add label for the predicted class
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
+/// ClassificationBrain converts GRAPHEME output graphs to class labels.
+///
+/// This brain implements the output side of the MNIST pipeline:
+/// ```text
+/// VisionBrain → Input Graph → GRAPHEME Core → Output Graph → ClassificationBrain → Class
+/// ```
+///
+/// Uses StructuralClassifier from grapheme-core for template-based classification
+/// instead of softmax/cross-entropy (GRAPHEME-native approach).
+#[derive(Debug)]
+pub struct ClassificationBrain {
+    config: DomainConfig,
+    classification_config: ClassificationConfig,
+    classifier: grapheme_core::StructuralClassifier,
+    /// Optional class labels (e.g., ["0", "1", ..., "9"] for MNIST)
+    labels: Vec<String>,
+}
+
+impl ClassificationBrain {
+    /// Create a new ClassificationBrain with the given configuration.
+    pub fn new(classification_config: ClassificationConfig) -> Self {
+        let classifier = grapheme_core::StructuralClassifier::new(
+            classification_config.num_classes,
+            classification_config.num_outputs,
+        ).with_momentum(classification_config.template_momentum);
+
+        // Generate default numeric labels
+        let labels: Vec<String> = (0..classification_config.num_classes)
+            .map(|i| i.to_string())
+            .collect();
+
+        let config = DomainConfig::new(
+            "classification",
+            "Classification Brain",
+            vec!["classify", "predict", "label", "class"],
+        );
+
+        Self {
+            config,
+            classification_config,
+            classifier,
+            labels,
+        }
+    }
+
+    /// Create a ClassificationBrain for MNIST (10 digit classes).
+    pub fn mnist() -> Self {
+        let mut brain = Self::new(ClassificationConfig::mnist());
+        brain.labels = (0..10).map(|i| i.to_string()).collect();
+        brain
+    }
+
+    /// Create a ClassificationBrain with custom class labels.
+    pub fn with_labels(mut self, labels: Vec<String>) -> Self {
+        if labels.len() == self.classification_config.num_classes {
+            self.labels = labels;
+        }
+        self
+    }
+
+    /// Get the structural classifier (for training).
+    pub fn classifier(&self) -> &grapheme_core::StructuralClassifier {
+        &self.classifier
+    }
+
+    /// Get mutable access to the classifier (for template updates during training).
+    pub fn classifier_mut(&mut self) -> &mut grapheme_core::StructuralClassifier {
+        &mut self.classifier
+    }
+
+    /// Classify a GRAPHEME output graph.
+    ///
+    /// Extracts output node activations and uses structural matching
+    /// to find the closest class template.
+    pub fn classify(&self, graph: &DagNN) -> ClassificationOutput {
+        let (predicted_class, distance) = graph.structural_classify(&self.classifier);
+        let probabilities = self.classifier.distance_to_probs(&graph.get_classification_logits());
+
+        // Convert distance to confidence (smaller distance = higher confidence)
+        let confidence = (-distance).exp().min(1.0);
+
+        let mut output = ClassificationOutput::new(predicted_class, confidence, probabilities);
+        if let Some(label) = self.labels.get(predicted_class) {
+            output = output.with_label(label.clone());
+        }
+        output
+    }
+
+    /// Get loss and gradient for training.
+    ///
+    /// Returns the structural loss and gradient with respect to output activations.
+    pub fn loss_and_gradient(
+        &self,
+        graph: &DagNN,
+        target_class: usize,
+    ) -> grapheme_core::StructuralClassificationResult {
+        graph.structural_classification_step(&self.classifier, target_class)
+    }
+
+    /// Update templates based on observed activations (call during training).
+    pub fn update_templates(&mut self, activations: &[f32], true_class: usize) {
+        self.classifier.update_template(true_class, activations);
+    }
+
+    /// Get the class label for an index.
+    pub fn get_label(&self, class_idx: usize) -> Option<&str> {
+        self.labels.get(class_idx).map(|s| s.as_str())
+    }
+
+    /// Get all class labels.
+    pub fn labels(&self) -> &[String] {
+        &self.labels
+    }
+
+    /// Get number of classes.
+    pub fn num_classes(&self) -> usize {
+        self.classification_config.num_classes
+    }
+}
+
+// ============================================================================
+// BaseDomainBrain Implementation for ClassificationBrain
+// ============================================================================
+
+impl BaseDomainBrain for ClassificationBrain {
+    fn config(&self) -> &DomainConfig {
+        &self.config
+    }
+}
+
+// ============================================================================
+// DomainBrain Implementation for ClassificationBrain
+// ============================================================================
+
+impl DomainBrain for ClassificationBrain {
+    fn domain_id(&self) -> &str {
+        &self.config.domain_id
+    }
+
+    fn domain_name(&self) -> &str {
+        &self.config.domain_name
+    }
+
+    fn version(&self) -> &str {
+        &self.config.version
+    }
+
+    fn can_process(&self, input: &str) -> bool {
+        self.default_can_process(input)
+    }
+
+    fn parse(&self, input: &str) -> DomainResult<DagNN> {
+        self.default_parse(input)
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        self.default_from_core(graph)
+    }
+
+    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        self.default_to_core(graph)
+    }
+
+    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
+        self.default_validate(graph)
+    }
+
+    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
+        // Classification-specific execution: return predicted class
+        let result = self.classify(graph);
+        Ok(ExecutionResult::Text(format!(
+            "Predicted class: {} ({}), confidence: {:.2}%",
+            result.predicted_class,
+            result.label.unwrap_or_default(),
+            result.confidence * 100.0
+        )))
+    }
+
+    fn get_rules(&self) -> Vec<DomainRule> {
+        vec![
+            DomainRule {
+                id: 0,
+                domain: "classification".to_string(),
+                name: "Structural Matching".to_string(),
+                description: "Match output to class templates".to_string(),
+                category: "classification".to_string(),
+            },
+        ]
+    }
+
+    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
+        match rule_id {
+            0 => Ok(graph.clone()),
+            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
+                "Unknown rule ID: {}",
+                rule_id
+            ))),
+        }
+    }
+
+    fn generate_examples(&self, _count: usize) -> Vec<DomainExample> {
+        Vec::new()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1003,5 +1297,129 @@ mod tests {
 
         assert!(blobs_adjacent(&blob1, &blob2)); // Close enough
         assert!(!blobs_adjacent(&blob1, &blob3)); // Far apart
+    }
+
+    // ========================================================================
+    // ClassificationBrain Tests
+    // ========================================================================
+
+    #[test]
+    fn test_classification_config_mnist() {
+        let config = ClassificationConfig::mnist();
+        assert_eq!(config.num_classes, 10);
+        assert_eq!(config.num_outputs, 10);
+        assert!((config.template_momentum - 0.9).abs() < 1e-6);
+        assert!(config.use_structural);
+    }
+
+    #[test]
+    fn test_classification_config_custom() {
+        let config = ClassificationConfig::new(5, 8)
+            .with_momentum(0.8)
+            .with_structural(false);
+        assert_eq!(config.num_classes, 5);
+        assert_eq!(config.num_outputs, 8);
+        assert!((config.template_momentum - 0.8).abs() < 1e-6);
+        assert!(!config.use_structural);
+    }
+
+    #[test]
+    fn test_classification_brain_mnist() {
+        let brain = ClassificationBrain::mnist();
+        assert_eq!(brain.domain_id(), "classification");
+        assert_eq!(brain.num_classes(), 10);
+        assert_eq!(brain.labels().len(), 10);
+        assert_eq!(brain.get_label(0), Some("0"));
+        assert_eq!(brain.get_label(9), Some("9"));
+    }
+
+    #[test]
+    fn test_classification_brain_with_labels() {
+        let labels = vec![
+            "cat".to_string(),
+            "dog".to_string(),
+            "bird".to_string(),
+        ];
+        let brain = ClassificationBrain::new(ClassificationConfig::new(3, 3))
+            .with_labels(labels);
+        assert_eq!(brain.get_label(0), Some("cat"));
+        assert_eq!(brain.get_label(1), Some("dog"));
+        assert_eq!(brain.get_label(2), Some("bird"));
+    }
+
+    #[test]
+    fn test_classification_output_new() {
+        let probs = vec![0.8, 0.1, 0.1];
+        let output = ClassificationOutput::new(0, 0.8, probs.clone());
+        assert_eq!(output.predicted_class, 0);
+        assert!((output.confidence - 0.8).abs() < 1e-6);
+        assert_eq!(output.probabilities, probs);
+        assert!(output.label.is_none());
+    }
+
+    #[test]
+    fn test_classification_output_with_label() {
+        let output = ClassificationOutput::new(0, 0.8, vec![0.8, 0.2])
+            .with_label("cat");
+        assert_eq!(output.label, Some("cat".to_string()));
+    }
+
+    #[test]
+    fn test_classification_brain_classify() {
+        let brain = ClassificationBrain::mnist();
+
+        // Create a MNIST DagNN with hidden layer and output nodes
+        let pixels = vec![0.0f32; 784];
+        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let result = brain.classify(&dag);
+        assert!(result.predicted_class < 10);
+        assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+        assert_eq!(result.probabilities.len(), 10);
+    }
+
+    #[test]
+    fn test_classification_brain_domain_brain_trait() {
+        let brain = ClassificationBrain::mnist();
+
+        // Test DomainBrain trait methods
+        assert_eq!(brain.domain_id(), "classification");
+        assert_eq!(brain.domain_name(), "Classification Brain");
+        assert!(brain.can_process("classify this"));
+        assert!(!brain.can_process("hello world"));
+
+        let rules = brain.get_rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "Structural Matching");
+    }
+
+    #[test]
+    fn test_classification_brain_classifier_access() {
+        let mut brain = ClassificationBrain::mnist();
+
+        // Test read access
+        let classifier = brain.classifier();
+        assert_eq!(classifier.templates.len(), 10);
+
+        // Test mutable access
+        let classifier_mut = brain.classifier_mut();
+        assert_eq!(classifier_mut.templates.len(), 10);
+    }
+
+    #[test]
+    fn test_classification_brain_execute() {
+        let brain = ClassificationBrain::mnist();
+
+        let pixels = vec![0.0f32; 784];
+        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let result = brain.execute(&dag);
+        assert!(result.is_ok());
+        if let Ok(grapheme_core::ExecutionResult::Text(text)) = result {
+            assert!(text.contains("Predicted class:"));
+            assert!(text.contains("confidence:"));
+        }
     }
 }
