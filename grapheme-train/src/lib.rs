@@ -1302,6 +1302,15 @@ impl WeisfeilerLehmanKernel {
                 "Compressed".hash(&mut hasher);
                 format!("{:?}", compression_type).hash(&mut hasher);
             }
+            NodeType::Pixel { row, col } => {
+                "Pixel".hash(&mut hasher);
+                row.hash(&mut hasher);
+                col.hash(&mut hasher);
+            }
+            NodeType::ClassOutput(class_idx) => {
+                "ClassOutput".hash(&mut hasher);
+                class_idx.hash(&mut hasher);
+            }
         }
         hasher.finish()
     }
@@ -2875,6 +2884,7 @@ fn compute_soft_node_costs_code(
 
 /// Compute type mismatch cost for CodeNodes
 fn code_node_type_cost(a: &CodeNodeType, b: &CodeNodeType) -> f32 {
+    #[allow(unused_imports)]
     use CodeNodeType::*;
 
     // Same type = 0 cost

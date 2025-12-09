@@ -50,6 +50,8 @@ pub enum GraphemeError {
     ProcessingError(String),
     #[error("Cycle detected in graph")]
     CycleDetected,
+    #[error("Dimension mismatch: {0}")]
+    DimensionMismatch(String),
 }
 
 /// Result type for GRAPHEME operations
@@ -241,6 +243,10 @@ pub enum NodeType {
     Pattern(Vec<u8>),
     /// Compressed region with compression type
     Compressed(CompressionType),
+    /// Pixel node for image input (row, col) - backend-113
+    Pixel { row: usize, col: usize },
+    /// Classification output node (class index) - backend-113
+    ClassOutput(usize),
 }
 
 /// A node in the GRAPHEME graph (matching GRAPHEME_Vision.md)
@@ -356,6 +362,32 @@ impl Node {
             node_type: NodeType::Compressed(compression),
             position: None,
             activation_fn: ActivationFn::ReLU,
+        }
+    }
+
+    /// Create a pixel node for image input (backend-113)
+    /// Activation is the normalized pixel intensity [0.0, 1.0]
+    pub fn pixel(row: usize, col: usize, intensity: f32) -> Self {
+        let normalized = intensity.clamp(0.0, 1.0);
+        Self {
+            value: Some((normalized * 255.0) as u8),
+            activation: normalized,
+            pre_activation: normalized,
+            node_type: NodeType::Pixel { row, col },
+            position: Some(row * 28 + col), // Linear position for 28x28 image
+            activation_fn: ActivationFn::Linear, // Pass through unchanged
+        }
+    }
+
+    /// Create a classification output node (backend-113)
+    pub fn class_output(class_idx: usize) -> Self {
+        Self {
+            value: Some(class_idx as u8),
+            activation: 0.0,
+            pre_activation: 0.0,
+            node_type: NodeType::ClassOutput(class_idx),
+            position: None,
+            activation_fn: ActivationFn::Linear, // Logits are linear
         }
     }
 
@@ -720,6 +752,210 @@ impl DagNN {
         dag.topology = TopologicalOrder::from_graph(&dag.graph)?;
 
         Ok(dag)
+    }
+
+    // ========================================================================
+    // Image Encoding (Backend-113: MNIST Cognitive Module)
+    // ========================================================================
+
+    /// Build a DagNN from a grayscale image (pixel grid to graph)
+    ///
+    /// Encodes a 2D image as a directed acyclic graph with:
+    /// - 784 pixel nodes (28×28 for MNIST)
+    /// - Grid topology with 4-neighbor connections (up, down, left, right)
+    /// - DAG ordering: row-major (top to bottom, left to right)
+    /// - Edge weights initialized with Xavier initialization
+    ///
+    /// # Arguments
+    /// * `pixels` - Row-major pixel values (0.0 to 1.0 normalized)
+    /// * `width` - Image width (28 for MNIST)
+    /// * `height` - Image height (28 for MNIST)
+    ///
+    /// # Returns
+    /// A DagNN representing the image with grid topology
+    pub fn from_image(pixels: &[f32], width: usize, height: usize) -> GraphemeResult<Self> {
+        if pixels.len() != width * height {
+            return Err(GraphemeError::DimensionMismatch(format!(
+                "Pixel count {} doesn't match {}×{}={}",
+                pixels.len(),
+                width,
+                height,
+                width * height
+            )));
+        }
+
+        let mut dag = Self::new();
+
+        // Create grid of pixel nodes in row-major order
+        let mut node_grid: Vec<Vec<NodeId>> = Vec::with_capacity(height);
+
+        for row in 0..height {
+            let mut row_nodes = Vec::with_capacity(width);
+            for col in 0..width {
+                let pixel_idx = row * width + col;
+                let intensity = pixels[pixel_idx];
+                let node = dag.graph.add_node(Node::pixel(row, col, intensity));
+                dag.input_nodes.push(node);
+                dag.input_nodes_set.insert(node);
+                dag.position_index.insert(pixel_idx, node);
+                row_nodes.push(node);
+            }
+            node_grid.push(row_nodes);
+        }
+
+        // Add edges: 4-neighbor connectivity (DAG: edges only go "forward")
+        // Forward means: right neighbors and down neighbors (row-major ordering)
+        for row in 0..height {
+            for col in 0..width {
+                let current = node_grid[row][col];
+
+                // Right neighbor (same row, next column)
+                if col + 1 < width {
+                    let right = node_grid[row][col + 1];
+                    dag.graph.add_edge(current, right, Edge::sequential());
+                }
+
+                // Down neighbor (next row, same column)
+                if row + 1 < height {
+                    let down = node_grid[row + 1][col];
+                    dag.graph.add_edge(current, down, Edge::sequential());
+                }
+            }
+        }
+
+        // Initialize edge weights with Xavier
+        dag.init_edge_weights_xavier();
+
+        // Compute topological order
+        dag.topology = TopologicalOrder::from_graph(&dag.graph)?;
+
+        Ok(dag)
+    }
+
+    /// Build a DagNN for MNIST (28×28 grayscale image)
+    ///
+    /// Convenience method that calls from_image with MNIST dimensions.
+    ///
+    /// # Arguments
+    /// * `pixels` - 784 pixel values (0.0 to 1.0 normalized), row-major order
+    ///
+    /// # Returns
+    /// A DagNN representing the MNIST image
+    pub fn from_mnist(pixels: &[f32]) -> GraphemeResult<Self> {
+        if pixels.len() != 784 {
+            return Err(GraphemeError::DimensionMismatch(format!(
+                "MNIST requires exactly 784 pixels, got {}",
+                pixels.len()
+            )));
+        }
+        Self::from_image(pixels, 28, 28)
+    }
+
+    /// Build a DagNN from MNIST with classification output nodes
+    ///
+    /// Creates:
+    /// - 784 pixel input nodes (28×28)
+    /// - Hidden layer with configurable size
+    /// - 10 output nodes (one per digit class 0-9)
+    ///
+    /// # Arguments
+    /// * `pixels` - 784 pixel values (0.0 to 1.0 normalized)
+    /// * `hidden_size` - Number of hidden nodes
+    ///
+    /// # Returns
+    /// A DagNN ready for MNIST classification
+    pub fn from_mnist_with_classifier(
+        pixels: &[f32],
+        hidden_size: usize,
+    ) -> GraphemeResult<Self> {
+        let mut dag = Self::from_mnist(pixels)?;
+
+        // Add hidden layer with ReLU activation
+        let mut hidden_nodes = Vec::with_capacity(hidden_size);
+        for _ in 0..hidden_size {
+            let hidden = dag.add_hidden_with_activation(ActivationFn::ReLU);
+            hidden_nodes.push(hidden);
+        }
+
+        // Connect input nodes to hidden nodes with Xavier-initialized edges
+        // Each hidden node connects to a subset of inputs for efficiency
+        let inputs_per_hidden = (dag.input_nodes.len() / hidden_size).max(1);
+        for (h_idx, &hidden) in hidden_nodes.iter().enumerate() {
+            let start = (h_idx * inputs_per_hidden) % dag.input_nodes.len();
+            let end = ((h_idx + 1) * inputs_per_hidden).min(dag.input_nodes.len());
+
+            // Connect to local region of inputs
+            for input_idx in start..end {
+                let fan_in = inputs_per_hidden.max(1) as f32;
+                let fan_out = 10.0; // 10 output classes
+                let limit = (6.0 / (fan_in + fan_out)).sqrt();
+                let weight = rand::random::<f32>() * 2.0 * limit - limit;
+                dag.add_edge(
+                    dag.input_nodes[input_idx],
+                    hidden,
+                    Edge::new(weight, EdgeType::Sequential),
+                );
+            }
+        }
+
+        // Add 10 output nodes (one per digit class)
+        let mut class_outputs = Vec::with_capacity(10);
+        for class_idx in 0..10 {
+            let output = dag.graph.add_node(Node::class_output(class_idx));
+            dag.output_nodes.push(output);
+            class_outputs.push(output);
+        }
+
+        // Connect hidden nodes to output nodes
+        for &hidden in &hidden_nodes {
+            for &output in &class_outputs {
+                let fan_in = hidden_size as f32;
+                let fan_out = 1.0;
+                let limit = (6.0 / (fan_in + fan_out)).sqrt();
+                let weight = rand::random::<f32>() * 2.0 * limit - limit;
+                dag.add_edge(hidden, output, Edge::new(weight, EdgeType::Sequential));
+            }
+        }
+
+        // Update topology
+        dag.update_topology()?;
+
+        Ok(dag)
+    }
+
+    /// Get output logits for classification
+    ///
+    /// Returns the activation values of all ClassOutput nodes.
+    /// Call neuromorphic_forward() first to compute activations.
+    ///
+    /// # Returns
+    /// Vector of logits (one per class), or empty if no ClassOutput nodes
+    pub fn get_classification_logits(&self) -> Vec<f32> {
+        self.output_nodes
+            .iter()
+            .filter_map(|&node_id| {
+                let node = &self.graph[node_id];
+                if matches!(node.node_type, NodeType::ClassOutput(_)) {
+                    Some(node.activation)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get predicted class (argmax of output logits)
+    ///
+    /// # Returns
+    /// The class index with highest activation
+    pub fn predict_class(&self) -> usize {
+        let logits = self.get_classification_logits();
+        logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
     }
 
     /// Add a character to the graph
@@ -4369,9 +4605,10 @@ impl SabagPooling {
     /// node pairs have non-zero similarity (preserves DAG structure).
     ///
     /// Complexity: O(n²·d) for similarity computation
+    #[allow(dead_code)]
     fn compute_dag_similarity(
         &self,
-        graph: &GraphemeGraph,
+        _graph: &GraphemeGraph,
         embeddings: &Array2<f32>,
     ) -> Array2<f32> {
         let n = embeddings.nrows();
@@ -4414,31 +4651,31 @@ impl SabagPooling {
     /// - Clusters are balanced (column sums ≈ n/k)
     ///
     /// Complexity: O(n·k·iterations)
-    fn sinkhorn_refine(&self, mut Z: Array2<f32>) -> Array2<f32> {
-        let n = Z.nrows();
-        let k = Z.ncols();
+    fn sinkhorn_refine(&self, mut z: Array2<f32>) -> Array2<f32> {
+        let n = z.nrows();
+        let k = z.ncols();
 
         // Target: Each cluster should have n/k nodes
         let target_cluster_size = n as f32 / k as f32;
 
         for _ in 0..self.sinkhorn_iterations {
-            // Row normalization: Σ_j Z[i,j] = 1 (each node assigns to clusters)
+            // Row normalization: Σ_j z[i,j] = 1 (each node assigns to clusters)
             for i in 0..n {
-                let row_sum: f32 = Z.row(i).sum();
+                let row_sum: f32 = z.row(i).sum();
                 if row_sum > 1e-8 {
                     for j in 0..k {
-                        Z[[i, j]] /= row_sum;
+                        z[[i, j]] /= row_sum;
                     }
                 }
             }
 
-            // Column normalization: Σ_i Z[i,j] ≈ n/k (balanced clusters)
+            // Column normalization: Σ_i z[i,j] ≈ n/k (balanced clusters)
             for j in 0..k {
-                let col_sum: f32 = Z.column(j).sum();
+                let col_sum: f32 = z.column(j).sum();
                 if col_sum > 1e-8 {
                     let scale = target_cluster_size / col_sum;
                     for i in 0..n {
-                        Z[[i, j]] *= scale;
+                        z[[i, j]] *= scale;
                     }
                 }
             }
@@ -4446,15 +4683,15 @@ impl SabagPooling {
 
         // Final row normalization to ensure probability distribution
         for i in 0..n {
-            let row_sum: f32 = Z.row(i).sum();
+            let row_sum: f32 = z.row(i).sum();
             if row_sum > 1e-8 {
                 for j in 0..k {
-                    Z[[i, j]] /= row_sum;
+                    z[[i, j]] /= row_sum;
                 }
             }
         }
 
-        Z
+        z
     }
 
     /// Sabag Step 3: Compute soft assignment matrix using learnable queries
@@ -4469,45 +4706,46 @@ impl SabagPooling {
     ///
     /// Complexity: O(k·n·d) - same as before, but simpler!
     fn compute_assignment_matrix(&self, embeddings: &Array2<f32>) -> Array2<f32> {
-        let n = embeddings.nrows();  // Input nodes
-        let k = self.num_clusters;   // Output nodes (no min()!)
+        let _n = embeddings.nrows();  // Input nodes (documented for clarity)
+        let _k = self.num_clusters;   // Output nodes (documented for clarity)
 
         // Compute attention scores: Q · H^T ∈ ℝ^{k × n}
         // Each row i: how much does output node i attend to each input node j?
         let scores = self.query_matrix.dot(&embeddings.t());
 
         // Apply temperature scaling and softmax per row
-        // S[i,j] = exp(score[i,j]/T) / Σ_j exp(score[i,j]/T)
-        let Z = scores.mapv(|x| (x / self.temperature).exp());
+        // s[i,j] = exp(score[i,j]/T) / Σ_j exp(score[i,j]/T)
+        let z = scores.mapv(|x| (x / self.temperature).exp());
 
         // Optional: Sinkhorn refinement for balanced assignment
-        self.sinkhorn_refine(Z)
+        self.sinkhorn_refine(z)
     }
 
     /// Softmax activation (rowwise)
     ///
-    /// S[i,j] = exp(Z[i,j]) / Σ_k exp(Z[i,k])
+    /// s[i,j] = exp(z[i,j]) / Σ_k exp(z[i,k])
     ///
     /// Ensures each row sums to 1 (probability distribution over clusters).
     ///
     /// Complexity: O(n·k) - linear in matrix size
-    fn softmax_rowwise(&self, Z: &Array2<f32>) -> Array2<f32> {
-        let mut S = Array2::zeros(Z.dim());
+    #[allow(dead_code)]
+    fn softmax_rowwise(&self, z: &Array2<f32>) -> Array2<f32> {
+        let mut s = Array2::zeros(z.dim());
 
-        for i in 0..Z.nrows() {
-            let row = Z.row(i);
+        for i in 0..z.nrows() {
+            let row = z.row(i);
 
             // Numerical stability: subtract max before exp
             let max_val = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let exp_row: Vec<f32> = row.iter().map(|&z| (z - max_val).exp()).collect();
+            let exp_row: Vec<f32> = row.iter().map(|&val| (val - max_val).exp()).collect();
             let sum_exp: f32 = exp_row.iter().sum();
 
-            for j in 0..Z.ncols() {
-                S[[i, j]] = exp_row[j] / sum_exp;
+            for j in 0..z.ncols() {
+                s[[i, j]] = exp_row[j] / sum_exp;
             }
         }
 
-        S
+        s
     }
 
     /// Sabag Forward Pass: DAG-aware differentiable graph pooling
@@ -4544,32 +4782,32 @@ impl SabagPooling {
         let k = self.num_clusters;   // Output nodes (no constraint!)
 
         // Sabag Step 1: Compute soft assignment matrix using learnable queries
-        // S ∈ ℝ^{k × n} - each output node attends to all input nodes
-        let S = self.compute_assignment_matrix(embeddings);
+        // s ∈ ℝ^{k × n} - each output node attends to all input nodes
+        let assignment = self.compute_assignment_matrix(embeddings);
 
-        // DEBUG: Check S dimensions
-        if S.nrows() != k || S.ncols() != n {
-            eprintln!("WARNING: S has wrong shape! Expected {}×{}, got {}×{}",
-                     k, n, S.nrows(), S.ncols());
+        // DEBUG: Check assignment dimensions
+        if assignment.nrows() != k || assignment.ncols() != n {
+            eprintln!("WARNING: assignment has wrong shape! Expected {}×{}, got {}×{}",
+                     k, n, assignment.nrows(), assignment.ncols());
         }
 
         // Sabag Step 2: Compute output features via attention-weighted combination
-        // H_new = S · H ∈ ℝ^{k × d}
+        // h_new = assignment · H ∈ ℝ^{k × d}
         // Each output node is a weighted combination of input nodes
         // Works for k < n (compression), k = n (identity), k > n (expansion)!
-        let H_new = S.dot(embeddings);
+        let h_new = assignment.dot(embeddings);
 
         // Sabag Step 3: Build output DAG with k nodes
-        let output_graph = self.create_coarsened_dag(graph, k, &H_new, &S);
+        let output_graph = self.create_coarsened_dag(graph, k, &h_new, &assignment);
 
         // DEBUG: Verify dimensions before returning
-        eprintln!("Sabag forward: n={}, k={}, S.shape={:?}, H_new.shape={:?}, output_graph.input_nodes={}",
-                 n, k, S.dim(), H_new.dim(), output_graph.input_nodes.len());
+        eprintln!("Sabag forward: n={}, k={}, assignment.shape={:?}, h_new.shape={:?}, output_graph.input_nodes={}",
+                 n, k, assignment.dim(), h_new.dim(), output_graph.input_nodes.len());
 
         PoolingResult {
             graph: output_graph,
-            features: H_new,
-            assignment: S,  // CRITICAL: Store for backward pass!
+            features: h_new,
+            assignment,  // CRITICAL: Store for backward pass!
         }
     }
 
@@ -4674,38 +4912,38 @@ impl SabagPooling {
     /// Complexity: O(n·k²) - quadratic in number of clusters
     ///
     /// # Arguments
-    /// * `grad_S` - Gradient w.r.t. soft assignment ∂L/∂S ∈ ℝ^{n × k}
-    /// * `S` - Soft assignment matrix from forward pass ∈ ℝ^{n × k}
+    /// * `grad_s` - Gradient w.r.t. soft assignment ∂L/∂S ∈ ℝ^{n × k}
+    /// * `s` - Soft assignment matrix from forward pass ∈ ℝ^{n × k}
     ///
     /// # Returns
     /// Gradient w.r.t. assignment scores ∂L/∂Z ∈ ℝ^{n × k}
     #[allow(dead_code)]
     fn softmax_backward(
         &self,
-        grad_S: &Array2<f32>,
-        S: &Array2<f32>,
+        grad_s: &Array2<f32>,
+        s: &Array2<f32>,
     ) -> Array2<f32> {
-        let mut grad_Z = Array2::zeros(S.dim());
+        let mut grad_z = Array2::zeros(s.dim());
 
-        for i in 0..S.nrows() {
-            for k in 0..S.ncols() {
+        for i in 0..s.nrows() {
+            for k in 0..s.ncols() {
                 let mut grad_sum = 0.0;
 
-                for j in 0..S.ncols() {
+                for j in 0..s.ncols() {
                     if j == k {
                         // δ_{jk} = 1
-                        grad_sum += grad_S[[i, j]] * S[[i, j]] * (1.0 - S[[i, j]]);
+                        grad_sum += grad_s[[i, j]] * s[[i, j]] * (1.0 - s[[i, j]]);
                     } else {
                         // δ_{jk} = 0
-                        grad_sum -= grad_S[[i, j]] * S[[i, j]] * S[[i, k]];
+                        grad_sum -= grad_s[[i, j]] * s[[i, j]] * s[[i, k]];
                     }
                 }
 
-                grad_Z[[i, k]] = grad_sum;
+                grad_z[[i, k]] = grad_sum;
             }
         }
 
-        grad_Z
+        grad_z
     }
 
     /// Zero out gradients
@@ -4915,6 +5153,20 @@ impl Embedding {
                 sum / bytes.len() as f32
             }
             NodeType::Compressed(_) => self.forward_index(4),
+            NodeType::Pixel { row: _, col: _ } => {
+                // Pixel nodes - use pixel value as embedding index (0-255)
+                if let Some(v) = node.value {
+                    self.forward_index(v as usize)
+                } else {
+                    // Use activation level scaled to embedding space
+                    let idx = (node.activation * 255.0).clamp(0.0, 255.0) as usize;
+                    self.forward_index(idx)
+                }
+            }
+            NodeType::ClassOutput(class_idx) => {
+                // Class output nodes - use class index
+                self.forward_index(*class_idx)
+            }
         }
     }
 
@@ -6775,6 +7027,7 @@ impl GraphTransformNet {
 
     /// Helper: Compute cosine similarity between two embedding vectors
     /// Complexity: O(d) where d = embedding dimension
+    #[allow(dead_code)]
     fn cosine_similarity(a: &ndarray::Array1<f32>, b: &ndarray::Array1<f32>) -> f32 {
         let dot = a.dot(b);
         let norm_a = a.dot(a).sqrt();
@@ -6835,12 +7088,12 @@ impl GraphTransformNet {
     ) {
         let n = input_graph.input_nodes.len();  // Original input nodes
         let k = pooling_result.graph.input_nodes.len();  // Output/coarsened nodes
-        let S = &pooling_result.assignment;  // Sabag soft assignment S ∈ ℝ^{k×n}
+        let assignment = &pooling_result.assignment;  // Sabag soft assignment s ∈ ℝ^{k×n}
 
         // Backend-104 FIX: Convert activation gradients to feature gradients
         //
-        // Forward: activation[i] = mean(H_new[i,:]) = Σⱼ H_new[i,j] / D
-        // Backward: ∂L/∂H_new[i,j] = (∂L/∂activation[i]) * (∂activation[i]/∂H_new[i,j])
+        // Forward: activation[i] = mean(h_new[i,:]) = Σⱼ h_new[i,j] / D
+        // Backward: ∂L/∂h_new[i,j] = (∂L/∂activation[i]) * (∂activation[i]/∂h_new[i,j])
         //                         = activation_gradients[i] * (1/D)
         //
         // This broadcasts the scalar gradient to all dimensions
@@ -6849,7 +7102,7 @@ impl GraphTransformNet {
         for i in 0..k {
             if i < activation_gradients.len() {
                 let grad_act = activation_gradients[i];
-                // Broadcast to all dimensions: ∂L/∂H_new[i,j] = grad_act / D
+                // Broadcast to all dimensions: ∂L/∂h_new[i,j] = grad_act / D
                 for j in 0..embed_dim {
                     grad_k[[i, j]] = grad_act / d;
                 }
@@ -6857,40 +7110,40 @@ impl GraphTransformNet {
         }
 
         // Sabag backward: Route gradients from k output nodes to n input nodes
-        // Forward was: H_new = S · H  (k×n · n×d = k×d)
-        // Backward:    ∂L/∂H = S^T · ∂L/∂H_new  (n×k · k×d = n×d)
-        let grad_n = S.t().dot(&grad_k);  // Transpose and multiply!
+        // Forward was: h_new = assignment · h  (k×n · n×d = k×d)
+        // Backward:    ∂L/∂h = assignment^T · ∂L/∂h_new  (n×k · k×d = n×d)
+        let grad_n = assignment.t().dot(&grad_k);  // Transpose and multiply!
 
         // Compute gradient w.r.t. query matrix Q
         if let Some(ref mut sabag) = self.sabag_pooling {
-            // Reconstruct the input embeddings H that were used in forward pass
-            let mut H = Array2::zeros((n, embed_dim));
+            // Reconstruct the input embeddings h that were used in forward pass
+            let mut h = Array2::zeros((n, embed_dim));
             for (idx, &node_id) in input_graph.input_nodes.iter().enumerate() {
                 if let NodeType::Input(ch) = input_graph.graph[node_id].node_type {
                     let embedding = self.embedding.forward(ch);
                     for (i, &val) in embedding.iter().enumerate() {
-                        H[[idx, i]] = val;
+                        h[[idx, i]] = val;
                     }
                 }
             }
 
             // Proper gradient computation through attention
-            // Forward: out = S · H where S = softmax(Q · H^T / T)
+            // Forward: out = assignment · h where assignment = softmax(Q · h^T / T)
             // Backward: ∂L/∂Q requires gradient through softmax
             //
-            // Step 1: ∂L/∂S (gradient w.r.t. assignment matrix)
-            // From out = S · H, we have ∂L/∂S = ∂L/∂out · H^T = grad_k · H^T
-            let grad_S = grad_k.dot(&H.t());  // k×d · d×n = k×n ✓
+            // Step 1: ∂L/∂assignment (gradient w.r.t. assignment matrix)
+            // From out = assignment · h, we have ∂L/∂assignment = ∂L/∂out · h^T = grad_k · h^T
+            let grad_assignment = grad_k.dot(&h.t());  // k×d · d×n = k×n ✓
 
             // Step 2: ∂L/∂scores (gradient through softmax)
             // Use softmax Jacobian backward pass
-            let grad_scores = sabag.softmax_backward(&grad_S, S);  // k×n
+            let grad_scores = sabag.softmax_backward(&grad_assignment, assignment);  // k×n
 
-            // Step 3: ∂L/∂Q (gradient through Q · H^T)
-            // From scores = Q · H^T, we have ∂L/∂Q = ∂L/∂scores · H
-            let Q_grad = grad_scores.dot(&H);  // k×n · n×d = k×d ✓
+            // Step 3: ∂L/∂Q (gradient through Q · h^T)
+            // From scores = Q · h^T, we have ∂L/∂Q = ∂L/∂scores · h
+            let q_grad = grad_scores.dot(&h);  // k×n · n×d = k×d ✓
 
-            sabag.accumulate_query_grad(&Q_grad);
+            sabag.accumulate_query_grad(&q_grad);
         }
 
         // Route gradients to character embeddings
@@ -7841,6 +8094,198 @@ impl CognitiveBrainBridge for CognitiveBrainOrchestrator {
 /// Factory function to create a cognitive-brain orchestrator
 pub fn create_cognitive_orchestrator() -> CognitiveBrainOrchestrator {
     CognitiveBrainOrchestrator::new()
+}
+
+// ============================================================================
+// Classification Utilities (Backend-113: MNIST Cognitive Module)
+// ============================================================================
+
+/// Softmax function for converting logits to probabilities
+///
+/// Computes: softmax(x_i) = exp(x_i - max(x)) / sum(exp(x_j - max(x)))
+///
+/// Uses the log-sum-exp trick for numerical stability.
+///
+/// # Arguments
+/// * `logits` - Raw unnormalized scores
+///
+/// # Returns
+/// Probability distribution that sums to 1.0
+pub fn softmax(logits: &[f32]) -> Vec<f32> {
+    if logits.is_empty() {
+        return Vec::new();
+    }
+
+    // Find max for numerical stability
+    let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    // Compute exp(x - max)
+    let exp_logits: Vec<f32> = logits.iter().map(|&x| (x - max_logit).exp()).collect();
+
+    // Normalize
+    let sum: f32 = exp_logits.iter().sum();
+    if sum > 0.0 {
+        exp_logits.iter().map(|&e| e / sum).collect()
+    } else {
+        // Fallback to uniform distribution
+        vec![1.0 / logits.len() as f32; logits.len()]
+    }
+}
+
+/// Cross-entropy loss for classification
+///
+/// Computes: L = -log(p[target_class])
+///
+/// Where p is the softmax probability of the target class.
+///
+/// # Arguments
+/// * `logits` - Raw unnormalized scores (one per class)
+/// * `target_class` - The true class index (0-indexed)
+///
+/// # Returns
+/// The cross-entropy loss value (always >= 0)
+pub fn cross_entropy_loss(logits: &[f32], target_class: usize) -> f32 {
+    if logits.is_empty() || target_class >= logits.len() {
+        return 0.0;
+    }
+
+    let probs = softmax(logits);
+    let prob = probs[target_class].max(1e-10); // Clamp for numerical stability
+    -prob.ln()
+}
+
+/// Cross-entropy loss with softmax gradient
+///
+/// Returns both the loss and the gradient of the loss w.r.t. logits.
+///
+/// The gradient for cross-entropy with softmax is elegantly:
+/// ∂L/∂logit_i = prob_i - 1 (if i == target)
+/// ∂L/∂logit_i = prob_i     (if i != target)
+///
+/// # Arguments
+/// * `logits` - Raw unnormalized scores (one per class)
+/// * `target_class` - The true class index (0-indexed)
+///
+/// # Returns
+/// Tuple of (loss, gradient vector)
+pub fn cross_entropy_loss_with_grad(logits: &[f32], target_class: usize) -> (f32, Vec<f32>) {
+    if logits.is_empty() || target_class >= logits.len() {
+        return (0.0, Vec::new());
+    }
+
+    let probs = softmax(logits);
+    let prob = probs[target_class].max(1e-10);
+    let loss = -prob.ln();
+
+    // Gradient: p - one_hot(target)
+    let grad: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| if i == target_class { p - 1.0 } else { p })
+        .collect();
+
+    (loss, grad)
+}
+
+/// Compute accuracy for a batch of predictions
+///
+/// # Arguments
+/// * `predictions` - Predicted class indices
+/// * `targets` - True class indices
+///
+/// # Returns
+/// Accuracy as a fraction [0.0, 1.0]
+pub fn compute_accuracy(predictions: &[usize], targets: &[usize]) -> f32 {
+    if predictions.is_empty() {
+        return 0.0;
+    }
+
+    let correct = predictions
+        .iter()
+        .zip(targets.iter())
+        .filter(|(&pred, &target)| pred == target)
+        .count();
+
+    correct as f32 / predictions.len() as f32
+}
+
+/// Configuration for MNIST classification training
+#[derive(Debug, Clone)]
+pub struct ClassificationConfig {
+    /// Learning rate for gradient descent
+    pub learning_rate: f32,
+    /// Number of hidden nodes in the network
+    pub hidden_size: usize,
+    /// Batch size for training
+    pub batch_size: usize,
+    /// Number of training epochs
+    pub epochs: usize,
+    /// Use Hebbian learning as supplement
+    pub use_hebbian: bool,
+    /// Hebbian weight (if use_hebbian is true)
+    pub hebbian_weight: f32,
+    /// Print progress every N batches
+    pub log_interval: usize,
+}
+
+impl Default for ClassificationConfig {
+    fn default() -> Self {
+        Self {
+            learning_rate: 0.01,
+            hidden_size: 128,
+            batch_size: 32,
+            epochs: 10,
+            use_hebbian: false,
+            hebbian_weight: 0.1,
+            log_interval: 100,
+        }
+    }
+}
+
+impl ClassificationConfig {
+    /// Create a new configuration with specified learning rate
+    pub fn new(learning_rate: f32) -> Self {
+        Self {
+            learning_rate,
+            ..Default::default()
+        }
+    }
+
+    /// Builder: set hidden size
+    pub fn with_hidden_size(mut self, hidden_size: usize) -> Self {
+        self.hidden_size = hidden_size;
+        self
+    }
+
+    /// Builder: set batch size
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Builder: set number of epochs
+    pub fn with_epochs(mut self, epochs: usize) -> Self {
+        self.epochs = epochs;
+        self
+    }
+
+    /// Builder: enable Hebbian learning
+    pub fn with_hebbian(mut self, weight: f32) -> Self {
+        self.use_hebbian = true;
+        self.hebbian_weight = weight;
+        self
+    }
+}
+
+/// Result of a single classification training step
+#[derive(Debug, Clone)]
+pub struct ClassificationStepResult {
+    /// Cross-entropy loss
+    pub loss: f32,
+    /// Predicted class
+    pub predicted: usize,
+    /// Whether prediction was correct
+    pub correct: bool,
 }
 
 // ============================================================================
@@ -11970,5 +12415,255 @@ mod tests {
             pooling.sinkhorn_iterations >= 1,
             "Should have at least 1 iteration"
         );
+    }
+
+    // ========================================================================
+    // Image Encoding Tests (Backend-113)
+    // ========================================================================
+
+    #[test]
+    fn test_pixel_node_creation() {
+        let node = Node::pixel(5, 10, 0.5);
+        assert!(matches!(node.node_type, NodeType::Pixel { row: 5, col: 10 }));
+        assert!((node.activation - 0.5).abs() < 1e-6);
+        assert_eq!(node.position, Some(5 * 28 + 10)); // row-major position
+    }
+
+    #[test]
+    fn test_class_output_node_creation() {
+        let node = Node::class_output(7);
+        assert!(matches!(node.node_type, NodeType::ClassOutput(7)));
+        assert_eq!(node.activation, 0.0);
+    }
+
+    #[test]
+    fn test_from_image_basic() {
+        // Small 4x4 image
+        let pixels = vec![0.0_f32; 16];
+        let dag = DagNN::from_image(&pixels, 4, 4).unwrap();
+
+        // Should have 16 pixel nodes
+        assert_eq!(dag.input_nodes().len(), 16);
+        assert_eq!(dag.node_count(), 16);
+
+        // Each internal pixel has 2 edges (right and down)
+        // Edge count: (4-1)*4 + 4*(4-1) = 12 + 12 = 24 edges
+        // But edge and internal nodes... let's just verify it has edges
+        assert!(dag.edge_count() > 0);
+    }
+
+    #[test]
+    fn test_from_mnist_dimensions() {
+        // MNIST is 28x28 = 784 pixels
+        let pixels = vec![0.5_f32; 784];
+        let dag = DagNN::from_mnist(&pixels).unwrap();
+
+        assert_eq!(dag.input_nodes().len(), 784);
+
+        // Verify pixel intensities are set correctly
+        for &node_id in dag.input_nodes() {
+            let node = &dag.graph[node_id];
+            assert!((node.activation - 0.5).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_from_mnist_wrong_size() {
+        let pixels = vec![0.5_f32; 100]; // Wrong size
+        let result = DagNN::from_mnist(&pixels);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_mnist_with_classifier() {
+        let pixels = vec![0.1_f32; 784];
+        let dag = DagNN::from_mnist_with_classifier(&pixels, 64).unwrap();
+
+        // Should have 784 input + 64 hidden + 10 output nodes
+        assert!(dag.node_count() > 784 + 64 + 10 - 1); // At least this many
+
+        // Should have 10 output nodes
+        assert_eq!(dag.output_nodes().len(), 10);
+
+        // All output nodes should be ClassOutput type
+        for &out_id in dag.output_nodes() {
+            let node = &dag.graph[out_id];
+            assert!(matches!(node.node_type, NodeType::ClassOutput(_)));
+        }
+    }
+
+    #[test]
+    fn test_image_grid_topology() {
+        // 3x3 image to manually verify edges
+        let pixels = vec![0.0_f32; 9];
+        let dag = DagNN::from_image(&pixels, 3, 3).unwrap();
+
+        // Nodes are in row-major order: 0,1,2,3,4,5,6,7,8
+        // Pixel at (0,0) should connect to (0,1) and (1,0)
+        // Pixel at (1,1) should connect to (1,2) and (2,1)
+        // Last row/col should only have one or zero outgoing edges
+
+        // Total edges: horizontal (3-1)*3=6, vertical 3*(3-1)=6 = 12 edges
+        assert_eq!(dag.edge_count(), 12);
+    }
+
+    #[test]
+    fn test_mnist_classification_forward() {
+        // Create a simple MNIST classifier and run forward pass
+        let pixels = vec![0.5_f32; 784];
+        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+
+        // Run forward pass
+        let result = dag.neuromorphic_forward();
+        assert!(result.is_ok());
+
+        // Get logits
+        let logits = dag.get_classification_logits();
+        assert_eq!(logits.len(), 10);
+
+        // All logits should be finite (not NaN or inf)
+        for &logit in &logits {
+            assert!(logit.is_finite(), "Logit should be finite");
+        }
+    }
+
+    #[test]
+    fn test_predict_class() {
+        let pixels = vec![0.5_f32; 784];
+        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let predicted = dag.predict_class();
+        assert!(predicted < 10); // Should be a valid class
+    }
+
+    // ========================================================================
+    // Classification Utilities Tests (Backend-113)
+    // ========================================================================
+
+    #[test]
+    fn test_softmax_basic() {
+        let logits = vec![1.0, 2.0, 3.0];
+        let probs = softmax(&logits);
+
+        // Should sum to 1
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+
+        // Higher logit should have higher probability
+        assert!(probs[2] > probs[1]);
+        assert!(probs[1] > probs[0]);
+    }
+
+    #[test]
+    fn test_softmax_numerical_stability() {
+        // Large values that would overflow without log-sum-exp trick
+        let logits = vec![1000.0, 1001.0, 1002.0];
+        let probs = softmax(&logits);
+
+        // Should not be NaN or inf
+        for &p in &probs {
+            assert!(p.is_finite());
+            assert!(p >= 0.0);
+            assert!(p <= 1.0);
+        }
+
+        // Should still sum to 1
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_softmax_empty() {
+        let logits: Vec<f32> = vec![];
+        let probs = softmax(&logits);
+        assert!(probs.is_empty());
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_correct() {
+        // Perfect prediction: all mass on correct class
+        let logits = vec![-100.0, 100.0, -100.0]; // After softmax, [~0, ~1, ~0]
+        let loss = cross_entropy_loss(&logits, 1);
+
+        // Loss should be close to 0
+        assert!(loss < 0.01, "Loss for correct prediction should be low");
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_incorrect() {
+        // Wrong prediction: high mass on wrong class
+        let logits = vec![100.0, -100.0, -100.0]; // After softmax, [~1, ~0, ~0]
+        let loss = cross_entropy_loss(&logits, 1); // But target is class 1
+
+        // Loss should be high
+        assert!(loss > 1.0, "Loss for wrong prediction should be high");
+    }
+
+    #[test]
+    fn test_cross_entropy_with_gradient() {
+        let logits = vec![1.0, 2.0, 3.0];
+        let target = 1;
+        let (loss, grad) = cross_entropy_loss_with_grad(&logits, target);
+
+        // Loss should be positive
+        assert!(loss > 0.0);
+
+        // Gradient should have same length as logits
+        assert_eq!(grad.len(), 3);
+
+        // Gradient for target class should be negative (prob - 1 < 0)
+        assert!(grad[target] < 0.0);
+
+        // Gradients for non-target classes should be positive (prob > 0)
+        assert!(grad[0] > 0.0);
+        assert!(grad[2] > 0.0);
+
+        // Gradients should sum to 0
+        let grad_sum: f32 = grad.iter().sum();
+        assert!(grad_sum.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_accuracy() {
+        let predictions = vec![0, 1, 2, 1, 0];
+        let targets = vec![0, 1, 1, 1, 1]; // 3 correct out of 5
+
+        let accuracy = compute_accuracy(&predictions, &targets);
+        assert!((accuracy - 0.6).abs() < 1e-6); // 3/5 = 0.6
+    }
+
+    #[test]
+    fn test_compute_accuracy_perfect() {
+        let predictions = vec![0, 1, 2];
+        let targets = vec![0, 1, 2];
+
+        let accuracy = compute_accuracy(&predictions, &targets);
+        assert!((accuracy - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_accuracy_empty() {
+        let predictions: Vec<usize> = vec![];
+        let targets: Vec<usize> = vec![];
+
+        let accuracy = compute_accuracy(&predictions, &targets);
+        assert!((accuracy - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_classification_config_builder() {
+        let config = ClassificationConfig::new(0.001)
+            .with_hidden_size(256)
+            .with_batch_size(64)
+            .with_epochs(20)
+            .with_hebbian(0.2);
+
+        assert!((config.learning_rate - 0.001).abs() < 1e-6);
+        assert_eq!(config.hidden_size, 256);
+        assert_eq!(config.batch_size, 64);
+        assert_eq!(config.epochs, 20);
+        assert!(config.use_hebbian);
+        assert!((config.hebbian_weight - 0.2).abs() < 1e-6);
     }
 }

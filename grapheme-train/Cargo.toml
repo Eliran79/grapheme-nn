@@ -14,8 +14,11 @@ serde_json.workspace = true
 rayon.workspace = true
 petgraph.workspace = true
 ndarray.workspace = true
+rand.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 toml = "0.8"
+mnist = "0.6"
+indicatif = "0.17"
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }
@@ -47,3 +50,7 @@ path = "src/bin/validate.rs"
 [[bin]]
 name = "repl"
 path = "src/bin/repl.rs"
+
+[[bin]]
+name = "train_mnist"
+path = "src/bin/train_mnist.rs"
