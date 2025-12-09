@@ -1353,6 +1353,281 @@ impl DagNN {
             .count()
     }
 
+    // ========================================================================
+    // Neurogenesis (Smart Node/Edge Addition) - Backend-110
+    // ========================================================================
+
+    /// Insert a hidden node between two connected nodes (neurogenesis).
+    ///
+    /// In biological neural networks, new neurons can grow to improve
+    /// information processing. This method inserts a new hidden node
+    /// between an existing source and target, creating a two-hop path.
+    ///
+    /// # Arguments
+    /// * `source` - Source node of existing edge
+    /// * `target` - Target node of existing edge
+    /// * `activation_fn` - Activation function for the new node
+    ///
+    /// # Returns
+    /// The NodeId of the newly created hidden node, or None if no edge exists
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("ab").unwrap();
+    /// let a = dag.input_nodes()[0];
+    /// let b = dag.input_nodes()[1];
+    /// // Insert hidden node between a and b
+    /// if let Some(hidden) = dag.grow_node_between(a, b, ActivationFn::ReLU) {
+    ///     println!("Created new neuron: {:?}", hidden);
+    /// }
+    /// ```
+    pub fn grow_node_between(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        activation_fn: ActivationFn,
+    ) -> Option<NodeId> {
+        // Find the edge between source and target
+        let edge_idx = self.graph.find_edge(source, target)?;
+        let old_edge = self.graph[edge_idx].clone();
+
+        // Create new hidden node
+        let hidden = self.add_hidden_with_activation(activation_fn);
+
+        // Remove old edge
+        self.graph.remove_edge(edge_idx);
+
+        // Add two new edges: source -> hidden -> target
+        // Split the weight between the two new edges
+        let half_weight = old_edge.weight / 2.0;
+        self.graph
+            .add_edge(source, hidden, Edge::new(half_weight, old_edge.edge_type));
+        self.graph
+            .add_edge(hidden, target, Edge::new(half_weight, old_edge.edge_type));
+
+        // Update topology
+        let _ = self.update_topology();
+
+        Some(hidden)
+    }
+
+    /// Add a hidden node with a specific activation function.
+    pub fn add_hidden_with_activation(&mut self, activation_fn: ActivationFn) -> NodeId {
+        let mut node = Node::hidden();
+        node.activation_fn = activation_fn;
+        self.graph.add_node(node)
+    }
+
+    /// Add a shortcut/skip connection between two nodes (neurogenesis).
+    ///
+    /// Creates a direct edge between two nodes that may not be directly
+    /// connected. This enables gradient shortcuts (like ResNet skip connections)
+    /// and can help with vanishing gradient problems.
+    ///
+    /// # Arguments
+    /// * `source` - Source node
+    /// * `target` - Target node
+    /// * `weight` - Initial edge weight
+    ///
+    /// # Returns
+    /// true if edge was added, false if edge already exists or would create cycle
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// let a = dag.input_nodes()[0];
+    /// let c = dag.input_nodes()[2];
+    /// // Add skip connection from a directly to c
+    /// dag.grow_shortcut_edge(a, c, 0.1);
+    /// ```
+    pub fn grow_shortcut_edge(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        weight: f32,
+    ) -> bool {
+        // Check if edge already exists
+        if self.graph.find_edge(source, target).is_some() {
+            return false;
+        }
+
+        // Check if this would create a cycle (target -> source path exists)
+        // Use a simple DFS to check reachability
+        if self.has_path(target, source) {
+            return false; // Would create cycle
+        }
+
+        // Add the shortcut edge
+        self.graph
+            .add_edge(source, target, Edge::new(weight, EdgeType::Sequential));
+
+        // Update topology
+        let _ = self.update_topology();
+
+        true
+    }
+
+    /// Check if there's a path from source to target (for cycle detection).
+    fn has_path(&self, source: NodeId, target: NodeId) -> bool {
+        use petgraph::visit::Dfs;
+
+        let mut dfs = Dfs::new(&self.graph, source);
+        while let Some(node) = dfs.next(&self.graph) {
+            if node == target {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Grow nodes at high-gradient locations (loss-guided neurogenesis).
+    ///
+    /// Analyzes gradient magnitudes and inserts new hidden nodes at edges
+    /// where gradients are large (indicating the network needs more capacity
+    /// to fit the data at those locations).
+    ///
+    /// # Arguments
+    /// * `edge_grads` - Gradient magnitudes for each edge
+    /// * `threshold` - Minimum gradient to trigger neurogenesis
+    /// * `max_new_nodes` - Maximum number of new nodes to add
+    ///
+    /// # Returns
+    /// Vector of newly created node IDs
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// // After computing gradients during backward pass
+    /// let new_nodes = dag.neurogenesis_from_gradient(&edge_grads, 0.5, 3);
+    /// println!("Added {} new neurons", new_nodes.len());
+    /// ```
+    pub fn neurogenesis_from_gradient(
+        &mut self,
+        edge_grads: &HashMap<(NodeId, NodeId), f32>,
+        threshold: f32,
+        max_new_nodes: usize,
+    ) -> Vec<NodeId> {
+        if max_new_nodes == 0 {
+            return vec![];
+        }
+
+        // Collect edges with gradients above threshold, sorted by gradient magnitude
+        let mut high_grad_edges: Vec<_> = edge_grads
+            .iter()
+            .filter(|(_, &grad)| grad.abs() >= threshold)
+            .map(|(&(src, tgt), &grad)| (src, tgt, grad.abs()))
+            .collect();
+
+        // Sort by gradient magnitude (descending)
+        high_grad_edges.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Add new nodes at highest gradient edges
+        let mut new_nodes = Vec::new();
+
+        for (source, target, _grad) in high_grad_edges.into_iter().take(max_new_nodes) {
+            // Only add if edge still exists (previous growth may have removed it)
+            if self.graph.find_edge(source, target).is_some() {
+                if let Some(node) = self.grow_node_between(source, target, ActivationFn::ReLU) {
+                    new_nodes.push(node);
+                }
+            }
+        }
+
+        new_nodes
+    }
+
+    /// Grow skip connections to high-gradient nodes (shortcut neurogenesis).
+    ///
+    /// Adds skip connections from input nodes to hidden nodes that have
+    /// high gradients, enabling better gradient flow.
+    ///
+    /// # Arguments
+    /// * `node_grads` - Gradient magnitudes for each node
+    /// * `threshold` - Minimum gradient to trigger skip connection
+    /// * `max_shortcuts` - Maximum number of shortcuts to add
+    /// * `weight` - Weight for new shortcut edges
+    ///
+    /// # Returns
+    /// Number of shortcuts added
+    pub fn grow_shortcuts_from_gradient(
+        &mut self,
+        node_grads: &HashMap<NodeId, f32>,
+        threshold: f32,
+        max_shortcuts: usize,
+        weight: f32,
+    ) -> usize {
+        if max_shortcuts == 0 || self.input_nodes.is_empty() {
+            return 0;
+        }
+
+        // Collect nodes with high gradients that aren't inputs
+        let mut high_grad_nodes: Vec<_> = node_grads
+            .iter()
+            .filter(|(&node, &grad)| {
+                grad.abs() >= threshold && !self.input_nodes_set.contains(&node)
+            })
+            .map(|(&node, &grad)| (node, grad.abs()))
+            .collect();
+
+        // Sort by gradient magnitude (descending)
+        high_grad_nodes.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut shortcuts_added = 0;
+
+        for (target_node, _grad) in high_grad_nodes.into_iter().take(max_shortcuts) {
+            // Try to add shortcut from each input until one succeeds
+            for &input in &self.input_nodes.clone() {
+                if self.grow_shortcut_edge(input, target_node, weight) {
+                    shortcuts_added += 1;
+                    break; // One shortcut per target node
+                }
+            }
+        }
+
+        shortcuts_added
+    }
+
+    /// Get statistics about network structure for monitoring growth/pruning.
+    ///
+    /// # Returns
+    /// Tuple of (node_count, edge_count, avg_in_degree, avg_out_degree, max_depth)
+    pub fn structure_stats(&self) -> (usize, usize, f32, f32, usize) {
+        use petgraph::Direction;
+
+        let node_count = self.graph.node_count();
+        let edge_count = self.graph.edge_count();
+
+        if node_count == 0 {
+            return (0, 0, 0.0, 0.0, 0);
+        }
+
+        let total_in: usize = self
+            .graph
+            .node_indices()
+            .map(|n| self.graph.edges_directed(n, Direction::Incoming).count())
+            .sum();
+
+        let total_out: usize = self
+            .graph
+            .node_indices()
+            .map(|n| self.graph.edges_directed(n, Direction::Outgoing).count())
+            .sum();
+
+        let avg_in = total_in as f32 / node_count as f32;
+        let avg_out = total_out as f32 / node_count as f32;
+
+        // Calculate max depth (longest path from any input)
+        let max_depth = self.topology.order.len();
+
+        (node_count, edge_count, avg_in, avg_out, max_depth)
+    }
+
     /// Get the number of nodes
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
@@ -10345,5 +10620,259 @@ mod tests {
         // Topology should still be valid
         let result = dag.update_topology();
         assert!(result.is_ok(), "Topology should remain valid after orphan removal");
+    }
+
+    // ========================================================================
+    // Neurogenesis Tests (Backend-110)
+    // ========================================================================
+
+    #[test]
+    fn test_grow_node_between_basic() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        let initial_nodes = dag.node_count();
+        let initial_edges = dag.edge_count();
+
+        // Grow a hidden node between a and b
+        let hidden = dag.grow_node_between(a, b, ActivationFn::ReLU);
+
+        assert!(hidden.is_some(), "Should create a hidden node");
+        assert_eq!(dag.node_count(), initial_nodes + 1, "Should have 1 more node");
+        assert_eq!(dag.edge_count(), initial_edges + 1, "Should have 1 more edge (2 - 1 = +1)");
+
+        // Verify path: a -> hidden -> b
+        let h = hidden.unwrap();
+        assert!(dag.graph.find_edge(a, h).is_some(), "Edge a -> hidden should exist");
+        assert!(dag.graph.find_edge(h, b).is_some(), "Edge hidden -> b should exist");
+        assert!(dag.graph.find_edge(a, b).is_none(), "Direct edge a -> b should be removed");
+    }
+
+    #[test]
+    fn test_grow_node_between_no_edge() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, c) = (inputs[0], inputs[2]);
+
+        // No direct edge between a and c
+        let hidden = dag.grow_node_between(a, c, ActivationFn::ReLU);
+
+        assert!(hidden.is_none(), "Should return None when no edge exists");
+    }
+
+    #[test]
+    fn test_grow_node_between_preserves_weight() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        // Set a specific weight
+        let edge_idx = dag.graph.find_edge(a, b).unwrap();
+        dag.graph[edge_idx].weight = 2.0;
+
+        let hidden = dag.grow_node_between(a, b, ActivationFn::ReLU).unwrap();
+
+        // New edges should each have half the original weight
+        let e1_idx = dag.graph.find_edge(a, hidden).unwrap();
+        let e2_idx = dag.graph.find_edge(hidden, b).unwrap();
+
+        assert!((dag.graph[e1_idx].weight - 1.0).abs() < 1e-6, "First edge should be half weight");
+        assert!((dag.graph[e2_idx].weight - 1.0).abs() < 1e-6, "Second edge should be half weight");
+    }
+
+    #[test]
+    fn test_grow_shortcut_edge_basic() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, c) = (inputs[0], inputs[2]);
+
+        let initial_edges = dag.edge_count();
+
+        // Add skip connection a -> c
+        let added = dag.grow_shortcut_edge(a, c, 0.5);
+
+        assert!(added, "Should successfully add shortcut");
+        assert_eq!(dag.edge_count(), initial_edges + 1, "Should have 1 more edge");
+        assert!(dag.graph.find_edge(a, c).is_some(), "Shortcut edge should exist");
+    }
+
+    #[test]
+    fn test_grow_shortcut_edge_duplicate() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        // Edge already exists
+        let added = dag.grow_shortcut_edge(a, b, 0.5);
+
+        assert!(!added, "Should not add duplicate edge");
+    }
+
+    #[test]
+    fn test_grow_shortcut_edge_prevents_cycle() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        // Try to add b -> a (would create cycle since a -> b exists)
+        let added = dag.grow_shortcut_edge(b, a, 0.5);
+
+        assert!(!added, "Should not add edge that creates cycle");
+    }
+
+    #[test]
+    fn test_has_path() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b, c) = (inputs[0], inputs[1], inputs[2]);
+
+        assert!(dag.has_path(a, b), "Path a -> b should exist");
+        assert!(dag.has_path(a, c), "Path a -> c should exist (via b)");
+        assert!(dag.has_path(b, c), "Path b -> c should exist");
+        assert!(!dag.has_path(c, a), "No path c -> a (reverse)");
+        assert!(!dag.has_path(b, a), "No path b -> a (reverse)");
+    }
+
+    #[test]
+    fn test_neurogenesis_from_gradient_basic() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        // Create gradient map with high gradient on a->b edge
+        let mut edge_grads = HashMap::new();
+        edge_grads.insert((a, b), 1.0);
+
+        let initial_nodes = dag.node_count();
+
+        let new_nodes = dag.neurogenesis_from_gradient(&edge_grads, 0.5, 1);
+
+        assert_eq!(new_nodes.len(), 1, "Should create 1 new node");
+        assert_eq!(dag.node_count(), initial_nodes + 1);
+    }
+
+    #[test]
+    fn test_neurogenesis_from_gradient_threshold() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+        let (a, b) = (inputs[0], inputs[1]);
+
+        // Create gradient map with low gradient
+        let mut edge_grads = HashMap::new();
+        edge_grads.insert((a, b), 0.1);
+
+        let new_nodes = dag.neurogenesis_from_gradient(&edge_grads, 0.5, 1);
+
+        assert!(new_nodes.is_empty(), "Should not create node below threshold");
+    }
+
+    #[test]
+    fn test_neurogenesis_from_gradient_max_limit() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("abcd").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // High gradients on all edges
+        let mut edge_grads = HashMap::new();
+        edge_grads.insert((inputs[0], inputs[1]), 1.0);
+        edge_grads.insert((inputs[1], inputs[2]), 1.0);
+        edge_grads.insert((inputs[2], inputs[3]), 1.0);
+
+        // But only allow 2 new nodes
+        let new_nodes = dag.neurogenesis_from_gradient(&edge_grads, 0.5, 2);
+
+        assert_eq!(new_nodes.len(), 2, "Should respect max_new_nodes limit");
+    }
+
+    #[test]
+    fn test_grow_shortcuts_from_gradient_basic() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Add a hidden node
+        let hidden = dag.add_hidden();
+        dag.add_edge(inputs[1], hidden, Edge::sequential());
+        dag.update_topology().unwrap();
+
+        // Create node gradient map with high gradient on hidden
+        let mut node_grads = HashMap::new();
+        node_grads.insert(hidden, 1.0);
+
+        let added = dag.grow_shortcuts_from_gradient(&node_grads, 0.5, 1, 0.1);
+
+        assert_eq!(added, 1, "Should add 1 shortcut");
+    }
+
+    #[test]
+    fn test_structure_stats() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        let (nodes, edges, avg_in, avg_out, depth) = dag.structure_stats();
+
+        assert_eq!(nodes, 3);
+        assert_eq!(edges, 2);
+        assert!(avg_in >= 0.0);
+        assert!(avg_out >= 0.0);
+        assert!(depth >= 3); // At least 3 nodes in order
+    }
+
+    #[test]
+    fn test_structure_stats_empty() {
+        let dag = DagNN::new();
+
+        let (nodes, edges, avg_in, avg_out, depth) = dag.structure_stats();
+
+        assert_eq!(nodes, 0);
+        assert_eq!(edges, 0);
+        assert_eq!(avg_in, 0.0);
+        assert_eq!(avg_out, 0.0);
+        assert_eq!(depth, 0);
+    }
+
+    #[test]
+    fn test_add_hidden_with_activation() {
+        let mut dag = DagNN::new();
+
+        let relu_node = dag.add_hidden_with_activation(ActivationFn::ReLU);
+        let sigmoid_node = dag.add_hidden_with_activation(ActivationFn::Sigmoid);
+
+        assert_eq!(dag.graph[relu_node].activation_fn, ActivationFn::ReLU);
+        assert_eq!(dag.graph[sigmoid_node].activation_fn, ActivationFn::Sigmoid);
+    }
+
+    #[test]
+    fn test_grow_then_prune_cycle() {
+        // Integration test: grow nodes, then prune them
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        let initial_nodes = dag.node_count();
+
+        // Grow some nodes
+        dag.grow_node_between(inputs[0], inputs[1], ActivationFn::ReLU);
+        dag.grow_node_between(inputs[1], inputs[2], ActivationFn::ReLU);
+
+        assert_eq!(dag.node_count(), initial_nodes + 2);
+
+        // Set all new edge weights to zero
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 0.0;
+        }
+
+        // Prune edges
+        dag.prune_edges_by_threshold(0.01);
+
+        // Remove orphans
+        let removed = dag.remove_orphaned_nodes();
+
+        assert!(removed >= 2, "Should remove the grown nodes after pruning");
     }
 }

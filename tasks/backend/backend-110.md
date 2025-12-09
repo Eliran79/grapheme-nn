@@ -1,7 +1,7 @@
 ---
 id: backend-110
 title: Implement structural-loss-guided neurogenesis (smart node/edge addition)
-status: todo
+status: done
 priority: critical
 tags:
 - backend
