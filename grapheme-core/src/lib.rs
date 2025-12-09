@@ -788,6 +788,308 @@ impl DagNN {
         self.init_edge_weights(InitStrategy::He);
     }
 
+    // ========================================================================
+    // Edge Weight Pruning (Synaptic Plasticity) - Backend-108
+    // ========================================================================
+
+    /// Prune edges with absolute weight below threshold (synaptic plasticity).
+    ///
+    /// In biological neural networks, synapses that are rarely used or weakly
+    /// connected get pruned over time. This implements that mechanism by
+    /// removing edges with weights close to zero.
+    ///
+    /// # Arguments
+    /// * `threshold` - Minimum absolute weight to keep (edges with |weight| < threshold are removed)
+    ///
+    /// # Returns
+    /// Number of edges pruned
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// dag.init_edge_weights_xavier();
+    /// // After training, prune weak connections
+    /// let pruned = dag.prune_edges_by_threshold(0.01);
+    /// println!("Pruned {} weak synapses", pruned);
+    /// ```
+    ///
+    /// # Note
+    /// - This may disconnect parts of the graph
+    /// - Topology is automatically updated after pruning
+    /// - Input nodes are never pruned (only their outgoing edges may be)
+    pub fn prune_edges_by_threshold(&mut self, threshold: f32) -> usize {
+        // Collect edges to remove (can't modify while iterating)
+        let edges_to_remove: Vec<_> = self
+            .graph
+            .edge_indices()
+            .filter(|&edge_idx| {
+                let weight = self.graph[edge_idx].weight;
+                weight.abs() < threshold
+            })
+            .collect();
+
+        let pruned_count = edges_to_remove.len();
+
+        // Remove edges in reverse order to keep indices valid
+        for edge_idx in edges_to_remove.into_iter().rev() {
+            self.graph.remove_edge(edge_idx);
+        }
+
+        // Update topology after structural change
+        if pruned_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        pruned_count
+    }
+
+    /// Prune a percentage of weakest edges (synaptic plasticity).
+    ///
+    /// More aggressive than threshold-based pruning. Removes the bottom
+    /// percentile of edges by absolute weight, regardless of their actual
+    /// values.
+    ///
+    /// # Arguments
+    /// * `percentile` - Fraction of edges to prune (0.0 to 1.0)
+    ///
+    /// # Returns
+    /// Number of edges pruned
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// dag.init_edge_weights_xavier();
+    /// // Prune bottom 10% of connections
+    /// let pruned = dag.prune_edges_by_percentile(0.10);
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if percentile is not in range [0.0, 1.0]
+    pub fn prune_edges_by_percentile(&mut self, percentile: f32) -> usize {
+        assert!(
+            (0.0..=1.0).contains(&percentile),
+            "Percentile must be between 0.0 and 1.0"
+        );
+
+        if self.graph.edge_count() == 0 {
+            return 0;
+        }
+
+        // Collect edge weights with indices
+        let mut edge_weights: Vec<_> = self
+            .graph
+            .edge_indices()
+            .map(|idx| (idx, self.graph[idx].weight.abs()))
+            .collect();
+
+        // Sort by absolute weight (ascending)
+        edge_weights.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Calculate how many to prune
+        let n_to_prune = (edge_weights.len() as f32 * percentile).ceil() as usize;
+
+        if n_to_prune == 0 {
+            return 0;
+        }
+
+        // Collect edge indices to remove (the n_to_prune weakest edges)
+        let edges_to_remove: Vec<_> = edge_weights
+            .iter()
+            .take(n_to_prune)
+            .map(|(idx, _)| *idx)
+            .collect();
+
+        let pruned_count = edges_to_remove.len();
+
+        // Remove edges in reverse order to keep indices valid
+        // We need to sort by index in reverse order for safe removal
+        let mut edges_to_remove = edges_to_remove;
+        edges_to_remove.sort_by(|a, b| b.cmp(a)); // Sort descending by index
+
+        for edge_idx in edges_to_remove {
+            self.graph.remove_edge(edge_idx);
+        }
+
+        // Update topology after structural change
+        if pruned_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        pruned_count
+    }
+
+    /// Prune edges based on activity correlation (Hebbian plasticity).
+    ///
+    /// "Neurons that fire together, wire together" - edges between nodes
+    /// with low activation correlation are pruned. This requires running
+    /// forward passes first to populate activation values.
+    ///
+    /// # Arguments
+    /// * `min_correlation` - Minimum correlation to keep edge (0.0 to 1.0)
+    /// * `activations` - History of activation values for each node
+    ///
+    /// # Returns
+    /// Number of edges pruned
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("abc").unwrap();
+    /// // Run several forward passes, collect activations
+    /// let history: Vec<HashMap<NodeId, f32>> = ...;
+    /// let pruned = dag.prune_edges_by_correlation(0.3, &history);
+    /// ```
+    pub fn prune_edges_by_correlation(
+        &mut self,
+        min_correlation: f32,
+        activation_history: &[HashMap<NodeId, f32>],
+    ) -> usize {
+        if activation_history.is_empty() {
+            return 0;
+        }
+
+        // Calculate correlation for each edge
+        let edges_to_remove: Vec<_> = self
+            .graph
+            .edge_indices()
+            .filter(|&edge_idx| {
+                let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+
+                // Get activation vectors for source and target
+                let source_acts: Vec<f32> = activation_history
+                    .iter()
+                    .map(|h| *h.get(&source).unwrap_or(&0.0))
+                    .collect();
+                let target_acts: Vec<f32> = activation_history
+                    .iter()
+                    .map(|h| *h.get(&target).unwrap_or(&0.0))
+                    .collect();
+
+                // Calculate Pearson correlation
+                let correlation = Self::pearson_correlation(&source_acts, &target_acts);
+
+                // Prune if correlation is below threshold
+                correlation.abs() < min_correlation
+            })
+            .collect();
+
+        let pruned_count = edges_to_remove.len();
+
+        // Remove edges
+        for edge_idx in edges_to_remove.into_iter().rev() {
+            self.graph.remove_edge(edge_idx);
+        }
+
+        if pruned_count > 0 {
+            let _ = self.update_topology();
+        }
+
+        pruned_count
+    }
+
+    /// Calculate Pearson correlation coefficient between two vectors.
+    fn pearson_correlation(x: &[f32], y: &[f32]) -> f32 {
+        let n = x.len() as f32;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let sum_x: f32 = x.iter().sum();
+        let sum_y: f32 = y.iter().sum();
+        let sum_xy: f32 = x.iter().zip(y.iter()).map(|(a, b)| a * b).sum();
+        let sum_x2: f32 = x.iter().map(|a| a * a).sum();
+        let sum_y2: f32 = y.iter().map(|a| a * a).sum();
+
+        let numerator = n * sum_xy - sum_x * sum_y;
+        let denominator =
+            ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
+
+        if denominator.abs() < 1e-10 {
+            0.0
+        } else {
+            numerator / denominator
+        }
+    }
+
+    /// Get statistics about edge weights for monitoring pruning decisions.
+    ///
+    /// # Returns
+    /// Tuple of (min, max, mean, std_dev, median)
+    pub fn edge_weight_stats(&self) -> (f32, f32, f32, f32, f32) {
+        if self.graph.edge_count() == 0 {
+            return (0.0, 0.0, 0.0, 0.0, 0.0);
+        }
+
+        let mut weights: Vec<f32> = self
+            .graph
+            .edge_indices()
+            .map(|idx| self.graph[idx].weight)
+            .collect();
+
+        let min = weights.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum: f32 = weights.iter().sum();
+        let mean = sum / weights.len() as f32;
+
+        let variance: f32 = weights.iter().map(|w| (w - mean).powi(2)).sum::<f32>()
+            / weights.len() as f32;
+        let std_dev = variance.sqrt();
+
+        // Median
+        weights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if weights.len() % 2 == 0 {
+            (weights[weights.len() / 2 - 1] + weights[weights.len() / 2]) / 2.0
+        } else {
+            weights[weights.len() / 2]
+        };
+
+        (min, max, mean, std_dev, median)
+    }
+
+    /// Count edges by weight range for histogram analysis.
+    ///
+    /// # Arguments
+    /// * `n_bins` - Number of bins to divide the weight range into
+    ///
+    /// # Returns
+    /// Vector of (bin_start, bin_end, count) tuples
+    pub fn edge_weight_histogram(&self, n_bins: usize) -> Vec<(f32, f32, usize)> {
+        if self.graph.edge_count() == 0 || n_bins == 0 {
+            return vec![];
+        }
+
+        let weights: Vec<f32> = self
+            .graph
+            .edge_indices()
+            .map(|idx| self.graph[idx].weight)
+            .collect();
+
+        let min = weights.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        if (max - min).abs() < 1e-10 {
+            // All weights are the same
+            return vec![(min, max, weights.len())];
+        }
+
+        let bin_width = (max - min) / n_bins as f32;
+        let mut bins = vec![0usize; n_bins];
+
+        for &w in &weights {
+            let bin_idx = ((w - min) / bin_width).floor() as usize;
+            let bin_idx = bin_idx.min(n_bins - 1); // Clamp to last bin
+            bins[bin_idx] += 1;
+        }
+
+        bins.iter()
+            .enumerate()
+            .map(|(i, &count)| {
+                let start = min + i as f32 * bin_width;
+                let end = start + bin_width;
+                (start, end, count)
+            })
+            .collect()
+    }
+
     /// Get the number of nodes
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
@@ -9287,5 +9589,268 @@ mod tests {
         let edge_weight = dag.graph.edges(input).next().unwrap().weight().weight;
         let expected = edge_weight.max(0.0); // ReLU
         assert!((dag.graph[hidden].activation - expected).abs() < 1e-6);
+    }
+
+    // ========================================================================
+    // Edge Weight Pruning Tests (Backend-108)
+    // ========================================================================
+
+    #[test]
+    fn test_prune_edges_by_threshold_basic() {
+        // Create a graph with known edge weights
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let initial_edges = dag.edge_count();
+        assert_eq!(initial_edges, 2, "abc should have 2 sequential edges");
+
+        // Set one edge to small weight, one to large
+        let edge_indices: Vec<_> = dag.graph.edge_indices().collect();
+        dag.graph[edge_indices[0]].weight = 0.001; // Small - should be pruned
+        dag.graph[edge_indices[1]].weight = 1.0;   // Large - should remain
+
+        // Prune edges below 0.01
+        let pruned = dag.prune_edges_by_threshold(0.01);
+
+        assert_eq!(pruned, 1, "Should prune exactly 1 edge");
+        assert_eq!(dag.edge_count(), 1, "Should have 1 edge remaining");
+    }
+
+    #[test]
+    fn test_prune_edges_by_threshold_all() {
+        // All edges below threshold
+        let mut dag = DagNN::from_text("abc").unwrap();
+        dag.init_edge_weights(InitStrategy::Zero);
+
+        let pruned = dag.prune_edges_by_threshold(0.01);
+
+        assert_eq!(pruned, 2, "Should prune all zero edges");
+        assert_eq!(dag.edge_count(), 0, "Should have no edges remaining");
+    }
+
+    #[test]
+    fn test_prune_edges_by_threshold_none() {
+        // All edges above threshold
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Set all weights to large values
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 1.0;
+        }
+
+        let pruned = dag.prune_edges_by_threshold(0.01);
+
+        assert_eq!(pruned, 0, "Should prune no edges");
+        assert_eq!(dag.edge_count(), 2, "Should still have 2 edges");
+    }
+
+    #[test]
+    fn test_prune_edges_by_threshold_negative_weights() {
+        // Test with negative weights (inhibitory synapses)
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let edge_indices: Vec<_> = dag.graph.edge_indices().collect();
+
+        dag.graph[edge_indices[0]].weight = -0.001; // Small negative - should be pruned
+        dag.graph[edge_indices[1]].weight = -1.0;   // Large negative - should remain
+
+        let pruned = dag.prune_edges_by_threshold(0.01);
+
+        assert_eq!(pruned, 1, "Should prune small absolute weight edge");
+        assert_eq!(dag.edge_count(), 1, "Should have 1 edge remaining");
+    }
+
+    #[test]
+    fn test_prune_edges_by_percentile_basic() {
+        let mut dag = DagNN::from_text("abcd").unwrap();
+        assert_eq!(dag.edge_count(), 3, "abcd should have 3 edges");
+
+        // Set weights: 0.1, 0.5, 0.9
+        let edge_indices: Vec<_> = dag.graph.edge_indices().collect();
+        dag.graph[edge_indices[0]].weight = 0.1;
+        dag.graph[edge_indices[1]].weight = 0.5;
+        dag.graph[edge_indices[2]].weight = 0.9;
+
+        // Prune bottom 40% (should prune the 0.1 edge)
+        let pruned = dag.prune_edges_by_percentile(0.4);
+
+        assert!(pruned >= 1, "Should prune at least 1 edge");
+    }
+
+    #[test]
+    fn test_prune_edges_by_percentile_zero() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let initial_edges = dag.edge_count();
+
+        // Prune 0% - should prune nothing
+        let pruned = dag.prune_edges_by_percentile(0.0);
+
+        assert_eq!(pruned, 0, "0% percentile should prune nothing");
+        assert_eq!(dag.edge_count(), initial_edges);
+    }
+
+    #[test]
+    fn test_prune_edges_by_percentile_hundred() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Prune 100% - should prune everything
+        let pruned = dag.prune_edges_by_percentile(1.0);
+
+        assert_eq!(pruned, 2, "100% percentile should prune all edges");
+        assert_eq!(dag.edge_count(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Percentile must be between 0.0 and 1.0")]
+    fn test_prune_edges_by_percentile_invalid() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        dag.prune_edges_by_percentile(1.5); // Should panic
+    }
+
+    #[test]
+    fn test_prune_edges_by_correlation_basic() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let nodes = dag.input_nodes().to_vec();
+
+        // Create activation history with perfect correlation
+        let mut history = Vec::new();
+        for i in 0..10 {
+            let mut h = HashMap::new();
+            let val = i as f32 / 10.0;
+            h.insert(nodes[0], val);
+            h.insert(nodes[1], val); // Same pattern = high correlation
+            history.push(h);
+        }
+
+        // Prune with high correlation threshold - should keep correlated edge
+        let pruned = dag.prune_edges_by_correlation(0.9, &history);
+
+        assert_eq!(pruned, 0, "Highly correlated edge should not be pruned");
+    }
+
+    #[test]
+    fn test_prune_edges_by_correlation_uncorrelated() {
+        use std::collections::HashMap;
+
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let nodes = dag.input_nodes().to_vec();
+
+        // Create activation history with zero correlation
+        let mut history = Vec::new();
+        for i in 0..10 {
+            let mut h = HashMap::new();
+            h.insert(nodes[0], i as f32 / 10.0);
+            h.insert(nodes[1], 0.5); // Constant - zero correlation
+            history.push(h);
+        }
+
+        // Prune with correlation threshold - should prune uncorrelated
+        let pruned = dag.prune_edges_by_correlation(0.5, &history);
+
+        assert_eq!(pruned, 1, "Uncorrelated edge should be pruned");
+    }
+
+    #[test]
+    fn test_prune_edges_by_correlation_empty_history() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let initial_edges = dag.edge_count();
+
+        // Empty history should prune nothing
+        let pruned = dag.prune_edges_by_correlation(0.5, &[]);
+
+        assert_eq!(pruned, 0, "Empty history should prune nothing");
+        assert_eq!(dag.edge_count(), initial_edges);
+    }
+
+    #[test]
+    fn test_edge_weight_stats_basic() {
+        let mut dag = DagNN::from_text("abcd").unwrap();
+
+        // Set known weights: 0.1, 0.5, 0.9
+        let edge_indices: Vec<_> = dag.graph.edge_indices().collect();
+        dag.graph[edge_indices[0]].weight = 0.1;
+        dag.graph[edge_indices[1]].weight = 0.5;
+        dag.graph[edge_indices[2]].weight = 0.9;
+
+        let (min, max, mean, std_dev, median) = dag.edge_weight_stats();
+
+        assert!((min - 0.1).abs() < 1e-6, "Min should be 0.1");
+        assert!((max - 0.9).abs() < 1e-6, "Max should be 0.9");
+        assert!((mean - 0.5).abs() < 1e-6, "Mean should be 0.5");
+        assert!((median - 0.5).abs() < 1e-6, "Median should be 0.5");
+        assert!(std_dev > 0.0, "Std dev should be positive");
+    }
+
+    #[test]
+    fn test_edge_weight_stats_empty() {
+        let mut dag = DagNN::new();
+        let (min, max, mean, std_dev, median) = dag.edge_weight_stats();
+
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 0.0);
+        assert_eq!(mean, 0.0);
+        assert_eq!(std_dev, 0.0);
+        assert_eq!(median, 0.0);
+    }
+
+    #[test]
+    fn test_edge_weight_histogram_basic() {
+        let mut dag = DagNN::from_text("abcde").unwrap();
+
+        // Set weights: 0.0, 0.3, 0.6, 0.9 (4 edges)
+        let edge_indices: Vec<_> = dag.graph.edge_indices().collect();
+        dag.graph[edge_indices[0]].weight = 0.0;
+        dag.graph[edge_indices[1]].weight = 0.3;
+        dag.graph[edge_indices[2]].weight = 0.6;
+        dag.graph[edge_indices[3]].weight = 0.9;
+
+        let hist = dag.edge_weight_histogram(3);
+
+        assert_eq!(hist.len(), 3, "Should have 3 bins");
+        assert!(hist[0].2 >= 1, "First bin should have at least 1 edge");
+    }
+
+    #[test]
+    fn test_edge_weight_histogram_empty() {
+        let dag = DagNN::new();
+        let hist = dag.edge_weight_histogram(5);
+
+        assert!(hist.is_empty(), "Empty graph should have empty histogram");
+    }
+
+    #[test]
+    fn test_pruning_preserves_topology_consistency() {
+        // After pruning, topology should still be valid
+        let mut dag = DagNN::from_text("abcdef").unwrap();
+
+        // Set some weights to zero
+        for (i, edge_idx) in dag.graph.edge_indices().enumerate() {
+            if i % 2 == 0 {
+                dag.graph[edge_idx].weight = 0.0;
+            }
+        }
+
+        dag.prune_edges_by_threshold(0.01);
+
+        // Verify topology is consistent
+        let topo_result = dag.update_topology();
+        assert!(topo_result.is_ok(), "Topology should be valid after pruning");
+    }
+
+    #[test]
+    fn test_pearson_correlation() {
+        // Test the internal correlation function
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+        let corr = DagNN::pearson_correlation(&x, &y);
+        assert!((corr - 1.0).abs() < 1e-6, "Perfect positive correlation should be 1.0");
+
+        let y_neg = vec![5.0, 4.0, 3.0, 2.0, 1.0];
+        let corr_neg = DagNN::pearson_correlation(&x, &y_neg);
+        assert!((corr_neg - (-1.0)).abs() < 1e-6, "Perfect negative correlation should be -1.0");
+
+        let y_const = vec![3.0, 3.0, 3.0, 3.0, 3.0];
+        let corr_zero = DagNN::pearson_correlation(&x, &y_const);
+        assert!(corr_zero.abs() < 1e-6, "No correlation with constant should be 0.0");
     }
 }

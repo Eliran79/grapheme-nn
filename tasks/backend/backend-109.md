@@ -1,7 +1,7 @@
 ---
 id: backend-109
 title: Implement orphaned node removal (apoptosis)
-status: todo
+status: doing
 priority: high
 tags:
 - backend

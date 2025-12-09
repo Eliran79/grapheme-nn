@@ -1,7 +1,7 @@
 ---
 id: backend-108
 title: Implement edge weight pruning (synaptic plasticity)
-status: todo
+status: done
 priority: high
 tags:
 - backend
