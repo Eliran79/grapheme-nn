@@ -15,6 +15,7 @@ petgraph.workspace = true
 grapheme-core = { path = "../grapheme-core" }
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
+grapheme-brain-common = { path = "../grapheme-brain-common" }
 
 [dev-dependencies]
 criterion.workspace = true

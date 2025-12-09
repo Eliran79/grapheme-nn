@@ -1,7 +1,7 @@
 ---
 id: backend-129
 title: Migrate grapheme-math to use brain-common abstractions
-status: todo
+status: done
 priority: medium
 tags:
 - backend

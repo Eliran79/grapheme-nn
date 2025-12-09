@@ -393,6 +393,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "grapheme-brain-common",
  "grapheme-core",
  "grapheme-engine",
  "grapheme-polish",

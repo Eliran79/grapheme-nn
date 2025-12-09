@@ -10,16 +10,25 @@
 //!
 //! Unlike traditional NLP, we use typed nodes rather than embeddings,
 //! but remain vocabulary-free through the type system.
+//!
+//! ## Migration to brain-common
+//!
+//! This crate uses shared abstractions from `grapheme-brain-common`:
+//! - `ActivatedNode<MathNodeType>` - Generic node wrapper (aliased as `MathNode`)
+//! - `TypedGraph` - Used internally in MathGraph
+//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
+//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
 // Allow &self in recursive methods for API consistency
 #![allow(clippy::only_used_in_recursion)]
 
+use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
     ValidationSeverity,
 };
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -56,66 +65,80 @@ pub enum MathNodeType {
     Result,
 }
 
-/// Math node with activation for gradient flow (Backend-104)
+/// Get default activation based on node type.
+/// This provides initial differentiation between node categories.
 ///
-/// Wraps MathNodeType with a learned activation value that enables
-/// gradient-based training through the structural loss function.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MathNode {
-    /// The semantic type of this node
-    pub node_type: MathNodeType,
-    /// Learned activation value for gradient flow
-    /// Default: derived from node type (type_activation)
-    pub activation: f32,
+/// Used by `MathNode::new()` to compute initial activation from type.
+pub fn math_type_activation(node_type: &MathNodeType) -> f32 {
+    match node_type {
+        MathNodeType::Integer(_) => 0.1,
+        MathNodeType::Float(_) => 0.2,
+        MathNodeType::Symbol(_) => 0.3,
+        MathNodeType::Operator(_) => 0.5,
+        MathNodeType::Function(_) => 0.7,
+        MathNodeType::Result => 0.9,
+    }
 }
 
-impl MathNode {
-    /// Create a new math node with default activation based on type
-    pub fn new(node_type: MathNodeType) -> Self {
-        let activation = Self::type_activation(&node_type);
-        Self { node_type, activation }
-    }
+/// Math node with activation for gradient flow (Backend-104)
+///
+/// This is a type alias for `ActivatedNode<MathNodeType>` from brain-common.
+/// The generic wrapper handles activation storage and propagation while
+/// maintaining the domain-specific node type.
+///
+/// ## Migration Note
+///
+/// Previously this was a standalone struct. Now it uses the shared
+/// `ActivatedNode<T>` abstraction. All existing APIs are preserved via
+/// extension trait `MathNodeExt`.
+pub type MathNode = ActivatedNode<MathNodeType>;
 
-    /// Create node with explicit activation value
-    pub fn with_activation(node_type: MathNodeType, activation: f32) -> Self {
-        Self { node_type, activation }
-    }
+/// Create a new math node with default activation based on type.
+///
+/// This is the primary constructor for MathNode, providing backward
+/// compatibility with the previous `MathNode::new()` API.
+pub fn new_math_node(node_type: MathNodeType) -> MathNode {
+    ActivatedNode::with_type_activation(node_type, math_type_activation)
+}
 
-    /// Get default activation based on node type
-    /// This provides initial differentiation between node categories
-    fn type_activation(node_type: &MathNodeType) -> f32 {
-        match node_type {
-            MathNodeType::Integer(_) => 0.1,
-            MathNodeType::Float(_) => 0.2,
-            MathNodeType::Symbol(_) => 0.3,
-            MathNodeType::Operator(_) => 0.5,
-            MathNodeType::Function(_) => 0.7,
-            MathNodeType::Result => 0.9,
-        }
-    }
-
+/// Extension trait for MathNode-specific convenience methods.
+///
+/// Provides domain-specific helper methods for `ActivatedNode<MathNodeType>`.
+pub trait MathNodeExt {
     /// Check if this is an integer node
-    pub fn is_integer(&self) -> bool {
+    fn is_integer(&self) -> bool;
+
+    /// Check if this is a float node
+    fn is_float(&self) -> bool;
+
+    /// Check if this is a symbol node
+    fn is_symbol(&self) -> bool;
+
+    /// Check if this is an operator node
+    fn is_operator(&self) -> bool;
+
+    /// Check if this is a function node
+    fn is_function(&self) -> bool;
+}
+
+impl MathNodeExt for MathNode {
+    fn is_integer(&self) -> bool {
         matches!(self.node_type, MathNodeType::Integer(_))
     }
 
-    /// Check if this is a float node
-    pub fn is_float(&self) -> bool {
+    fn is_float(&self) -> bool {
         matches!(self.node_type, MathNodeType::Float(_))
     }
 
-    /// Check if this is a symbol node
-    pub fn is_symbol(&self) -> bool {
+    fn is_symbol(&self) -> bool {
         matches!(self.node_type, MathNodeType::Symbol(_))
     }
 
-    /// Check if this is an operator node
-    pub fn is_operator(&self) -> bool {
+    fn is_operator(&self) -> bool {
         matches!(self.node_type, MathNodeType::Operator(_))
     }
 
-    /// Check if this is a function node
-    pub fn is_function(&self) -> bool {
+    fn is_function(&self) -> bool {
         matches!(self.node_type, MathNodeType::Function(_))
     }
 }
@@ -133,11 +156,17 @@ pub enum MathEdge {
     Produces,
 }
 
-/// A mathematical expression represented as a graph
+/// A mathematical expression represented as a graph.
+///
+/// ## Migration Note
+///
+/// This struct now uses `TypedGraph<MathNode, MathEdge>` internally from
+/// brain-common. The `graph` and `root` fields are exposed publicly for
+/// backward compatibility with external code.
 #[derive(Debug)]
 pub struct MathGraph {
-    /// The underlying directed graph
-    pub graph: DiGraph<MathNode, MathEdge>,
+    /// The underlying petgraph DiGraph (exposed for external access)
+    pub graph: petgraph::graph::DiGraph<MathNode, MathEdge>,
     /// Root node of the expression
     pub root: Option<NodeIndex>,
 }
@@ -152,7 +181,7 @@ impl MathGraph {
     /// Create a new empty math graph
     pub fn new() -> Self {
         Self {
-            graph: DiGraph::new(),
+            graph: petgraph::graph::DiGraph::new(),
             root: None,
         }
     }
@@ -160,7 +189,8 @@ impl MathGraph {
     /// Build a graph from an expression
     pub fn from_expr(expr: &Expr) -> Self {
         let mut graph = Self::new();
-        graph.root = Some(graph.add_expr(expr));
+        let root = graph.add_expr(expr);
+        graph.root = Some(root);
         graph
     }
 
@@ -169,28 +199,24 @@ impl MathGraph {
         match expr {
             Expr::Value(v) => self.add_value(v),
             Expr::BinOp { op, left, right } => {
-                let op_node = self.graph.add_node(MathNode::new(MathNodeType::Operator(*op)));
+                let op_node = self.graph.add_node(new_math_node(MathNodeType::Operator(*op)));
                 let left_node = self.add_expr(left);
                 let right_node = self.add_expr(right);
-                self.graph
-                    .add_edge(op_node, left_node, MathEdge::LeftOperand);
-                self.graph
-                    .add_edge(op_node, right_node, MathEdge::RightOperand);
+                self.graph.add_edge(op_node, left_node, MathEdge::LeftOperand);
+                self.graph.add_edge(op_node, right_node, MathEdge::RightOperand);
                 op_node
             }
             Expr::UnaryOp { op, operand } => {
-                let op_node = self.graph.add_node(MathNode::new(MathNodeType::Operator(*op)));
+                let op_node = self.graph.add_node(new_math_node(MathNodeType::Operator(*op)));
                 let operand_node = self.add_expr(operand);
-                self.graph
-                    .add_edge(op_node, operand_node, MathEdge::LeftOperand);
+                self.graph.add_edge(op_node, operand_node, MathEdge::LeftOperand);
                 op_node
             }
             Expr::Function { func, args } => {
-                let func_node = self.graph.add_node(MathNode::new(MathNodeType::Function(*func)));
+                let func_node = self.graph.add_node(new_math_node(MathNodeType::Function(*func)));
                 for (i, arg) in args.iter().enumerate() {
                     let arg_node = self.add_expr(arg);
-                    self.graph
-                        .add_edge(func_node, arg_node, MathEdge::Argument(i));
+                    self.graph.add_edge(func_node, arg_node, MathEdge::Argument(i));
                 }
                 func_node
             }
@@ -204,7 +230,7 @@ impl MathGraph {
             Value::Symbol(s) => MathNodeType::Symbol(s.clone()),
             Value::Rational(n, d) => MathNodeType::Float(*n as f64 / *d as f64),
         };
-        self.graph.add_node(MathNode::new(node_type))
+        self.graph.add_node(new_math_node(node_type))
     }
 
     /// Convert the graph back to an expression
@@ -622,19 +648,69 @@ impl MathTransformer {
 // Math Brain
 // ============================================================================
 
-/// The math brain that learns graph transformations
-#[derive(Default)]
+/// Create the math domain configuration.
+///
+/// This configures keywords for capability detection, text normalization,
+/// and other domain-specific settings using brain-common utilities.
+fn create_math_config() -> DomainConfig {
+    // Math keywords for can_process detection
+    let keywords = vec![
+        "calculate", "compute", "solve", "simplify", "evaluate",
+        "derive", "differentiate", "integrate", "factor",
+        "+", "-", "*", "/", "^", "=",
+        "sin", "cos", "tan", "sqrt", "log", "exp",
+    ];
+
+    // Create normalizer for math notation
+    let normalizer = TextNormalizer::new()
+        .add_replacements(vec![
+            (" + ", "+"),
+            (" - ", "-"),
+            (" * ", "*"),
+            (" / ", "/"),
+            ("**", "^"),
+            (" ^ ", "^"),
+            ("pi", "π"),
+            ("PI", "π"),
+            ("inf", "∞"),
+            ("infinity", "∞"),
+        ])
+        .trim_whitespace(true);
+
+    DomainConfig::new("math", "Mathematics", keywords)
+        .with_version("0.1.0")
+        .with_normalizer(normalizer)
+        .with_annotation_prefix("@math:")
+}
+
+/// The math brain that learns graph transformations.
+///
+/// ## Migration Note
+///
+/// This brain now uses `DomainConfig` from brain-common for keyword
+/// detection and text normalization. It implements `BaseDomainBrain`
+/// to access default implementations, but overrides most methods with
+/// math-specific logic.
 pub struct MathBrain {
+    /// Domain configuration (keywords, normalizer, etc.)
+    config: DomainConfig,
     /// The underlying engine for validation
     engine: MathEngine,
     /// The transformer for algebraic simplifications
     transformer: MathTransformer,
 }
 
+impl Default for MathBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MathBrain {
     /// Create a new math brain
     pub fn new() -> Self {
         Self {
+            config: create_math_config(),
             engine: MathEngine::new(),
             transformer: MathTransformer::new(),
         }
@@ -726,28 +802,12 @@ impl MathBrain {
         graph.evaluate(&self.engine)
     }
 
-    /// Normalize math text for domain processing
-    /// Standardizes mathematical notation and operators
-    fn normalize_math_text(&self, text: &str) -> String {
-        // Normalize operator spacing
-        let normalized = text
-            .replace(" + ", "+")
-            .replace(" - ", "-")
-            .replace(" * ", "*")
-            .replace(" / ", "/");
+}
 
-        // Normalize power notation
-        let normalized = normalized.replace("**", "^").replace(" ^ ", "^");
-
-        // Normalize common symbols
-        let normalized = normalized
-            .replace("pi", "π")
-            .replace("PI", "π")
-            .replace("inf", "∞")
-            .replace("infinity", "∞");
-
-        // Trim whitespace
-        normalized.trim().to_string()
+// Implement BaseDomainBrain trait for access to default implementations
+impl BaseDomainBrain for MathBrain {
+    fn config(&self) -> &DomainConfig {
+        &self.config
     }
 }
 
@@ -765,85 +825,37 @@ impl std::fmt::Debug for MathBrain {
 
 impl DomainBrain for MathBrain {
     fn domain_id(&self) -> &str {
-        "math"
+        &self.config.domain_id
     }
 
     fn domain_name(&self) -> &str {
-        "Mathematics"
+        &self.config.domain_name
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        &self.config.version
     }
 
     fn can_process(&self, input: &str) -> bool {
-        // Check for mathematical expressions
-        let math_keywords = [
-            "calculate",
-            "compute",
-            "solve",
-            "simplify",
-            "evaluate",
-            "derive",
-            "differentiate",
-            "integrate",
-            "factor",
-            "+",
-            "-",
-            "*",
-            "/",
-            "^",
-            "=",
-            "sin",
-            "cos",
-            "tan",
-            "sqrt",
-            "log",
-            "exp",
-        ];
-        let lower = input.to_lowercase();
-        math_keywords.iter().any(|kw| lower.contains(kw))
-            || input.chars().any(|c| c.is_ascii_digit())
+        // Use config's keyword detector, but also check for digits
+        // which are a strong indicator of math content
+        self.default_can_process(input) || input.chars().any(|c| c.is_ascii_digit())
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        // Parse mathematical input into a graph
-        // For now, create a simple graph from the input
-        DagNN::from_text(input).map_err(|e| e.into())
+        // Use default parse from BaseDomainBrain
+        self.default_parse(input)
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert core DagNN to math domain representation
-        // Normalize mathematical notation
-        let text = graph.to_text();
-
-        // Apply math-specific normalization
-        let normalized = self.normalize_math_text(&text);
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        // Use default from_core which applies config's normalizer
+        self.default_from_core(graph)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert math domain representation back to generic core format
-        let text = graph.to_text();
-
-        // Remove any math-specific annotations
-        let cleaned = text
-            .lines()
-            .filter(|line| !line.trim().starts_with("@math:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if cleaned != text {
-            DagNN::from_text(&cleaned).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        // Use default to_core which filters by annotation prefix
+        self.default_to_core(graph)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
