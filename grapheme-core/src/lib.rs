@@ -1221,36 +1221,8 @@ impl ForwardPass for DagNN {
     }
 
     fn forward(&mut self) -> GraphemeResult<()> {
-        // Update topology if needed
-        if self.topology.order.is_empty() {
-            self.update_topology()?;
-        }
-
-        // Process nodes in topological order
-        for &node in &self.topology.order {
-            let mut incoming_sum = 0.0f32;
-            let mut incoming_count = 0;
-
-            // Sum weighted inputs from predecessors
-            for edge in self
-                .graph
-                .edges_directed(node, petgraph::Direction::Incoming)
-            {
-                let source_activation = self.graph[edge.source()].activation;
-                let weight = edge.weight().weight;
-                incoming_sum += source_activation * weight;
-                incoming_count += 1;
-            }
-
-            // Apply activation function (simple ReLU-like)
-            if incoming_count > 0 {
-                let new_activation = (incoming_sum / incoming_count as f32).clamp(0.0, 1.0);
-                self.graph[node].activation = new_activation;
-            }
-            // Input nodes keep their original activation
-        }
-
-        Ok(())
+        // Use neuromorphic forward pass with per-node activation functions
+        self.neuromorphic_forward()
     }
 
     fn forward_parallel(&mut self) -> GraphemeResult<()> {
@@ -1270,6 +1242,134 @@ impl ForwardPass for DagNN {
             .order
             .iter()
             .map(|&node| (node, self.graph[node].activation))
+            .collect()
+    }
+}
+
+// ============================================================================
+// Neuromorphic Forward Pass (backend-107)
+// ============================================================================
+
+impl DagNN {
+    /// Neuromorphic forward pass with per-node activation functions (backend-107)
+    ///
+    /// This implements a biologically-inspired forward pass where:
+    /// 1. Nodes are processed in topological order (respecting causality)
+    /// 2. Each node sums weighted inputs from predecessors
+    /// 3. Each node applies its own activation function (heterogeneous network)
+    /// 4. Pre-activation values are cached for efficient backpropagation
+    ///
+    /// # Algorithm
+    /// ```text
+    /// for each node in topological_order:
+    ///     pre_activation = sum(edge_weight[u,v] * activation[u] for u in predecessors)
+    ///     activation = node.activation_fn.apply(pre_activation)
+    /// ```
+    ///
+    /// # Complexity
+    /// O(V + E) where V = nodes, E = edges
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("hello").unwrap();
+    /// dag.neuromorphic_forward()?;
+    /// let activations = dag.get_activations();
+    /// ```
+    pub fn neuromorphic_forward(&mut self) -> GraphemeResult<()> {
+        // Update topology if needed
+        if self.topology.order.is_empty() {
+            self.update_topology()?;
+        }
+
+        // Process nodes in topological order
+        for &node in &self.topology.order.clone() {
+            // Check if this is an input node (no predecessors or in input_nodes_set)
+            let is_input = self.input_nodes_set.contains(&node);
+
+            if is_input {
+                // Input nodes keep their activation (typically 1.0)
+                // Still set pre_activation for consistency
+                let activation = self.graph[node].activation;
+                self.graph[node].pre_activation = activation;
+            } else {
+                // Sum weighted inputs from predecessors
+                let mut pre_activation = 0.0f32;
+
+                for edge in self
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                {
+                    let source_activation = self.graph[edge.source()].activation;
+                    let weight = edge.weight().weight;
+                    pre_activation += source_activation * weight;
+                }
+
+                // Apply per-node activation function and cache values
+                self.graph[node].set_pre_activation(pre_activation);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Forward pass with custom input activations (backend-107)
+    ///
+    /// Allows setting specific activation values for input nodes before
+    /// propagating through the network.
+    ///
+    /// # Arguments
+    /// * `input_activations` - Map from node ID to activation value
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut dag = DagNN::from_text("hi").unwrap();
+    /// let mut inputs = HashMap::new();
+    /// inputs.insert(dag.input_nodes()[0], 0.5);
+    /// inputs.insert(dag.input_nodes()[1], 0.8);
+    /// dag.forward_with_inputs(&inputs)?;
+    /// ```
+    pub fn forward_with_inputs(
+        &mut self,
+        input_activations: &HashMap<NodeId, f32>,
+    ) -> GraphemeResult<()> {
+        // Set input activations
+        for (&node, &activation) in input_activations {
+            self.graph[node].activation = activation;
+            self.graph[node].pre_activation = activation;
+        }
+
+        // Run forward pass
+        self.neuromorphic_forward()
+    }
+
+    /// Get pre-activation values (useful for backpropagation)
+    pub fn get_pre_activations(&self) -> Vec<(NodeId, f32)> {
+        self.topology
+            .order
+            .iter()
+            .map(|&node| (node, self.graph[node].pre_activation))
+            .collect()
+    }
+
+    /// Get activation derivatives for all nodes (for backpropagation)
+    pub fn get_activation_derivatives(&self) -> Vec<(NodeId, f32)> {
+        self.topology
+            .order
+            .iter()
+            .map(|&node| (node, self.graph[node].activation_derivative()))
+            .collect()
+    }
+
+    /// Compute output activations for the last N nodes
+    ///
+    /// Useful for getting predictions from output nodes
+    pub fn get_output_activations(&self, n: usize) -> Vec<f32> {
+        self.topology
+            .order
+            .iter()
+            .rev()
+            .take(n)
+            .map(|&node| self.graph[node].activation)
             .collect()
     }
 }
@@ -8959,5 +9059,233 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ========================================================================
+    // Neuromorphic Forward Pass Tests (backend-107)
+    // ========================================================================
+
+    #[test]
+    fn test_neuromorphic_forward_basic() {
+        // Create a simple linear graph: a -> b -> c
+        let mut dag = DagNN::from_text("abc").unwrap();
+        dag.update_topology().unwrap();
+
+        // Input nodes should have activation 1.0
+        let input_nodes = dag.input_nodes().to_vec();
+        for &node in &input_nodes {
+            assert_eq!(dag.graph[node].activation, 1.0);
+        }
+
+        // Run forward pass
+        dag.neuromorphic_forward().unwrap();
+
+        // Input nodes should still have activation 1.0 (identity for Linear)
+        for &node in &input_nodes {
+            assert_eq!(dag.graph[node].activation, 1.0);
+        }
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_with_hidden_nodes() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Add a hidden node connected to both inputs
+        let hidden = dag.add_hidden();
+        let inputs = dag.input_nodes().to_vec();
+        dag.add_edge(inputs[0], hidden, Edge::new(0.5, EdgeType::Sequential));
+        dag.add_edge(inputs[1], hidden, Edge::new(0.5, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Hidden node should receive sum of weighted inputs: 0.5*1.0 + 0.5*1.0 = 1.0
+        // With ReLU: ReLU(1.0) = 1.0
+        let hidden_activation = dag.graph[hidden].activation;
+        assert!((hidden_activation - 1.0).abs() < 1e-6,
+            "Expected hidden activation ~1.0, got {}", hidden_activation);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_relu_clips_negative() {
+        let mut dag = DagNN::from_text("a").unwrap();
+
+        // Add a hidden node with negative weight
+        let hidden = dag.add_hidden();
+        let input = dag.input_nodes()[0];
+        dag.add_edge(input, hidden, Edge::new(-1.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Hidden node: pre_activation = -1.0 * 1.0 = -1.0
+        // With ReLU: ReLU(-1.0) = 0.0
+        assert_eq!(dag.graph[hidden].pre_activation, -1.0);
+        assert_eq!(dag.graph[hidden].activation, 0.0);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_sigmoid_activation() {
+        let mut dag = DagNN::from_text("a").unwrap();
+
+        // Add a hidden node with sigmoid activation
+        let hidden = dag.graph.add_node(Node::hidden_with_activation(ActivationFn::Sigmoid));
+        let input = dag.input_nodes()[0];
+        dag.add_edge(input, hidden, Edge::new(0.0, EdgeType::Sequential)); // weight=0
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Hidden node: pre_activation = 0.0 * 1.0 = 0.0
+        // With Sigmoid: sigmoid(0) = 0.5
+        assert_eq!(dag.graph[hidden].pre_activation, 0.0);
+        assert!((dag.graph[hidden].activation - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_tanh_activation() {
+        let mut dag = DagNN::from_text("a").unwrap();
+
+        // Add a hidden node with tanh activation
+        let hidden = dag.graph.add_node(Node::hidden_with_activation(ActivationFn::Tanh));
+        let input = dag.input_nodes()[0];
+        dag.add_edge(input, hidden, Edge::new(1.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Hidden node: pre_activation = 1.0 * 1.0 = 1.0
+        // With Tanh: tanh(1.0) ≈ 0.7616
+        let expected = 1.0_f32.tanh();
+        assert!((dag.graph[hidden].activation - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_preserves_pre_activation() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+
+        // Add hidden node
+        let hidden = dag.add_hidden();
+        let inputs = dag.input_nodes().to_vec();
+        dag.add_edge(inputs[0], hidden, Edge::new(2.0, EdgeType::Sequential));
+        dag.add_edge(inputs[1], hidden, Edge::new(3.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Pre-activation should be 2.0*1.0 + 3.0*1.0 = 5.0
+        assert_eq!(dag.graph[hidden].pre_activation, 5.0);
+        // ReLU(5.0) = 5.0
+        assert_eq!(dag.graph[hidden].activation, 5.0);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_chain() {
+        // Test multi-layer forward propagation
+        let mut dag = DagNN::from_text("a").unwrap();
+        let input = dag.input_nodes()[0];
+
+        // Create chain: input -> h1 -> h2 -> h3
+        let h1 = dag.add_hidden();
+        let h2 = dag.add_hidden();
+        let h3 = dag.add_hidden();
+
+        dag.add_edge(input, h1, Edge::new(2.0, EdgeType::Sequential));
+        dag.add_edge(h1, h2, Edge::new(0.5, EdgeType::Sequential));
+        dag.add_edge(h2, h3, Edge::new(1.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // input = 1.0
+        // h1 = ReLU(2.0 * 1.0) = 2.0
+        // h2 = ReLU(0.5 * 2.0) = 1.0
+        // h3 = ReLU(1.0 * 1.0) = 1.0
+        assert_eq!(dag.graph[h1].activation, 2.0);
+        assert_eq!(dag.graph[h2].activation, 1.0);
+        assert_eq!(dag.graph[h3].activation, 1.0);
+    }
+
+    #[test]
+    fn test_forward_with_inputs() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        // Add hidden node
+        let hidden = dag.add_hidden();
+        dag.add_edge(inputs[0], hidden, Edge::new(1.0, EdgeType::Sequential));
+        dag.add_edge(inputs[1], hidden, Edge::new(1.0, EdgeType::Sequential));
+
+        // Set custom input activations
+        let mut input_activations = HashMap::new();
+        input_activations.insert(inputs[0], 0.3);
+        input_activations.insert(inputs[1], 0.7);
+
+        dag.update_topology().unwrap();
+        dag.forward_with_inputs(&input_activations).unwrap();
+
+        // Hidden: ReLU(0.3 + 0.7) = 1.0
+        assert_eq!(dag.graph[hidden].activation, 1.0);
+    }
+
+    #[test]
+    fn test_get_activation_derivatives() {
+        let mut dag = DagNN::from_text("a").unwrap();
+        let input = dag.input_nodes()[0];
+
+        // Add sigmoid hidden node
+        let hidden = dag.graph.add_node(Node::hidden_with_activation(ActivationFn::Sigmoid));
+        dag.add_edge(input, hidden, Edge::new(0.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let derivs = dag.get_activation_derivatives();
+
+        // Input (Linear): derivative = 1.0
+        // Hidden (Sigmoid at 0): derivative = 0.5 * 0.5 = 0.25
+        let input_deriv = derivs.iter().find(|(n, _)| *n == input).unwrap().1;
+        let hidden_deriv = derivs.iter().find(|(n, _)| *n == hidden).unwrap().1;
+
+        assert_eq!(input_deriv, 1.0);
+        assert!((hidden_deriv - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_get_pre_activations() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let inputs = dag.input_nodes().to_vec();
+
+        let hidden = dag.add_hidden();
+        dag.add_edge(inputs[0], hidden, Edge::new(3.0, EdgeType::Sequential));
+        dag.add_edge(inputs[1], hidden, Edge::new(-1.0, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        let pre_acts = dag.get_pre_activations();
+
+        // Hidden pre_activation: 3.0*1.0 + (-1.0)*1.0 = 2.0
+        let hidden_pre = pre_acts.iter().find(|(n, _)| *n == hidden).unwrap().1;
+        assert_eq!(hidden_pre, 2.0);
+    }
+
+    #[test]
+    fn test_neuromorphic_forward_edge_weight_scaling() {
+        // Test that edge weights properly scale activations
+        let mut dag = DagNN::from_text("a").unwrap();
+        let input = dag.input_nodes()[0];
+
+        // Xavier-initialized edge
+        let hidden = dag.add_hidden();
+        dag.add_edge(input, hidden, Edge::xavier(1, 1, EdgeType::Sequential));
+
+        dag.update_topology().unwrap();
+        dag.neuromorphic_forward().unwrap();
+
+        // Activation should be scaled by the edge weight
+        let edge_weight = dag.graph.edges(input).next().unwrap().weight().weight;
+        let expected = edge_weight.max(0.0); // ReLU
+        assert!((dag.graph[hidden].activation - expected).abs() < 1e-6);
     }
 }
