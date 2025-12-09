@@ -23,10 +23,10 @@ use grapheme_engine::{
     Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,
 };
 use grapheme_math::{MathGraph, MathNode, MathNodeType};
-use grapheme_code::{CodeGraph, CodeNode, CodeNodeType};
-use grapheme_law::{LegalGraph, LegalNode, LegalNodeType};
-use grapheme_music::{MusicGraph, MusicNode, MusicNodeType};
-use grapheme_chem::{MolecularGraph, ChemNode, ChemNodeType};
+use grapheme_code::{CodeGraph, CodeNodeType};
+use grapheme_law::{LegalGraph, LegalNodeType};
+use grapheme_music::{MusicGraph, MusicNodeType};
+use grapheme_chem::{MolecularGraph, ChemNodeType};
 use grapheme_polish::expr_to_polish;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -7220,35 +7220,35 @@ mod tests {
 
     #[test]
     fn test_code_graph_activation_gradients() {
-        use grapheme_code::{CodeGraph, CodeNode, CodeNodeType, CodeEdge, LiteralValue};
+        use grapheme_code::{CodeGraph, new_code_node, CodeNodeType, CodeEdge, LiteralValue};
 
         // Create predicted CodeGraph
         let mut predicted = CodeGraph::new();
-        let p0 = predicted.add_node(CodeNode::new(CodeNodeType::Function {
+        let p0 = predicted.add_node(new_code_node(CodeNodeType::Function {
             name: "foo".into(),
             params: vec!["x".into()],
             return_type: Some("int".into()),
         }));
-        let p1 = predicted.add_node(CodeNode::new(CodeNodeType::Variable {
+        let p1 = predicted.add_node(new_code_node(CodeNodeType::Variable {
             name: "x".into(),
             var_type: Some("int".into()),
         }));
-        let p2 = predicted.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Integer(42))));
+        let p2 = predicted.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Integer(42))));
         predicted.add_edge(p0, p1, CodeEdge::Child(0));
         predicted.add_edge(p1, p2, CodeEdge::DataFlow);
 
         // Create target CodeGraph (slightly different)
         let mut target = CodeGraph::new();
-        let t0 = target.add_node(CodeNode::new(CodeNodeType::Function {
+        let t0 = target.add_node(new_code_node(CodeNodeType::Function {
             name: "bar".into(),
             params: vec!["y".into()],
             return_type: Some("float".into()),
         }));
-        let t1 = target.add_node(CodeNode::new(CodeNodeType::Variable {
+        let t1 = target.add_node(new_code_node(CodeNodeType::Variable {
             name: "y".into(),
             var_type: Some("float".into()),
         }));
-        let t2 = target.add_node(CodeNode::new(CodeNodeType::Literal(LiteralValue::Float(3.14))));
+        let t2 = target.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Float(3.14))));
         target.add_edge(t0, t1, CodeEdge::Child(0));
         target.add_edge(t1, t2, CodeEdge::DataFlow);
 
@@ -7271,20 +7271,20 @@ mod tests {
 
     #[test]
     fn test_legal_graph_activation_gradients() {
-        use grapheme_law::{LegalGraph, LegalNode, LegalNodeType, LegalEdge};
+        use grapheme_law::{LegalGraph, new_legal_node, LegalNodeType, LegalEdge};
 
         // Create predicted LegalGraph
         let mut predicted = LegalGraph::new();
-        let p0 = predicted.add_node(LegalNode::new(LegalNodeType::Citation {
+        let p0 = predicted.add_node(new_legal_node(LegalNodeType::Citation {
             case_name: "Brown v. Board".into(),
             year: Some(1954),
             volume: None,
             page: None,
         }));
-        let p1 = predicted.add_node(LegalNode::new(LegalNodeType::Holding(
+        let p1 = predicted.add_node(new_legal_node(LegalNodeType::Holding(
             "Separate is inherently unequal".into()
         )));
-        let p2 = predicted.add_node(LegalNode::new(LegalNodeType::Rule(
+        let p2 = predicted.add_node(new_legal_node(LegalNodeType::Rule(
             "Equal protection clause".into()
         )));
         predicted.add_edge(p0, p1, LegalEdge::LeadsTo);
@@ -7292,16 +7292,16 @@ mod tests {
 
         // Create target LegalGraph (slightly different)
         let mut target = LegalGraph::new();
-        let t0 = target.add_node(LegalNode::new(LegalNodeType::Citation {
+        let t0 = target.add_node(new_legal_node(LegalNodeType::Citation {
             case_name: "Plessy v. Ferguson".into(),
             year: Some(1896),
             volume: None,
             page: None,
         }));
-        let t1 = target.add_node(LegalNode::new(LegalNodeType::Holding(
+        let t1 = target.add_node(new_legal_node(LegalNodeType::Holding(
             "Separate but equal".into()
         )));
-        let t2 = target.add_node(LegalNode::new(LegalNodeType::Conclusion(
+        let t2 = target.add_node(new_legal_node(LegalNodeType::Conclusion(
             "Upheld segregation".into()
         )));
         target.add_edge(t0, t1, LegalEdge::LeadsTo);
@@ -7326,20 +7326,20 @@ mod tests {
 
     #[test]
     fn test_music_graph_activation_gradients() {
-        use grapheme_music::{MusicGraph, MusicNode, MusicNodeType, MusicEdge, NoteName, Duration, ChordQuality, ScaleMode};
+        use grapheme_music::{MusicGraph, new_music_node, MusicNodeType, MusicEdge, NoteName, Duration, ChordQuality, ScaleMode};
 
         // Create predicted MusicGraph
         let mut predicted = MusicGraph::new();
-        let p0 = predicted.add_node(MusicNode::new(MusicNodeType::Note {
+        let p0 = predicted.add_node(new_music_node(MusicNodeType::Note {
             name: NoteName::C,
             octave: 4,
             duration: Duration::Quarter,
         }));
-        let p1 = predicted.add_node(MusicNode::new(MusicNodeType::Chord {
+        let p1 = predicted.add_node(new_music_node(MusicNodeType::Chord {
             root: NoteName::C,
             quality: ChordQuality::Major,
         }));
-        let p2 = predicted.add_node(MusicNode::new(MusicNodeType::Scale {
+        let p2 = predicted.add_node(new_music_node(MusicNodeType::Scale {
             root: NoteName::C,
             mode: ScaleMode::Major,
         }));
@@ -7348,16 +7348,16 @@ mod tests {
 
         // Create target MusicGraph (slightly different)
         let mut target = MusicGraph::new();
-        let t0 = target.add_node(MusicNode::new(MusicNodeType::Note {
+        let t0 = target.add_node(new_music_node(MusicNodeType::Note {
             name: NoteName::G,
             octave: 4,
             duration: Duration::Half,
         }));
-        let t1 = target.add_node(MusicNode::new(MusicNodeType::Chord {
+        let t1 = target.add_node(new_music_node(MusicNodeType::Chord {
             root: NoteName::G,
             quality: ChordQuality::Minor,
         }));
-        let t2 = target.add_node(MusicNode::new(MusicNodeType::KeySignature {
+        let t2 = target.add_node(new_music_node(MusicNodeType::KeySignature {
             root: NoteName::G,
             mode: ScaleMode::Minor,
         }));
@@ -7383,20 +7383,20 @@ mod tests {
 
     #[test]
     fn test_molecular_graph_activation_gradients() {
-        use grapheme_chem::{MolecularGraph, ChemNode, ChemNodeType, ChemEdge, Element, BondType};
+        use grapheme_chem::{MolecularGraph, new_chem_node, ChemNodeType, ChemEdge, Element, BondType};
 
         // Create predicted MolecularGraph (H2O)
         let mut predicted = MolecularGraph::new();
-        let p0 = predicted.add_node(ChemNode::new(ChemNodeType::Molecule {
+        let p0 = predicted.add_node(new_chem_node(ChemNodeType::Molecule {
             name: Some("Water".into()),
             formula: Some("H2O".into()),
         }));
-        let p1 = predicted.add_node(ChemNode::new(ChemNodeType::Atom {
+        let p1 = predicted.add_node(new_chem_node(ChemNodeType::Atom {
             element: Element::O,
             charge: 0,
             isotope: None,
         }));
-        let p2 = predicted.add_node(ChemNode::new(ChemNodeType::Atom {
+        let p2 = predicted.add_node(new_chem_node(ChemNodeType::Atom {
             element: Element::H,
             charge: 0,
             isotope: None,
@@ -7406,16 +7406,16 @@ mod tests {
 
         // Create target MolecularGraph (CO2 - different)
         let mut target = MolecularGraph::new();
-        let t0 = target.add_node(ChemNode::new(ChemNodeType::Molecule {
+        let t0 = target.add_node(new_chem_node(ChemNodeType::Molecule {
             name: Some("Carbon Dioxide".into()),
             formula: Some("CO2".into()),
         }));
-        let t1 = target.add_node(ChemNode::new(ChemNodeType::Atom {
+        let t1 = target.add_node(new_chem_node(ChemNodeType::Atom {
             element: Element::C,
             charge: 0,
             isotope: None,
         }));
-        let t2 = target.add_node(ChemNode::new(ChemNodeType::Atom {
+        let t2 = target.add_node(new_chem_node(ChemNodeType::Atom {
             element: Element::O,
             charge: 0,
             isotope: None,

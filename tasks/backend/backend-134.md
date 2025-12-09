@@ -1,7 +1,7 @@
 ---
 id: backend-134
 title: Remove duplicated code after brain migrations complete
-status: todo
+status: done
 priority: low
 tags:
 - backend

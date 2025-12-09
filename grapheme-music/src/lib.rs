@@ -18,7 +18,6 @@
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -428,22 +427,11 @@ impl DomainBrain for MusicBrain {
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        let mut issues = Vec::new();
-
-        if graph.input_nodes().is_empty() {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Warning,
-                message: "Empty music graph".to_string(),
-                node: None,
-            });
-        }
-
-        Ok(issues)
+        self.default_validate(graph)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        let text = graph.to_text();
-        Ok(ExecutionResult::Text(format!("Music: {}", text)))
+        self.default_execute(graph)
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {

@@ -1405,24 +1405,11 @@ impl DomainBrain for CodeBrain {
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        let mut issues = Vec::new();
-
-        if graph.input_nodes().is_empty() {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Warning,
-                message: "Empty code graph".to_string(),
-                node: None,
-            });
-        }
-
-        Ok(issues)
+        self.default_validate(graph)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        // For now, just return the text representation
-        // Future: actual code execution or compilation
-        let text = graph.to_text();
-        Ok(ExecutionResult::Text(format!("Code: {}", text)))
+        self.default_execute(graph)
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {

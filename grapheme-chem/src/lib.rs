@@ -7,10 +7,17 @@
 //! - Chemical reaction representation
 //! - Molecular graph construction
 //! - Chemical property analysis
+//!
+//! ## Migration to brain-common
+//!
+//! This crate uses shared abstractions from `grapheme-brain-common`:
+//! - `ActivatedNode<ChemNodeType>` - Generic node wrapper (aliased as `ChemNode`)
+//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
+//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
+use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -171,39 +178,31 @@ pub enum ChemNodeType {
     },
 }
 
-/// A chemistry node with activation for gradient flow
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChemNode {
-    /// The type of this chemistry node
-    pub node_type: ChemNodeType,
-    /// Activation value for gradient flow during training
-    pub activation: f32,
+/// Get default activation value based on chemistry node type importance.
+///
+/// Used by `new_chem_node()` to compute initial activation from type.
+pub fn chem_type_activation(node_type: &ChemNodeType) -> f32 {
+    match node_type {
+        // Structural elements - high importance
+        ChemNodeType::Atom { .. } => 0.7,
+        ChemNodeType::FunctionalGroup(_) => 0.8,
+        // Container/organization nodes
+        ChemNodeType::Molecule { .. } => 0.9,
+        ChemNodeType::Reaction { .. } => 0.85,
+        // Process-related nodes
+        ChemNodeType::Catalyst(_) => 0.75,
+        ChemNodeType::Conditions { .. } => 0.5,
+    }
 }
 
-impl ChemNode {
-    /// Create a new chemistry node with default activation based on type
-    pub fn new(node_type: ChemNodeType) -> Self {
-        let activation = Self::type_activation(&node_type);
-        Self {
-            node_type,
-            activation,
-        }
-    }
+/// A chemistry node with activation for gradient flow.
+///
+/// This is a type alias for `ActivatedNode<ChemNodeType>` from brain-common.
+pub type ChemNode = ActivatedNode<ChemNodeType>;
 
-    /// Get default activation value based on node type importance
-    fn type_activation(node_type: &ChemNodeType) -> f32 {
-        match node_type {
-            // Structural elements - high importance
-            ChemNodeType::Atom { .. } => 0.7,
-            ChemNodeType::FunctionalGroup(_) => 0.8,
-            // Container/organization nodes
-            ChemNodeType::Molecule { .. } => 0.9,
-            ChemNodeType::Reaction { .. } => 0.85,
-            // Process-related nodes
-            ChemNodeType::Catalyst(_) => 0.75,
-            ChemNodeType::Conditions { .. } => 0.5,
-        }
-    }
+/// Create a new chemistry node with default activation based on type.
+pub fn new_chem_node(node_type: ChemNodeType) -> ChemNode {
+    ActivatedNode::with_type_activation(node_type, chem_type_activation)
 }
 
 /// Bond types
@@ -293,7 +292,7 @@ impl MolecularGraph {
         let mut graph = Self::new();
 
         // Create molecule container
-        let mol = graph.add_node(ChemNode::new(ChemNodeType::Molecule {
+        let mol = graph.add_node(new_chem_node(ChemNodeType::Molecule {
             name: None,
             formula: Some(formula.to_string()),
         }));
@@ -331,7 +330,7 @@ impl MolecularGraph {
             // Add atoms
             if let Some(element) = Element::from_symbol(&symbol) {
                 for _ in 0..count {
-                    let atom = graph.add_node(ChemNode::new(ChemNodeType::Atom {
+                    let atom = graph.add_node(new_chem_node(ChemNodeType::Atom {
                         element,
                         charge: 0,
                         isotope: None,
@@ -349,8 +348,42 @@ impl MolecularGraph {
 // Chemistry Brain
 // ============================================================================
 
-/// The Chemistry Brain for molecular analysis
-pub struct ChemBrain;
+/// Create the chemistry domain configuration.
+fn create_chem_config() -> DomainConfig {
+    // Chemistry keywords for can_process detection
+    let keywords = vec![
+        "molecule", "atom", "bond", "element", "reaction", "compound",
+        "formula", "acid", "base", "salt", "ion", "carbon", "hydrogen",
+        "oxygen", "nitrogen", "organic", "inorganic", "polymer",
+        "catalyst", "enzyme", "solution", "molar", "mol", "pH", "concentration",
+    ];
+
+    // Create normalizer for chemistry notation
+    let normalizer = TextNormalizer::new()
+        .add_replacements(vec![
+            ("->", "→"),
+            ("=>", "→"),
+            ("<->", "⇌"),
+            ("<=>", "⇌"),
+            ("water", "H₂O"),
+            ("carbon dioxide", "CO₂"),
+            ("methane", "CH₄"),
+        ])
+        .trim_whitespace(true);
+
+    DomainConfig::new("chemistry", "Chemistry", keywords)
+        .with_version("0.1.0")
+        .with_normalizer(normalizer)
+        .with_annotation_prefix("@chem:")
+}
+
+/// The Chemistry Brain for molecular analysis.
+///
+/// Uses DomainConfig from brain-common for keyword detection and normalization.
+pub struct ChemBrain {
+    /// Domain configuration
+    config: DomainConfig,
+}
 
 impl Default for ChemBrain {
     fn default() -> Self {
@@ -369,69 +402,26 @@ impl std::fmt::Debug for ChemBrain {
 impl ChemBrain {
     /// Create a new chemistry brain
     pub fn new() -> Self {
-        Self
+        Self {
+            config: create_chem_config(),
+        }
     }
 
-    /// Check if text looks like chemistry content
-    fn looks_like_chemistry(&self, input: &str) -> bool {
-        let chem_patterns = [
-            "molecule",
-            "atom",
-            "bond",
-            "element",
-            "reaction",
-            "compound",
-            "formula",
-            "acid",
-            "base",
-            "salt",
-            "ion",
-            "carbon",
-            "hydrogen",
-            "oxygen",
-            "nitrogen",
-            "organic",
-            "inorganic",
-            "polymer",
-            "catalyst",
-            "enzyme",
-            "solution",
-            "molar",
-            "mol",
-            "pH",
-            "concentration",
-        ];
-        let lower = input.to_lowercase();
-
-        // Check for patterns
-        if chem_patterns.iter().any(|p| lower.contains(p)) {
-            return true;
-        }
-
-        // Check for molecular formula patterns (e.g., H2O, CO2, C6H12O6)
+    /// Check for molecular formula patterns (e.g., H2O, CO2, C6H12O6)
+    fn has_formula_pattern(&self, input: &str) -> bool {
         let has_element = input.chars().any(|c| "HCNOS".contains(c));
         let has_subscript = input.chars().any(|c| c.is_ascii_digit());
         has_element && has_subscript
     }
+}
 
-    /// Normalize chemistry text for domain processing
-    /// Standardizes molecular notation and chemical terminology
-    fn normalize_chemistry_text(&self, text: &str) -> String {
-        // Normalize reaction arrows
-        let normalized = text
-            .replace("->", "→")
-            .replace("=>", "→")
-            .replace("<->", "⇌")
-            .replace("<=>", "⇌");
+// ============================================================================
+// BaseDomainBrain Implementation
+// ============================================================================
 
-        // Normalize common compound names
-        let normalized = normalized
-            .replace("water", "H₂O")
-            .replace("carbon dioxide", "CO₂")
-            .replace("methane", "CH₄");
-
-        // Trim whitespace
-        normalized.trim().to_string()
+impl BaseDomainBrain for ChemBrain {
+    fn config(&self) -> &DomainConfig {
+        &self.config
     }
 }
 
@@ -441,76 +431,41 @@ impl ChemBrain {
 
 impl DomainBrain for ChemBrain {
     fn domain_id(&self) -> &str {
-        "chemistry"
+        &self.config.domain_id
     }
 
     fn domain_name(&self) -> &str {
-        "Chemistry"
+        &self.config.domain_name
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        &self.config.version
     }
 
     fn can_process(&self, input: &str) -> bool {
-        self.looks_like_chemistry(input)
+        // Use default keyword-based detection, plus chemistry-specific formula patterns
+        self.default_can_process(input) || self.has_formula_pattern(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        DagNN::from_text(input).map_err(|e| e.into())
+        self.default_parse(input)
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert core DagNN to chemistry domain representation
-        // Normalize molecular notation and chemical terminology
-        let text = graph.to_text();
-
-        // Apply chemistry-specific normalization
-        let normalized = self.normalize_chemistry_text(&text);
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        self.default_from_core(graph)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Convert chemistry domain representation back to generic core format
-        let text = graph.to_text();
-
-        // Remove any chemistry-specific annotations
-        let cleaned = text
-            .lines()
-            .filter(|line| !line.trim().starts_with("@chem:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if cleaned != text {
-            DagNN::from_text(&cleaned).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
+        self.default_to_core(graph)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        let mut issues = Vec::new();
-
-        if graph.input_nodes().is_empty() {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Warning,
-                message: "Empty chemistry graph".to_string(),
-                node: None,
-            });
-        }
-
-        Ok(issues)
+        self.default_validate(graph)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        let text = graph.to_text();
-        Ok(ExecutionResult::Text(format!("Chemistry: {}", text)))
+        self.default_execute(graph)
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {
