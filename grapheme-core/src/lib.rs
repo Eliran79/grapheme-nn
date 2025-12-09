@@ -100,6 +100,98 @@ pub enum CompressionType {
     Semantic,
 }
 
+/// Activation function for per-node nonlinearity (backend-106)
+///
+/// Each node can have its own activation function, enabling heterogeneous
+/// network architectures. This is critical for the neuromorphic forward pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ActivationFn {
+    /// Linear activation (identity): f(x) = x
+    /// Used for input nodes and output regression tasks
+    #[default]
+    Linear,
+    /// ReLU: f(x) = max(0, x)
+    /// Most common for hidden layers, enables sparse activations
+    ReLU,
+    /// Sigmoid: f(x) = 1 / (1 + exp(-x))
+    /// Used for binary outputs, gates, and attention weights
+    Sigmoid,
+    /// Tanh: f(x) = tanh(x)
+    /// Zero-centered, useful for hidden layers
+    Tanh,
+    /// Leaky ReLU: f(x) = max(alpha * x, x) where alpha = 0.01
+    /// Prevents dying ReLU problem
+    LeakyReLU,
+}
+
+impl ActivationFn {
+    /// Apply the activation function to a scalar value
+    #[inline]
+    pub fn apply(&self, x: f32) -> f32 {
+        match self {
+            ActivationFn::Linear => x,
+            ActivationFn::ReLU => x.max(0.0),
+            ActivationFn::Sigmoid => 1.0 / (1.0 + (-x).exp()),
+            ActivationFn::Tanh => x.tanh(),
+            ActivationFn::LeakyReLU => {
+                const ALPHA: f32 = 0.01;
+                if x > 0.0 { x } else { ALPHA * x }
+            }
+        }
+    }
+
+    /// Compute the derivative of the activation function
+    /// Given the output y = f(x), returns f'(x)
+    /// For efficiency, some derivatives use the output value directly
+    #[inline]
+    pub fn derivative(&self, x: f32, output: f32) -> f32 {
+        match self {
+            ActivationFn::Linear => 1.0,
+            ActivationFn::ReLU => if x > 0.0 { 1.0 } else { 0.0 },
+            ActivationFn::Sigmoid => output * (1.0 - output), // Uses cached output
+            ActivationFn::Tanh => 1.0 - output * output,      // Uses cached output
+            ActivationFn::LeakyReLU => {
+                const ALPHA: f32 = 0.01;
+                if x > 0.0 { 1.0 } else { ALPHA }
+            }
+        }
+    }
+
+    /// Compute derivative using only the input value (when output not cached)
+    #[inline]
+    pub fn derivative_from_input(&self, x: f32) -> f32 {
+        match self {
+            ActivationFn::Linear => 1.0,
+            ActivationFn::ReLU => if x > 0.0 { 1.0 } else { 0.0 },
+            ActivationFn::Sigmoid => {
+                let y = self.apply(x);
+                y * (1.0 - y)
+            }
+            ActivationFn::Tanh => {
+                let y = x.tanh();
+                1.0 - y * y
+            }
+            ActivationFn::LeakyReLU => {
+                const ALPHA: f32 = 0.01;
+                if x > 0.0 { 1.0 } else { ALPHA }
+            }
+        }
+    }
+
+    /// Apply activation to a vector element-wise
+    pub fn apply_vec(&self, xs: &[f32]) -> Vec<f32> {
+        xs.iter().map(|&x| self.apply(x)).collect()
+    }
+
+    /// Compute derivatives for a vector
+    pub fn derivative_vec(&self, xs: &[f32], outputs: &[f32]) -> Vec<f32> {
+        xs.iter()
+            .zip(outputs.iter())
+            .map(|(&x, &y)| self.derivative(x, y))
+            .collect()
+    }
+}
+
 /// Type of node in the GRAPHEME graph
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeType {
@@ -122,42 +214,78 @@ pub enum NodeType {
 pub struct Node {
     /// The raw character value (or compressed pattern)
     pub value: Option<u8>,
-    /// Current activation level
+    /// Current activation level (post-activation function)
     pub activation: f32,
+    /// Pre-activation value (before activation function applied)
+    /// Needed for computing gradients efficiently
+    pub pre_activation: f32,
     /// Type of this node
     pub node_type: NodeType,
     /// Position in original text (if input node)
     pub position: Option<usize>,
+    /// Activation function for this node (backend-106)
+    pub activation_fn: ActivationFn,
 }
 
 impl Node {
     /// Create a new input node from a character
+    /// Input nodes use Linear activation (identity) since they hold raw input
     pub fn input(ch: char, position: usize) -> Self {
         Self {
             value: if ch.is_ascii() { Some(ch as u8) } else { None },
             activation: 1.0,
+            pre_activation: 1.0,
             node_type: NodeType::Input(ch),
             position: Some(position),
+            activation_fn: ActivationFn::Linear, // Input nodes pass through unchanged
         }
     }
 
-    /// Create a new hidden node
+    /// Create a new hidden node with default ReLU activation
     pub fn hidden() -> Self {
         Self {
             value: None,
             activation: 0.0,
+            pre_activation: 0.0,
             node_type: NodeType::Hidden,
             position: None,
+            activation_fn: ActivationFn::ReLU, // Default for hidden layers
         }
     }
 
-    /// Create a new output node
+    /// Create a new hidden node with specified activation function
+    pub fn hidden_with_activation(activation_fn: ActivationFn) -> Self {
+        Self {
+            value: None,
+            activation: 0.0,
+            pre_activation: 0.0,
+            node_type: NodeType::Hidden,
+            position: None,
+            activation_fn,
+        }
+    }
+
+    /// Create a new output node with Linear activation (for regression)
     pub fn output() -> Self {
         Self {
             value: None,
             activation: 0.0,
+            pre_activation: 0.0,
             node_type: NodeType::Output,
             position: None,
+            activation_fn: ActivationFn::Linear, // Output nodes typically linear
+        }
+    }
+
+    /// Create a new output node with specified activation function
+    pub fn output_with_activation(activation_fn: ActivationFn) -> Self {
+        Self {
+            value: None,
+            activation: 0.0,
+            pre_activation: 0.0,
+            node_type: NodeType::Output,
+            position: None,
+            activation_fn,
         }
     }
 
@@ -166,8 +294,10 @@ impl Node {
         Self {
             value: None,
             activation: 0.0,
+            pre_activation: 0.0,
             node_type: NodeType::Clique(members),
             position: None,
+            activation_fn: ActivationFn::ReLU,
         }
     }
 
@@ -176,8 +306,10 @@ impl Node {
         Self {
             value: None,
             activation: 0.0,
+            pre_activation: 0.0,
             node_type: NodeType::Pattern(pattern),
             position: None,
+            activation_fn: ActivationFn::ReLU,
         }
     }
 
@@ -186,9 +318,32 @@ impl Node {
         Self {
             value: None,
             activation: 0.0,
+            pre_activation: 0.0,
             node_type: NodeType::Compressed(compression),
             position: None,
+            activation_fn: ActivationFn::ReLU,
         }
+    }
+
+    /// Set the pre-activation value and compute post-activation
+    /// This is the main method for the neuromorphic forward pass
+    #[inline]
+    pub fn set_pre_activation(&mut self, pre_act: f32) {
+        self.pre_activation = pre_act;
+        self.activation = self.activation_fn.apply(pre_act);
+    }
+
+    /// Compute the local gradient (derivative of activation function)
+    /// Used during backpropagation
+    #[inline]
+    pub fn activation_derivative(&self) -> f32 {
+        self.activation_fn.derivative(self.pre_activation, self.activation)
+    }
+
+    /// Set the activation function for this node
+    pub fn with_activation_fn(mut self, activation_fn: ActivationFn) -> Self {
+        self.activation_fn = activation_fn;
+        self
     }
 }
 
@@ -3468,8 +3623,10 @@ impl SabagPooling {
             let node = Node {
                 value: Some(b'x'),  // Placeholder character
                 activation,
+                pre_activation: activation,
                 node_type: NodeType::Input('x'),
                 position: Some(idx),
+                activation_fn: ActivationFn::Linear,
             };
 
             let node_id = graph.add_node(node);
@@ -8567,5 +8724,240 @@ mod tests {
             .any(|(a, b)| (a - b).abs() > 1e-10);
 
         assert!(changed, "Edge weights should change after training step");
+    }
+
+    // ========================================================================
+    // Activation Function Tests (backend-106)
+    // ========================================================================
+
+    #[test]
+    fn test_activation_fn_linear() {
+        let act = ActivationFn::Linear;
+
+        // Linear should be identity
+        assert_eq!(act.apply(0.0), 0.0);
+        assert_eq!(act.apply(1.0), 1.0);
+        assert_eq!(act.apply(-1.0), -1.0);
+        assert_eq!(act.apply(100.0), 100.0);
+
+        // Derivative should always be 1
+        assert_eq!(act.derivative(0.0, 0.0), 1.0);
+        assert_eq!(act.derivative(100.0, 100.0), 1.0);
+        assert_eq!(act.derivative(-100.0, -100.0), 1.0);
+    }
+
+    #[test]
+    fn test_activation_fn_relu() {
+        let act = ActivationFn::ReLU;
+
+        // ReLU: max(0, x)
+        assert_eq!(act.apply(0.0), 0.0);
+        assert_eq!(act.apply(1.0), 1.0);
+        assert_eq!(act.apply(-1.0), 0.0);
+        assert_eq!(act.apply(0.5), 0.5);
+        assert_eq!(act.apply(-0.5), 0.0);
+
+        // Derivative: 1 if x > 0, else 0
+        assert_eq!(act.derivative(1.0, 1.0), 1.0);
+        assert_eq!(act.derivative(0.5, 0.5), 1.0);
+        assert_eq!(act.derivative(-1.0, 0.0), 0.0);
+        assert_eq!(act.derivative(0.0, 0.0), 0.0); // At boundary, 0
+    }
+
+    #[test]
+    fn test_activation_fn_sigmoid() {
+        let act = ActivationFn::Sigmoid;
+
+        // Sigmoid: 1 / (1 + exp(-x))
+        let y0 = act.apply(0.0);
+        assert!((y0 - 0.5).abs() < 1e-6, "sigmoid(0) should be 0.5");
+
+        let y_pos = act.apply(10.0);
+        assert!(y_pos > 0.999, "sigmoid(10) should be close to 1");
+
+        let y_neg = act.apply(-10.0);
+        assert!(y_neg < 0.001, "sigmoid(-10) should be close to 0");
+
+        // Derivative: sigmoid * (1 - sigmoid)
+        // At x=0, sigmoid=0.5, derivative = 0.5 * 0.5 = 0.25
+        let deriv = act.derivative(0.0, 0.5);
+        assert!((deriv - 0.25).abs() < 1e-6);
+
+        // Near saturation, derivative should be close to 0
+        let deriv_sat = act.derivative(10.0, y_pos);
+        assert!(deriv_sat < 0.01);
+    }
+
+    #[test]
+    fn test_activation_fn_tanh() {
+        let act = ActivationFn::Tanh;
+
+        // Tanh: tanh(x)
+        let y0 = act.apply(0.0);
+        assert!(y0.abs() < 1e-6, "tanh(0) should be 0");
+
+        let y_pos = act.apply(5.0);
+        assert!(y_pos > 0.99, "tanh(5) should be close to 1");
+
+        let y_neg = act.apply(-5.0);
+        assert!(y_neg < -0.99, "tanh(-5) should be close to -1");
+
+        // Derivative: 1 - tanh^2
+        // At x=0, tanh=0, derivative = 1
+        let deriv = act.derivative(0.0, 0.0);
+        assert!((deriv - 1.0).abs() < 1e-6);
+
+        // Near saturation, derivative should be close to 0
+        let deriv_sat = act.derivative(5.0, y_pos);
+        assert!(deriv_sat < 0.01);
+    }
+
+    #[test]
+    fn test_activation_fn_leaky_relu() {
+        let act = ActivationFn::LeakyReLU;
+        const ALPHA: f32 = 0.01;
+
+        // Leaky ReLU: max(alpha*x, x)
+        assert_eq!(act.apply(0.0), 0.0);
+        assert_eq!(act.apply(1.0), 1.0);
+        assert!((act.apply(-1.0) - (-ALPHA)).abs() < 1e-6);
+        assert_eq!(act.apply(0.5), 0.5);
+        assert!((act.apply(-0.5) - (-0.5 * ALPHA)).abs() < 1e-6);
+
+        // Derivative: 1 if x > 0, else alpha
+        assert_eq!(act.derivative(1.0, 1.0), 1.0);
+        assert_eq!(act.derivative(0.5, 0.5), 1.0);
+        assert_eq!(act.derivative(-1.0, -ALPHA), ALPHA);
+        assert_eq!(act.derivative(-0.5, -0.5 * ALPHA), ALPHA);
+    }
+
+    #[test]
+    fn test_activation_fn_derivative_from_input() {
+        // Verify derivative_from_input matches derivative for all functions
+        let functions = [
+            ActivationFn::Linear,
+            ActivationFn::ReLU,
+            ActivationFn::Sigmoid,
+            ActivationFn::Tanh,
+            ActivationFn::LeakyReLU,
+        ];
+
+        let test_values = [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0];
+
+        for act in &functions {
+            for &x in &test_values {
+                let y = act.apply(x);
+                let d1 = act.derivative(x, y);
+                let d2 = act.derivative_from_input(x);
+                assert!(
+                    (d1 - d2).abs() < 1e-6,
+                    "derivative mismatch for {:?} at x={}: {} vs {}",
+                    act, x, d1, d2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_activation_fn_vec_operations() {
+        let act = ActivationFn::ReLU;
+        let xs = vec![-1.0, 0.0, 0.5, 1.0];
+
+        let outputs = act.apply_vec(&xs);
+        assert_eq!(outputs, vec![0.0, 0.0, 0.5, 1.0]);
+
+        let derivs = act.derivative_vec(&xs, &outputs);
+        assert_eq!(derivs, vec![0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_node_with_activation_fn() {
+        // Test Node with different activation functions
+        let mut hidden = Node::hidden();
+        assert_eq!(hidden.activation_fn, ActivationFn::ReLU);
+
+        // Test set_pre_activation with ReLU
+        hidden.set_pre_activation(-1.0);
+        assert_eq!(hidden.pre_activation, -1.0);
+        assert_eq!(hidden.activation, 0.0); // ReLU clips negative
+
+        hidden.set_pre_activation(0.5);
+        assert_eq!(hidden.pre_activation, 0.5);
+        assert_eq!(hidden.activation, 0.5); // ReLU passes positive
+
+        // Test with Sigmoid
+        let mut sigmoid_node = Node::hidden_with_activation(ActivationFn::Sigmoid);
+        sigmoid_node.set_pre_activation(0.0);
+        assert!((sigmoid_node.activation - 0.5).abs() < 1e-6);
+
+        // Test derivative
+        let deriv = sigmoid_node.activation_derivative();
+        assert!((deriv - 0.25).abs() < 1e-6); // sigmoid'(0) = 0.5 * 0.5 = 0.25
+    }
+
+    #[test]
+    fn test_node_activation_fn_defaults() {
+        // Input nodes should have Linear
+        let input = Node::input('a', 0);
+        assert_eq!(input.activation_fn, ActivationFn::Linear);
+
+        // Hidden nodes should have ReLU
+        let hidden = Node::hidden();
+        assert_eq!(hidden.activation_fn, ActivationFn::ReLU);
+
+        // Output nodes should have Linear
+        let output = Node::output();
+        assert_eq!(output.activation_fn, ActivationFn::Linear);
+
+        // Clique, Pattern, Compressed should have ReLU
+        let clique = Node::clique(vec![1, 2, 3]);
+        assert_eq!(clique.activation_fn, ActivationFn::ReLU);
+
+        let pattern = Node::pattern(vec![b'a', b'b']);
+        assert_eq!(pattern.activation_fn, ActivationFn::ReLU);
+
+        let compressed = Node::compressed(CompressionType::RunLength);
+        assert_eq!(compressed.activation_fn, ActivationFn::ReLU);
+    }
+
+    #[test]
+    fn test_node_with_activation_fn_builder() {
+        let node = Node::hidden().with_activation_fn(ActivationFn::Tanh);
+        assert_eq!(node.activation_fn, ActivationFn::Tanh);
+
+        let output = Node::output_with_activation(ActivationFn::Sigmoid);
+        assert_eq!(output.activation_fn, ActivationFn::Sigmoid);
+    }
+
+    #[test]
+    fn test_activation_fn_gradient_numerical() {
+        // Numerical gradient check for each activation function
+        let functions = [
+            ActivationFn::Linear,
+            ActivationFn::ReLU,
+            ActivationFn::Sigmoid,
+            ActivationFn::Tanh,
+            ActivationFn::LeakyReLU,
+        ];
+
+        let eps = 1e-5;
+        let test_values = [-1.0, -0.1, 0.1, 1.0]; // Avoid exact 0 for ReLU
+
+        for act in &functions {
+            for &x in &test_values {
+                let numerical_grad = (act.apply(x + eps) - act.apply(x - eps)) / (2.0 * eps);
+                let analytic_grad = act.derivative_from_input(x);
+
+                // Numerical gradients have some error due to finite differences
+                // Use tolerance of 1e-2 for reasonable accuracy
+                let tol = 1e-2;
+
+                assert!(
+                    (numerical_grad - analytic_grad).abs() < tol,
+                    "Gradient mismatch for {:?} at x={}: numerical={}, analytic={}",
+                    act, x, numerical_grad, analytic_grad
+                );
+            }
+        }
     }
 }
