@@ -1,7 +1,7 @@
 ---
 id: backend-126
 title: Implement BaseDomainBrain trait with default implementations
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -31,35 +31,40 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Many cognitive brain implementations (math, code, law, music, chem) share identical patterns for DomainBrain trait methods. This task creates a BaseDomainBrain trait with default implementations to reduce code duplication.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create BaseDomainBrain trait with sensible defaults
+- Provide DomainConfig struct for common configuration
+- Reduce boilerplate in brain implementations
+- Add macro for easy DomainBrain implementation
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Analyze existing brain implementations for common patterns
+- [x] Design DomainConfig struct for common configuration
+- [x] Implement BaseDomainBrain trait with default_* methods
+- [x] Implement impl_domain_brain_defaults! macro
+- [x] Add comprehensive unit tests (10 tests)
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **BaseDomainBrain trait:**
+- Provides default implementations for all DomainBrain methods
+- Works with KeywordCapabilityDetector and TextNormalizer
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **DomainConfig struct:**
+- Stores domain_id, domain_name, version
+- Supports keyword configuration
+- Supports annotation prefix for to_core filtering
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- BaseDomainBrain is an extension trait, not a replacement for DomainBrain
+- Brain implementations can override individual default_* methods
+- impl_domain_brain_defaults! macro generates full DomainBrain impl
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for DomainConfig (5 tests)
+- [x] Write unit tests for BaseDomainBrain defaults (5 tests)
+- [x] All 47 tests pass in grapheme-brain-common
 
 ## Version Control
 
@@ -83,30 +88,34 @@ Brief description of what needs to be done and why.
 
 ## Updates
 - 2025-12-09: Task created
+- 2025-12-09: Completed - BaseDomainBrain trait with 10 tests
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **New file**: `grapheme-brain-common/src/traits.rs`
+- **DomainConfig struct**: Configuration holder for domain brains with domain_id, domain_name, version, capability_detector, normalizer, annotation_prefix
+- **BaseDomainBrain trait**: Extension trait providing default_* methods for all DomainBrain methods
+- **impl_domain_brain_defaults! macro**: Generates full DomainBrain implementation from BaseDomainBrain
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- No runtime effects yet - brains need to adopt these traits
+- Brain implementations can gradually migrate to use BaseDomainBrain
+- Existing DomainBrain implementations remain unchanged
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses KeywordCapabilityDetector and TextNormalizer from utils.rs
+- Uses grapheme_core types (DagNN, DomainResult, etc.)
+- Brain crates (backend-129-133) will migrate to use this
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test --package grapheme-brain-common` - 47 tests pass
+- 10 new tests for traits.rs specifically
+- Doc tests ignored (require ignore attribute due to trait visibility)
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **Design decision**: BaseDomainBrain is opt-in via default_* methods, not automatic inheritance
+- **Macro**: impl_domain_brain_defaults! provides full automation for brains using all defaults
+- **Customization**: Brains can implement DomainBrain manually and call specific default_* methods
+- **Pattern**: parse() always uses DagNN::from_text, from_core() applies normalizer, to_core() filters annotation lines

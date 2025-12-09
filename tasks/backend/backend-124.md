@@ -1,7 +1,7 @@
 ---
 id: backend-124
 title: Implement ActivatedNode<T> generic wrapper
-status: todo
+status: done
 priority: high
 tags:
 - backend

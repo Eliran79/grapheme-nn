@@ -16,11 +16,13 @@
 mod node;
 mod graph;
 mod transform;
+mod traits;
 mod utils;
 
 pub use node::ActivatedNode;
 pub use graph::TypedGraph;
 pub use transform::{TextTransformRule, TransformRuleSet};
+pub use traits::{BaseDomainBrain, DomainConfig};
 pub use utils::{KeywordCapabilityDetector, TextNormalizer, math_normalizer, code_normalizer, legal_normalizer};
 
 // Re-export commonly used types from dependencies

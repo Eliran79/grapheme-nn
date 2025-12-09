@@ -1,7 +1,7 @@
 ---
 id: backend-128
 title: Implement shared normalizers and capability detectors
-status: todo
+status: done
 priority: medium
 tags:
 - backend

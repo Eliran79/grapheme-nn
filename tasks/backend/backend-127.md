@@ -1,7 +1,7 @@
 ---
 id: backend-127
 title: Implement TextTransformRule framework for rule application
-status: todo
+status: done
 priority: medium
 tags:
 - backend

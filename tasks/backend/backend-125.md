@@ -1,7 +1,7 @@
 ---
 id: backend-125
 title: Implement TypedGraph<N,E> generic wrapper
-status: todo
+status: done
 priority: medium
 tags:
 - backend
