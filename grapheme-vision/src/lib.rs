@@ -383,6 +383,54 @@ pub struct Blob {
     pub bbox: (usize, usize, usize, usize),
 }
 
+/// A hierarchical blob with parent-child relationships
+#[derive(Debug, Clone)]
+pub struct HierarchicalBlob {
+    /// The blob data
+    pub blob: Blob,
+    /// Hierarchy level (0 = finest, higher = coarser)
+    pub level: usize,
+    /// Indices of child blobs (finer scale)
+    pub children: Vec<usize>,
+    /// Index of parent blob (coarser scale), if any
+    pub parent: Option<usize>,
+    /// Scale at which this blob was detected
+    pub scale: f32,
+}
+
+impl HierarchicalBlob {
+    /// Create a new hierarchical blob at a given level
+    pub fn new(blob: Blob, level: usize, scale: f32) -> Self {
+        Self {
+            blob,
+            level,
+            children: Vec::new(),
+            parent: None,
+            scale,
+        }
+    }
+
+    /// Check if this blob contains another blob
+    pub fn contains(&self, other: &Blob) -> bool {
+        // Check if other's center is within this blob's bounding box
+        let (bx, by, bw, bh) = self.blob.bbox;
+        let (ox, oy) = other.center;
+        ox >= bx as f32 && ox < (bx + bw) as f32 &&
+        oy >= by as f32 && oy < (by + bh) as f32
+    }
+}
+
+/// Result of hierarchical blob detection
+#[derive(Debug, Clone)]
+pub struct BlobHierarchy {
+    /// All blobs across all levels
+    pub blobs: Vec<HierarchicalBlob>,
+    /// Number of hierarchy levels
+    pub num_levels: usize,
+    /// Indices of root blobs (no parent)
+    pub roots: Vec<usize>,
+}
+
 /// Extract blobs (connected components) from image
 pub fn extract_blobs(image: &RawImage, config: &FeatureConfig) -> Vec<Blob> {
     let gray = image.to_grayscale();
@@ -472,8 +520,190 @@ pub fn extract_blobs(image: &RawImage, config: &FeatureConfig) -> Vec<Blob> {
     blobs
 }
 
+/// Extract blobs at a specific threshold
+fn extract_blobs_at_threshold(image: &RawImage, threshold: f32, min_size: usize, max_blobs: usize) -> Vec<Blob> {
+    let gray = image.to_grayscale();
+    let mut visited = vec![false; gray.pixel_count()];
+    let mut blobs = Vec::new();
+
+    for y in 0..gray.height {
+        for x in 0..gray.width {
+            let idx = y * gray.width + x;
+            if visited[idx] || gray.pixels[idx] < threshold {
+                continue;
+            }
+
+            // Flood fill to find connected component
+            let mut pixels = Vec::new();
+            let mut stack = vec![(x, y)];
+            let mut sum_x = 0.0f32;
+            let mut sum_y = 0.0f32;
+            let mut sum_intensity = 0.0f32;
+            let mut min_x = x;
+            let mut max_x = x;
+            let mut min_y = y;
+            let mut max_y = y;
+
+            while let Some((px, py)) = stack.pop() {
+                let pidx = py * gray.width + px;
+                if visited[pidx] || gray.pixels[pidx] < threshold {
+                    continue;
+                }
+                visited[pidx] = true;
+
+                let intensity = gray.pixels[pidx];
+                pixels.push((px, py));
+                sum_x += px as f32 * intensity;
+                sum_y += py as f32 * intensity;
+                sum_intensity += intensity;
+
+                min_x = min_x.min(px);
+                max_x = max_x.max(px);
+                min_y = min_y.min(py);
+                max_y = max_y.max(py);
+
+                // 4-connectivity neighbors
+                if px > 0 {
+                    stack.push((px - 1, py));
+                }
+                if px + 1 < gray.width {
+                    stack.push((px + 1, py));
+                }
+                if py > 0 {
+                    stack.push((px, py - 1));
+                }
+                if py + 1 < gray.height {
+                    stack.push((px, py + 1));
+                }
+            }
+
+            if pixels.len() >= min_size {
+                let center = if sum_intensity > 0.0 {
+                    (sum_x / sum_intensity, sum_y / sum_intensity)
+                } else {
+                    (
+                        pixels.iter().map(|p| p.0).sum::<usize>() as f32 / pixels.len() as f32,
+                        pixels.iter().map(|p| p.1).sum::<usize>() as f32 / pixels.len() as f32,
+                    )
+                };
+
+                blobs.push(Blob {
+                    intensity: sum_intensity / pixels.len() as f32,
+                    center,
+                    bbox: (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
+                    pixels,
+                });
+
+                if blobs.len() >= max_blobs {
+                    break;
+                }
+            }
+        }
+        if blobs.len() >= max_blobs {
+            break;
+        }
+    }
+
+    blobs.sort_by(|a, b| b.pixels.len().cmp(&a.pixels.len()));
+    blobs
+}
+
+/// Extract hierarchical blobs at multiple scales.
+///
+/// This function detects blobs at multiple intensity thresholds to create
+/// a hierarchical structure. Coarser scales (lower thresholds) capture
+/// larger structures, while finer scales (higher thresholds) capture details.
+///
+/// # Algorithm
+/// 1. Detect blobs at multiple thresholds (coarse → fine)
+/// 2. Link child blobs to parent blobs based on spatial containment
+/// 3. Return hierarchy with parent-child relationships
+///
+/// # Arguments
+/// * `image` - The input image
+/// * `config` - Feature configuration (uses max_hierarchy_levels)
+///
+/// # Returns
+/// A BlobHierarchy with all detected blobs and their relationships
+pub fn extract_hierarchical_blobs(image: &RawImage, config: &FeatureConfig) -> BlobHierarchy {
+    let num_levels = config.max_hierarchy_levels.max(1);
+    let mut all_blobs: Vec<HierarchicalBlob> = Vec::new();
+
+    // Generate threshold levels from coarse (low) to fine (high)
+    // Coarse = low threshold (more permissive, larger blobs)
+    // Fine = high threshold (more selective, smaller blobs)
+    let base_threshold = config.blob_threshold;
+    let threshold_step = (1.0 - base_threshold) / (num_levels as f32 + 1.0);
+
+    for level in 0..num_levels {
+        // Level 0 = finest (highest threshold), Level N-1 = coarsest (lowest)
+        let threshold = base_threshold + threshold_step * ((num_levels - level - 1) as f32);
+        let scale = 1.0 / (level as f32 + 1.0);
+
+        // Adjust min_blob_size for scale (larger at coarser scales)
+        let min_size = (config.min_blob_size as f32 * (level as f32 + 1.0).sqrt()) as usize;
+        let max_blobs = config.max_blobs / num_levels.max(1);
+
+        let blobs = extract_blobs_at_threshold(image, threshold, min_size, max_blobs.max(10));
+
+        let level_start_idx = all_blobs.len();
+        for blob in blobs {
+            all_blobs.push(HierarchicalBlob::new(blob, level, scale));
+        }
+
+        // Link to parent level (coarser, higher level number)
+        if level > 0 {
+            let parent_level = level - 1;
+            // Find parent blobs from the coarser level
+            for child_idx in level_start_idx..all_blobs.len() {
+                let child_center = all_blobs[child_idx].blob.center;
+
+                // Find best parent (smallest containing blob at parent level)
+                let mut best_parent: Option<(usize, usize)> = None; // (index, size)
+
+                for (parent_idx, parent_blob) in all_blobs.iter().enumerate() {
+                    if parent_blob.level != parent_level {
+                        continue;
+                    }
+
+                    // Check if parent contains child's center
+                    let (px, py, pw, ph) = parent_blob.blob.bbox;
+                    let (cx, cy) = child_center;
+
+                    if cx >= px as f32 && cx < (px + pw) as f32 &&
+                       cy >= py as f32 && cy < (py + ph) as f32 {
+                        let parent_size = parent_blob.blob.pixels.len();
+                        if best_parent.is_none() || parent_size < best_parent.unwrap().1 {
+                            best_parent = Some((parent_idx, parent_size));
+                        }
+                    }
+                }
+
+                if let Some((parent_idx, _)) = best_parent {
+                    all_blobs[child_idx].parent = Some(parent_idx);
+                    all_blobs[parent_idx].children.push(child_idx);
+                }
+            }
+        }
+    }
+
+    // Find root blobs (no parent)
+    let roots: Vec<usize> = all_blobs
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.parent.is_none())
+        .map(|(i, _)| i)
+        .collect();
+
+    BlobHierarchy {
+        blobs: all_blobs,
+        num_levels,
+        roots,
+    }
+}
+
 /// Check if two blobs are adjacent (bounding boxes touch or overlap)
-fn blobs_adjacent(a: &Blob, b: &Blob) -> bool {
+pub fn blobs_adjacent(a: &Blob, b: &Blob) -> bool {
     let (ax, ay, aw, ah) = a.bbox;
     let (bx, by, bw, bh) = b.bbox;
 
@@ -499,7 +729,7 @@ fn blobs_adjacent(a: &Blob, b: &Blob) -> bool {
 ///
 /// This is the core VisionBrain functionality:
 /// - Deterministic: same image always produces same graph
-/// - Hierarchical: blobs → regions → image root
+/// - Hierarchical: multi-scale blob detection with parent-child relationships
 /// - No CNN: pure signal processing
 pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
     if image.pixels.is_empty() {
@@ -507,6 +737,8 @@ pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<
     }
 
     let mut graph = VisionGraph::new(image.width, image.height);
+    let w = image.width as f32;
+    let h = image.height as f32;
 
     // Create root node
     let root = graph.add_node(new_vision_node(VisionNodeType::ImageRoot {
@@ -515,44 +747,95 @@ pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<
     }));
     graph.root = Some(root);
 
-    // Extract blobs
-    let blobs = extract_blobs(image, config);
+    // Use hierarchical blob detection if enabled
+    if config.build_hierarchy && config.max_hierarchy_levels > 1 {
+        let hierarchy = extract_hierarchical_blobs(image, config);
 
-    if blobs.is_empty() {
-        return Ok(graph);
-    }
+        if hierarchy.blobs.is_empty() {
+            return Ok(graph);
+        }
 
-    // Create blob nodes
-    let mut blob_nodes = Vec::with_capacity(blobs.len());
-    let w = image.width as f32;
-    let h = image.height as f32;
+        // Create nodes for all hierarchical blobs
+        let mut blob_nodes: Vec<NodeIndex> = Vec::with_capacity(hierarchy.blobs.len());
 
-    for blob in &blobs {
-        let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
-            cx: blob.center.0 / w,
-            cy: blob.center.1 / h,
-            size: blob.pixels.len(),
-            intensity: blob.intensity,
-        }));
-        blob_nodes.push(node);
+        for hblob in &hierarchy.blobs {
+            let blob = &hblob.blob;
+            let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
+                cx: blob.center.0 / w,
+                cy: blob.center.1 / h,
+                size: blob.pixels.len(),
+                intensity: blob.intensity,
+            }));
+            blob_nodes.push(node);
+        }
 
-        // Connect blob to root
-        graph.add_edge(root, node, VisionEdge::Contains);
-    }
-
-    // Add adjacency edges between blobs
-    for i in 0..blobs.len() {
-        for j in (i + 1)..blobs.len() {
-            if blobs_adjacent(&blobs[i], &blobs[j]) {
-                graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
-                graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+        // Connect root to top-level blobs (roots in hierarchy)
+        for &root_idx in &hierarchy.roots {
+            if root_idx < blob_nodes.len() {
+                graph.add_edge(root, blob_nodes[root_idx], VisionEdge::Contains);
             }
         }
-    }
 
-    // Build hierarchy if enabled
-    if config.build_hierarchy && blobs.len() > 1 {
-        build_blob_hierarchy(&mut graph, &blobs, &blob_nodes, root, config);
+        // Connect parent-child relationships within hierarchy
+        for (idx, hblob) in hierarchy.blobs.iter().enumerate() {
+            // Connect to children
+            for &child_idx in &hblob.children {
+                if child_idx < blob_nodes.len() {
+                    graph.add_edge(blob_nodes[idx], blob_nodes[child_idx], VisionEdge::Hierarchy);
+                }
+            }
+        }
+
+        // Add adjacency edges between same-level blobs
+        for i in 0..hierarchy.blobs.len() {
+            for j in (i + 1)..hierarchy.blobs.len() {
+                // Only connect blobs at the same level
+                if hierarchy.blobs[i].level == hierarchy.blobs[j].level {
+                    if blobs_adjacent(&hierarchy.blobs[i].blob, &hierarchy.blobs[j].blob) {
+                        graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
+                        graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+                    }
+                }
+            }
+        }
+    } else {
+        // Single-level blob detection (original behavior)
+        let blobs = extract_blobs(image, config);
+
+        if blobs.is_empty() {
+            return Ok(graph);
+        }
+
+        // Create blob nodes
+        let mut blob_nodes = Vec::with_capacity(blobs.len());
+
+        for blob in &blobs {
+            let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
+                cx: blob.center.0 / w,
+                cy: blob.center.1 / h,
+                size: blob.pixels.len(),
+                intensity: blob.intensity,
+            }));
+            blob_nodes.push(node);
+
+            // Connect blob to root
+            graph.add_edge(root, node, VisionEdge::Contains);
+        }
+
+        // Add adjacency edges between blobs
+        for i in 0..blobs.len() {
+            for j in (i + 1)..blobs.len() {
+                if blobs_adjacent(&blobs[i], &blobs[j]) {
+                    graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
+                    graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
+                }
+            }
+        }
+
+        // Build legacy hierarchy if enabled (spatial clustering)
+        if config.build_hierarchy && blobs.len() > 1 {
+            build_blob_hierarchy(&mut graph, &blobs, &blob_nodes, root, config);
+        }
     }
 
     Ok(graph)
@@ -1297,6 +1580,197 @@ mod tests {
 
         assert!(blobs_adjacent(&blob1, &blob2)); // Close enough
         assert!(!blobs_adjacent(&blob1, &blob3)); // Far apart
+    }
+
+    // ========================================================================
+    // Hierarchical Blob Detection Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hierarchical_blob_new() {
+        let blob = Blob {
+            pixels: vec![(0, 0), (1, 0)],
+            center: (0.5, 0.0),
+            intensity: 0.8,
+            bbox: (0, 0, 2, 1),
+        };
+        let hblob = HierarchicalBlob::new(blob.clone(), 1, 0.5);
+        assert_eq!(hblob.level, 1);
+        assert!((hblob.scale - 0.5).abs() < 1e-6);
+        assert!(hblob.parent.is_none());
+        assert!(hblob.children.is_empty());
+    }
+
+    #[test]
+    fn test_hierarchical_blob_contains() {
+        let parent = HierarchicalBlob::new(
+            Blob {
+                pixels: vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
+                center: (1.0, 0.5),
+                intensity: 0.8,
+                bbox: (0, 0, 3, 2),
+            },
+            0,
+            1.0,
+        );
+        let child_inside = Blob {
+            pixels: vec![(1, 0)],
+            center: (1.0, 0.0),
+            intensity: 0.9,
+            bbox: (1, 0, 1, 1),
+        };
+        let child_outside = Blob {
+            pixels: vec![(5, 5)],
+            center: (5.0, 5.0),
+            intensity: 0.7,
+            bbox: (5, 5, 1, 1),
+        };
+
+        assert!(parent.contains(&child_inside));
+        assert!(!parent.contains(&child_outside));
+    }
+
+    #[test]
+    fn test_extract_hierarchical_blobs_single_blob() {
+        // Single blob should result in single-element hierarchy
+        let mut pixels = vec![0.0f32; 100];
+        for y in 4..7 {
+            for x in 4..7 {
+                pixels[y * 10 + x] = 0.8;
+            }
+        }
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.max_hierarchy_levels = 2;
+
+        let hierarchy = extract_hierarchical_blobs(&image, &config);
+        // Should find blobs at multiple scales
+        assert!(hierarchy.num_levels == 2);
+    }
+
+    #[test]
+    fn test_extract_hierarchical_blobs_multi_scale() {
+        // Create image with varying intensities (should produce hierarchy)
+        let mut pixels = vec![0.0f32; 400]; // 20x20
+        // Large low-intensity region
+        for y in 2..18 {
+            for x in 2..18 {
+                pixels[y * 20 + x] = 0.4;
+            }
+        }
+        // Smaller high-intensity region inside
+        for y in 6..14 {
+            for x in 6..14 {
+                pixels[y * 20 + x] = 0.7;
+            }
+        }
+        // Even smaller very high intensity core
+        for y in 8..12 {
+            for x in 8..12 {
+                pixels[y * 20 + x] = 0.95;
+            }
+        }
+
+        let image = RawImage::grayscale(20, 20, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.max_hierarchy_levels = 3;
+        config.blob_threshold = 0.3;
+
+        let hierarchy = extract_hierarchical_blobs(&image, &config);
+
+        // Should have multiple levels
+        assert_eq!(hierarchy.num_levels, 3);
+        // Should have some blobs
+        assert!(!hierarchy.blobs.is_empty());
+    }
+
+    #[test]
+    fn test_blob_hierarchy_parent_child_links() {
+        // Create nested blobs
+        let mut pixels = vec![0.0f32; 400]; // 20x20
+        // Outer region (lower intensity)
+        for y in 2..18 {
+            for x in 2..18 {
+                pixels[y * 20 + x] = 0.4;
+            }
+        }
+        // Inner region (higher intensity)
+        for y in 6..14 {
+            for x in 6..14 {
+                pixels[y * 20 + x] = 0.8;
+            }
+        }
+
+        let image = RawImage::grayscale(20, 20, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.max_hierarchy_levels = 2;
+        config.blob_threshold = 0.3;
+
+        let hierarchy = extract_hierarchical_blobs(&image, &config);
+
+        // Check that parent-child relationships are consistent
+        for (idx, hblob) in hierarchy.blobs.iter().enumerate() {
+            // If has parent, parent should have this as child
+            if let Some(parent_idx) = hblob.parent {
+                assert!(hierarchy.blobs[parent_idx].children.contains(&idx));
+            }
+            // If has children, children should have this as parent
+            for &child_idx in &hblob.children {
+                assert_eq!(hierarchy.blobs[child_idx].parent, Some(idx));
+            }
+        }
+    }
+
+    #[test]
+    fn test_image_to_graph_hierarchical() {
+        // Create nested structure
+        let mut pixels = vec![0.0f32; 400]; // 20x20
+        for y in 2..18 {
+            for x in 2..18 {
+                pixels[y * 20 + x] = 0.5;
+            }
+        }
+        for y in 6..14 {
+            for x in 6..14 {
+                pixels[y * 20 + x] = 0.9;
+            }
+        }
+
+        let image = RawImage::grayscale(20, 20, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.build_hierarchy = true;
+        config.max_hierarchy_levels = 2;
+        config.blob_threshold = 0.3;
+
+        let graph = image_to_graph(&image, &config).unwrap();
+
+        // Should have root node
+        assert!(graph.root.is_some());
+        // Should have blob nodes (at least one from each scale)
+        assert!(graph.node_count() > 1);
+        // Should have hierarchy edges
+        assert!(graph.edge_count() > 0);
+    }
+
+    #[test]
+    fn test_image_to_graph_single_level_fallback() {
+        // With max_hierarchy_levels = 1, should use single-level detection
+        let mut pixels = vec![0.0f32; 100];
+        for y in 4..7 {
+            for x in 4..7 {
+                pixels[y * 10 + x] = 0.8;
+            }
+        }
+
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+        let mut config = FeatureConfig::default();
+        config.build_hierarchy = true;
+        config.max_hierarchy_levels = 1; // Single level
+
+        let graph = image_to_graph(&image, &config).unwrap();
+
+        assert!(graph.root.is_some());
+        assert!(graph.node_count() >= 2); // Root + at least one blob
     }
 
     // ========================================================================

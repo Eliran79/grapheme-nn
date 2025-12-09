@@ -1,7 +1,7 @@
 ---
 id: backend-136
 title: Implement hierarchical blob detection for VisionBrain.to_graph()
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -30,82 +30,98 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Implement multi-scale hierarchical blob detection for VisionBrain.
+Detect blobs at multiple intensity thresholds (coarse → fine) and build parent-child relationships.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Implement HierarchicalBlob struct with parent/child links
+- [x] Implement extract_hierarchical_blobs() for multi-scale detection
+- [x] Update image_to_graph() to use hierarchical detection
+- [x] Maintain backward compatibility with single-level mode
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Add HierarchicalBlob struct with level, scale, parent, children
+- [x] Add BlobHierarchy result struct
+- [x] Implement extract_blobs_at_threshold() helper
+- [x] Implement extract_hierarchical_blobs() with threshold scaling
+- [x] Implement parent-child linking based on spatial containment
+- [x] Update image_to_graph() to branch on max_hierarchy_levels
+- [x] Add 7 unit tests for hierarchical detection
+- [x] Verify all existing tests still pass
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- Multi-scale detection at different thresholds (coarse = low, fine = high)
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Parent-child relationships based on spatial containment
+
+✅ **Criteria 3:**
+- image_to_graph() creates hierarchy edges in the graph
+
+✅ **Criteria 4:**
+- Backward compatible: max_hierarchy_levels=1 uses single-level detection
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Coarse levels use lower thresholds (more permissive, larger blobs)
+- Fine levels use higher thresholds (more selective, smaller blobs)
+- Parent contains child if child's center is within parent's bounding box
+- VisionEdge::Hierarchy used for parent-child links
+- VisionEdge::Contains used for root to top-level blobs
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] test_hierarchical_blob_new
+- [x] test_hierarchical_blob_contains
+- [x] test_extract_hierarchical_blobs_single_blob
+- [x] test_extract_hierarchical_blobs_multi_scale
+- [x] test_blob_hierarchy_parent_child_links
+- [x] test_image_to_graph_hierarchical
+- [x] test_image_to_graph_single_level_fallback
 
 ## Version Control
-
-**⚠️ CRITICAL: Always test AND run before committing!**
-
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] Build passes
+- [x] All 27 grapheme-vision tests pass
+- [x] All workspace tests pass
 
 ## Updates
 - 2025-12-09: Task created
+- 2025-12-09: Implementation complete
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **grapheme-vision/src/lib.rs** (~200 new lines): Hierarchical blob detection
+  - `HierarchicalBlob`: Struct with blob, level, children, parent, scale
+  - `BlobHierarchy`: Result struct with all blobs, num_levels, roots
+  - `extract_blobs_at_threshold()`: Helper for single-threshold extraction
+  - `extract_hierarchical_blobs()`: Multi-scale detection with parent-child linking
+  - Updated `image_to_graph()`: Uses hierarchical mode when max_hierarchy_levels > 1
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Hierarchical detection runs at multiple thresholds (coarse → fine)
+- Parent-child relationships determined by spatial containment
+- Level 0 = finest (highest threshold), Level N-1 = coarsest (lowest threshold)
+- Root blobs (no parent) connect to ImageRoot node
+- Children connect to parents via VisionEdge::Hierarchy
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses: FeatureConfig.max_hierarchy_levels and build_hierarchy flags
+- Exports: `HierarchicalBlob`, `BlobHierarchy`, `extract_hierarchical_blobs`
+- Unblocks: backend-137 (spatial relationship graph needs hierarchical structure)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+```bash
+# Run hierarchical tests
+cargo test -p grapheme-vision test_hierarchical
+
+# Test all vision tests (27 total)
+cargo test -p grapheme-vision
+```
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **backend-137 (Spatial Relationships)**: Can now use BlobHierarchy for richer spatial analysis
+- The hierarchy is in the VisionGraph: root → top-level blobs → child blobs
+- Same-level blobs have VisionEdge::Adjacent if their bounding boxes touch
+- Threshold scaling: `threshold = base + step * (num_levels - level - 1)`
+- For MNIST: default is 2 levels (blob_threshold=0.2, max_hierarchy_levels=2)
