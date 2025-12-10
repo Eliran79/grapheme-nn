@@ -945,6 +945,8 @@ pub enum ComponentState {
     Active,
     /// Component is busy and cannot accept new work
     Busy,
+    /// Component is overloaded
+    Overloaded,
     /// Component has an error
     Error(String),
     /// Component is disabled
@@ -3046,5 +3048,855 @@ mod attention_tests {
 
         assert_eq!(mechanism.stats.fallback_count, 2);
         assert_eq!(mechanism.stats.total_allocations, 2);
+    }
+}
+
+// ============================================================================
+// UnifiedCognition: Connect All Brains (Math, Code, Vision, Music, Chem, Law)
+// ============================================================================
+
+/// Brain status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainStatus {
+    /// Brain identifier
+    pub id: String,
+    /// Domain the brain handles
+    pub domain: String,
+    /// Whether brain is currently active
+    pub active: bool,
+    /// Current load (0.0 to 1.0)
+    pub load: f32,
+    /// Total requests processed
+    pub requests_processed: u64,
+    /// Total successful responses
+    pub successful_responses: u64,
+    /// Last activity timestamp
+    pub last_activity: u64,
+}
+
+impl BrainStatus {
+    /// Create a new brain status entry
+    pub fn new(id: impl Into<String>, domain: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            domain: domain.into(),
+            active: true,
+            load: 0.0,
+            requests_processed: 0,
+            successful_responses: 0,
+            last_activity: 0,
+        }
+    }
+
+    /// Get success rate - O(1)
+    pub fn success_rate(&self) -> f32 {
+        if self.requests_processed == 0 {
+            0.0
+        } else {
+            self.successful_responses as f32 / self.requests_processed as f32
+        }
+    }
+
+    /// Record a request
+    pub fn record_request(&mut self, success: bool, timestamp: u64) {
+        self.requests_processed += 1;
+        if success {
+            self.successful_responses += 1;
+        }
+        self.last_activity = timestamp;
+    }
+}
+
+/// Configuration for unified cognition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnifiedCognitionConfig {
+    /// Maximum concurrent brain operations
+    pub max_concurrent_operations: usize,
+    /// Whether to use attention-based routing
+    pub use_attention_routing: bool,
+    /// Enable parallel brain processing
+    pub enable_parallel: bool,
+    /// Fallback to text brain if no match
+    pub fallback_enabled: bool,
+    /// Maximum processing time per request (ms)
+    pub max_processing_time_ms: u64,
+    /// Enable self-monitoring via ReflectiveBrain
+    pub enable_self_monitoring: bool,
+    /// Introspection interval (every N requests)
+    pub introspection_interval: u64,
+}
+
+impl Default for UnifiedCognitionConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_operations: 3,
+            use_attention_routing: true,
+            enable_parallel: true,
+            fallback_enabled: true,
+            max_processing_time_ms: 5000,
+            enable_self_monitoring: true,
+            introspection_interval: 100,
+        }
+    }
+}
+
+/// Result of unified cognition processing
+#[derive(Debug, Clone)]
+pub struct UnifiedCognitionResult {
+    /// Primary output from the selected brain
+    pub primary_output: Option<String>,
+    /// Which brain produced the result
+    pub source_brain: String,
+    /// Confidence in the result
+    pub confidence: f32,
+    /// All brain contributions (brain_id -> output)
+    pub brain_outputs: std::collections::HashMap<String, String>,
+    /// Attention weights used
+    pub attention_weights: Vec<(String, f32)>,
+    /// Processing time in milliseconds
+    pub processing_time_ms: u64,
+    /// Whether this was a fallback result
+    pub was_fallback: bool,
+}
+
+impl UnifiedCognitionResult {
+    /// Create an empty result
+    pub fn empty() -> Self {
+        Self {
+            primary_output: None,
+            source_brain: String::new(),
+            confidence: 0.0,
+            brain_outputs: std::collections::HashMap::new(),
+            attention_weights: Vec::new(),
+            processing_time_ms: 0,
+            was_fallback: false,
+        }
+    }
+
+    /// Check if result is valid
+    pub fn is_valid(&self) -> bool {
+        self.primary_output.is_some() && self.confidence > 0.0
+    }
+}
+
+/// Statistics for unified cognition
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnifiedCognitionStats {
+    /// Total requests processed
+    pub total_requests: u64,
+    /// Successful completions
+    pub successful_completions: u64,
+    /// Failed requests
+    pub failed_requests: u64,
+    /// Fallback invocations
+    pub fallback_invocations: u64,
+    /// Average processing time (ms)
+    pub avg_processing_time_ms: f32,
+    /// Brain usage counts
+    pub brain_usage: std::collections::HashMap<String, u64>,
+    /// Last introspection health score
+    pub last_health_score: f32,
+    /// Total introspections performed
+    pub introspections_performed: u64,
+}
+
+impl UnifiedCognitionStats {
+    /// Record a completed request
+    pub fn record_completion(&mut self, brain_id: &str, processing_time_ms: u64, success: bool) {
+        self.total_requests += 1;
+        if success {
+            self.successful_completions += 1;
+        } else {
+            self.failed_requests += 1;
+        }
+
+        *self.brain_usage.entry(brain_id.to_string()).or_insert(0) += 1;
+
+        // Update running average
+        let n = self.total_requests as f32;
+        self.avg_processing_time_ms = ((self.avg_processing_time_ms * (n - 1.0)) + processing_time_ms as f32) / n;
+    }
+
+    /// Record a fallback
+    pub fn record_fallback(&mut self) {
+        self.fallback_invocations += 1;
+    }
+
+    /// Get success rate - O(1)
+    pub fn success_rate(&self) -> f32 {
+        if self.total_requests == 0 {
+            0.0
+        } else {
+            self.successful_completions as f32 / self.total_requests as f32
+        }
+    }
+}
+
+/// UnifiedCognition: Connects all cognitive brains into one system
+///
+/// This is the central integration point for all domain brains (Math, Code,
+/// Vision, Music, Chem, Law) with cognitive infrastructure (attention,
+/// self-model, reflection).
+///
+/// # Architecture
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────┐
+/// │                        UnifiedCognition                                  │
+/// │                                                                          │
+/// │  ┌───────────────────────────────────────────────────────────────────┐  │
+/// │  │                      AttentionMechanism                            │  │
+/// │  │   Input ──► Feature Analysis ──► Brain Selection ──► Weights      │  │
+/// │  └───────────────────────────────────────────────────────────────────┘  │
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌───────────────────────────────────────────────────────────────────┐  │
+/// │  │                      Brain Registry                                │  │
+/// │  │   [MathBrain] [CodeBrain] [VisionBrain] [MusicBrain] ...          │  │
+/// │  └───────────────────────────────────────────────────────────────────┘  │
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌───────────────────────────────────────────────────────────────────┐  │
+/// │  │                      SelfModel                                     │  │
+/// │  │   Component tracking, state monitoring, system health              │  │
+/// │  └───────────────────────────────────────────────────────────────────┘  │
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌───────────────────────────────────────────────────────────────────┐  │
+/// │  │                    ReflectiveBrain                                 │  │
+/// │  │   Introspection, problem detection, auto-healing                   │  │
+/// │  └───────────────────────────────────────────────────────────────────┘  │
+/// │                                                                          │
+/// └─────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Time Complexity
+/// - process(): O(n log n) for attention + O(k * m) for brain processing
+///   where n = brains, k = selected brains, m = input length
+/// - get_brain_status(): O(1)
+/// - perform_introspection(): O(n) where n = components
+#[derive(Debug)]
+pub struct UnifiedCognition {
+    /// Configuration
+    pub config: UnifiedCognitionConfig,
+    /// Attention mechanism for brain selection
+    pub attention: AttentionMechanism,
+    /// Self model for system state
+    pub self_model: SelfModel,
+    /// Reflective brain for introspection
+    pub reflective_brain: ReflectiveBrain,
+    /// Brain status tracking
+    brain_status: std::collections::HashMap<String, BrainStatus>,
+    /// Statistics
+    pub stats: UnifiedCognitionStats,
+    /// Request counter (for introspection scheduling)
+    request_counter: u64,
+}
+
+impl Default for UnifiedCognition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UnifiedCognition {
+    /// Create a new unified cognition system
+    pub fn new() -> Self {
+        let mut self_model = create_self_model();
+
+        // Add unified cognition as a component
+        self_model.add_component(SelfModelComponent::new(
+            "unified_cognition",
+            ComponentType::CognitiveModule("coordination".to_string()),
+        ));
+
+        let reflective_brain = create_reflective_brain();
+        let attention = AttentionMechanism::new();
+
+        Self {
+            config: UnifiedCognitionConfig::default(),
+            attention,
+            self_model,
+            reflective_brain,
+            brain_status: std::collections::HashMap::new(),
+            stats: UnifiedCognitionStats::default(),
+            request_counter: 0,
+        }
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: UnifiedCognitionConfig) -> Self {
+        let mut unified = Self::new();
+        unified.config = config;
+        unified
+    }
+
+    /// Register a brain with the unified system
+    pub fn register_brain(&mut self, brain_id: impl Into<String>, domain: impl Into<String>) {
+        let brain_id = brain_id.into();
+        let domain = domain.into();
+
+        // Add to brain status tracking
+        self.brain_status.insert(
+            brain_id.clone(),
+            BrainStatus::new(&brain_id, &domain),
+        );
+
+        // Register with attention mechanism
+        self.attention.register_brain(&domain, &brain_id);
+
+        // Add to self model
+        self.self_model.add_component(SelfModelComponent::new(
+            &brain_id,
+            ComponentType::Brain(domain.clone()),
+        ));
+    }
+
+    /// Register standard brains (Math, Code, Vision, Music, Chem, Law, Text)
+    pub fn register_standard_brains(&mut self) {
+        self.register_brain("MathBrain", "math");
+        self.register_brain("CodeBrain", "code");
+        self.register_brain("VisionBrain", "vision");
+        self.register_brain("MusicBrain", "music");
+        self.register_brain("ChemBrain", "chem");
+        self.register_brain("LawBrain", "law");
+        self.register_brain("TextBrain", "text");
+    }
+
+    /// Get brain status - O(1)
+    pub fn get_brain_status(&self, brain_id: &str) -> Option<&BrainStatus> {
+        self.brain_status.get(brain_id)
+    }
+
+    /// Get all brain statuses - O(n)
+    pub fn all_brain_status(&self) -> Vec<&BrainStatus> {
+        self.brain_status.values().collect()
+    }
+
+    /// Get available brains with their loads - O(n)
+    pub fn get_available_brains(&self) -> Vec<(&str, f32)> {
+        self.brain_status
+            .iter()
+            .filter(|(_, status)| status.active)
+            .map(|(id, status)| (id.as_str(), status.load))
+            .collect()
+    }
+
+    /// Update brain load
+    pub fn update_brain_load(&mut self, brain_id: &str, load: f32) {
+        if let Some(status) = self.brain_status.get_mut(brain_id) {
+            status.load = load.clamp(0.0, 1.0);
+        }
+        if let Some(component) = self.self_model.get_component_mut(brain_id) {
+            component.load = load.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Enable/disable a brain
+    pub fn set_brain_active(&mut self, brain_id: &str, active: bool) {
+        if let Some(status) = self.brain_status.get_mut(brain_id) {
+            status.active = active;
+        }
+        if let Some(component) = self.self_model.get_component_mut(brain_id) {
+            component.state = if active {
+                ComponentState::Active
+            } else {
+                ComponentState::Disabled
+            };
+        }
+    }
+
+    /// Allocate attention for an input - O(n log n)
+    pub fn allocate_attention(&mut self, input: &str) -> AttentionAllocation {
+        let available: Vec<(String, f32)> = self.brain_status
+            .iter()
+            .filter(|(_, status)| status.active)
+            .map(|(id, status)| (id.clone(), status.load))
+            .collect();
+        let available_refs: Vec<(&str, f32)> = available.iter()
+            .map(|(id, load)| (id.as_str(), *load))
+            .collect();
+        self.attention.allocate(input, &available_refs)
+    }
+
+    /// Simulate processing an input (returns selected brains and weights)
+    ///
+    /// This method selects brains based on attention and simulates processing.
+    /// In a real system, this would call actual brain.execute() methods.
+    pub fn process(&mut self, input: &str, timestamp: u64) -> UnifiedCognitionResult {
+        self.request_counter += 1;
+        let start_time = timestamp;
+
+        // Check if introspection is needed
+        if self.config.enable_self_monitoring
+            && self.request_counter.is_multiple_of(self.config.introspection_interval)
+        {
+            self.perform_introspection();
+        }
+
+        // Allocate attention
+        let allocation = self.allocate_attention(input);
+
+        if allocation.engaged_count == 0 {
+            // No brain matched - try fallback
+            if self.config.fallback_enabled {
+                self.stats.record_fallback();
+                self.attention.record_fallback();
+
+                let mut result = UnifiedCognitionResult::empty();
+                result.source_brain = "TextBrain".to_string();
+                result.was_fallback = true;
+                result.processing_time_ms = timestamp.saturating_sub(start_time);
+                return result;
+            } else {
+                return UnifiedCognitionResult::empty();
+            }
+        }
+
+        // Process with selected brains
+        let mut result = UnifiedCognitionResult::empty();
+
+        for brain_attention in allocation.brain_weights.iter().filter(|b| b.should_engage) {
+            let brain_id = &brain_attention.brain_id;
+
+            // Simulate brain processing (in real implementation, call brain.execute())
+            let simulated_output = format!("Processed by {} with weight {:.3}", brain_id, brain_attention.weight);
+
+            result.brain_outputs.insert(brain_id.clone(), simulated_output.clone());
+            result.attention_weights.push((brain_id.clone(), brain_attention.weight));
+
+            // Update status
+            if let Some(status) = self.brain_status.get_mut(brain_id) {
+                status.record_request(true, timestamp);
+            }
+            if let Some(component) = self.self_model.get_component_mut(brain_id) {
+                component.record_operation();
+            }
+
+            // First engaged brain is primary
+            if result.primary_output.is_none() {
+                result.primary_output = Some(simulated_output);
+                result.source_brain = brain_id.clone();
+                result.confidence = brain_attention.weight;
+            }
+        }
+
+        result.processing_time_ms = timestamp.saturating_sub(start_time);
+
+        // Record outcome in attention
+        let success = result.is_valid();
+        self.attention.record_outcome(success);
+
+        // Update stats
+        self.stats.record_completion(&result.source_brain, result.processing_time_ms, success);
+
+        result
+    }
+
+    /// Perform introspection using ReflectiveBrain
+    pub fn perform_introspection(&mut self) -> IntrospectionResult {
+        // Update self model with current brain states
+        self.sync_self_model();
+
+        // Perform introspection
+        let result = self.reflective_brain.introspect();
+
+        // Update stats
+        self.stats.last_health_score = result.health_score;
+        self.stats.introspections_performed += 1;
+
+        // Auto-heal if needed and enabled
+        if self.config.enable_self_monitoring && result.health_score < 0.7 {
+            let _healed = self.reflective_brain.auto_heal();
+        }
+
+        result
+    }
+
+    /// Sync self model with current brain status
+    fn sync_self_model(&mut self) {
+        for (brain_id, status) in &self.brain_status {
+            if let Some(component) = self.self_model.get_component_mut(brain_id) {
+                component.load = status.load;
+                component.confidence = status.success_rate();
+                component.state = if status.active {
+                    if status.load > 0.8 {
+                        ComponentState::Overloaded
+                    } else {
+                        ComponentState::Active
+                    }
+                } else {
+                    ComponentState::Disabled
+                };
+            }
+        }
+
+        // Update system-level metrics
+        self.self_model.system_load = self.brain_status.values()
+            .filter(|s| s.active)
+            .map(|s| s.load)
+            .sum::<f32>() / self.brain_status.len().max(1) as f32;
+
+        self.self_model.system_confidence = self.stats.success_rate();
+    }
+
+    /// Get system health overview
+    pub fn health_overview(&self) -> SystemHealthOverview {
+        let active_brains = self.brain_status.values().filter(|s| s.active).count();
+        let total_brains = self.brain_status.len();
+        let avg_load = self.brain_status.values()
+            .filter(|s| s.active)
+            .map(|s| s.load)
+            .sum::<f32>() / active_brains.max(1) as f32;
+
+        let overloaded_brains: Vec<String> = self.brain_status
+            .iter()
+            .filter(|(_, s)| s.load > 0.8)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        SystemHealthOverview {
+            active_brains,
+            total_brains,
+            average_load: avg_load,
+            overloaded_brains,
+            success_rate: self.stats.success_rate(),
+            last_health_score: self.stats.last_health_score,
+            total_requests: self.stats.total_requests,
+        }
+    }
+
+    /// Suggest attention redistribution based on performance
+    pub fn suggest_attention_optimization(&self) -> Vec<(String, f32)> {
+        self.attention.suggest_redistribution()
+    }
+
+    /// Reset statistics
+    pub fn reset_stats(&mut self) {
+        self.stats = UnifiedCognitionStats::default();
+        for status in self.brain_status.values_mut() {
+            status.requests_processed = 0;
+            status.successful_responses = 0;
+        }
+    }
+
+    /// Get reference to self model
+    pub fn self_model(&self) -> &SelfModel {
+        &self.self_model
+    }
+
+    /// Get reference to attention mechanism
+    pub fn attention(&self) -> &AttentionMechanism {
+        &self.attention
+    }
+
+    /// Get reference to reflective brain
+    pub fn reflective_brain(&self) -> &ReflectiveBrain {
+        &self.reflective_brain
+    }
+
+    /// Get current statistics
+    pub fn stats(&self) -> &UnifiedCognitionStats {
+        &self.stats
+    }
+}
+
+/// System health overview
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemHealthOverview {
+    /// Number of active brains
+    pub active_brains: usize,
+    /// Total registered brains
+    pub total_brains: usize,
+    /// Average brain load
+    pub average_load: f32,
+    /// List of overloaded brain IDs
+    pub overloaded_brains: Vec<String>,
+    /// Overall success rate
+    pub success_rate: f32,
+    /// Last introspection health score
+    pub last_health_score: f32,
+    /// Total requests processed
+    pub total_requests: u64,
+}
+
+impl SystemHealthOverview {
+    /// Check if system is healthy
+    pub fn is_healthy(&self) -> bool {
+        self.active_brains > 0
+            && self.average_load < 0.8
+            && self.overloaded_brains.is_empty()
+            && self.success_rate > 0.5
+    }
+}
+
+/// Factory function to create a unified cognition system with standard brains
+pub fn create_unified_cognition() -> UnifiedCognition {
+    let mut unified = UnifiedCognition::new();
+    unified.register_standard_brains();
+    unified
+}
+
+// ============================================================================
+// UnifiedCognition Tests
+// ============================================================================
+
+#[cfg(test)]
+mod unified_cognition_tests {
+    use super::*;
+
+    #[test]
+    fn test_unified_cognition_creation() {
+        let unified = UnifiedCognition::new();
+        assert!(unified.brain_status.is_empty());
+        assert_eq!(unified.stats.total_requests, 0);
+    }
+
+    #[test]
+    fn test_unified_cognition_register_brain() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_brain("TestBrain", "test");
+
+        assert!(unified.brain_status.contains_key("TestBrain"));
+        assert!(unified.self_model.get_component("TestBrain").is_some());
+    }
+
+    #[test]
+    fn test_unified_cognition_register_standard_brains() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        assert_eq!(unified.brain_status.len(), 7);
+        assert!(unified.brain_status.contains_key("MathBrain"));
+        assert!(unified.brain_status.contains_key("CodeBrain"));
+        assert!(unified.brain_status.contains_key("VisionBrain"));
+    }
+
+    #[test]
+    fn test_unified_cognition_get_brain_status() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_brain("MathBrain", "math");
+
+        let status = unified.get_brain_status("MathBrain");
+        assert!(status.is_some());
+        assert_eq!(status.unwrap().domain, "math");
+    }
+
+    #[test]
+    fn test_unified_cognition_update_load() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_brain("TestBrain", "test");
+
+        unified.update_brain_load("TestBrain", 0.7);
+
+        let status = unified.get_brain_status("TestBrain").unwrap();
+        assert!((status.load - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_unified_cognition_set_brain_active() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_brain("TestBrain", "test");
+
+        unified.set_brain_active("TestBrain", false);
+
+        let status = unified.get_brain_status("TestBrain").unwrap();
+        assert!(!status.active);
+    }
+
+    #[test]
+    fn test_unified_cognition_allocate_attention() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        let allocation = unified.allocate_attention("Calculate 2 + 3");
+
+        assert!(allocation.engaged_count > 0);
+    }
+
+    #[test]
+    fn test_unified_cognition_process() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        let result = unified.process("Calculate 2 + 3", 1000);
+
+        assert!(result.is_valid());
+        assert!(!result.source_brain.is_empty());
+    }
+
+    #[test]
+    fn test_unified_cognition_process_updates_stats() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        let _result = unified.process("Calculate 2 + 3", 1000);
+
+        assert_eq!(unified.stats.total_requests, 1);
+        assert!(unified.stats.successful_completions > 0);
+    }
+
+    #[test]
+    fn test_unified_cognition_fallback() {
+        let mut unified = UnifiedCognition::new();
+        unified.config.fallback_enabled = true;
+        // Don't register any brains
+
+        let result = unified.process("random input", 1000);
+
+        assert!(result.was_fallback);
+        assert_eq!(result.source_brain, "TextBrain");
+    }
+
+    #[test]
+    fn test_unified_cognition_no_fallback() {
+        let mut unified = UnifiedCognition::new();
+        unified.config.fallback_enabled = false;
+        // Don't register any brains
+
+        let result = unified.process("random input", 1000);
+
+        assert!(!result.is_valid());
+    }
+
+    #[test]
+    fn test_unified_cognition_introspection() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        let result = unified.perform_introspection();
+
+        assert!(result.health_score >= 0.0 && result.health_score <= 1.0);
+        assert_eq!(unified.stats.introspections_performed, 1);
+    }
+
+    #[test]
+    fn test_unified_cognition_health_overview() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        // Process a few requests to establish a success rate
+        for _ in 0..3 {
+            unified.process("Calculate 2 + 2", 1000);
+        }
+
+        let health = unified.health_overview();
+
+        assert_eq!(health.total_brains, 7);
+        assert_eq!(health.active_brains, 7);
+        assert!(health.is_healthy());
+    }
+
+    #[test]
+    fn test_unified_cognition_health_overview_overloaded() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_brain("TestBrain", "test");
+        unified.update_brain_load("TestBrain", 0.95);
+
+        let health = unified.health_overview();
+
+        assert!(!health.overloaded_brains.is_empty());
+        assert!(health.overloaded_brains.contains(&"TestBrain".to_string()));
+    }
+
+    #[test]
+    fn test_unified_cognition_suggest_optimization() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+
+        // Process some inputs to generate statistics
+        for _ in 0..5 {
+            let _result = unified.process("Calculate 1 + 1", 1000);
+        }
+
+        let _suggestions = unified.suggest_attention_optimization();
+        // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn test_unified_cognition_reset_stats() {
+        let mut unified = UnifiedCognition::new();
+        unified.register_standard_brains();
+        unified.process("test", 1000);
+
+        unified.reset_stats();
+
+        assert_eq!(unified.stats.total_requests, 0);
+    }
+
+    #[test]
+    fn test_unified_cognition_config() {
+        let config = UnifiedCognitionConfig {
+            max_concurrent_operations: 5,
+            use_attention_routing: false,
+            ..Default::default()
+        };
+
+        let unified = UnifiedCognition::with_config(config);
+
+        assert_eq!(unified.config.max_concurrent_operations, 5);
+        assert!(!unified.config.use_attention_routing);
+    }
+
+    #[test]
+    fn test_brain_status_success_rate() {
+        let mut status = BrainStatus::new("TestBrain", "test");
+
+        status.record_request(true, 100);
+        status.record_request(true, 200);
+        status.record_request(false, 300);
+
+        let rate = status.success_rate();
+        assert!((rate - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_unified_cognition_stats_success_rate() {
+        let mut stats = UnifiedCognitionStats::default();
+
+        stats.record_completion("BrainA", 100, true);
+        stats.record_completion("BrainA", 100, true);
+        stats.record_completion("BrainA", 100, false);
+
+        let rate = stats.success_rate();
+        assert!((rate - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_create_unified_cognition_factory() {
+        let unified = create_unified_cognition();
+
+        assert_eq!(unified.brain_status.len(), 7);
+        assert!(unified.get_brain_status("MathBrain").is_some());
+    }
+
+    #[test]
+    fn test_unified_cognition_result_is_valid() {
+        let empty = UnifiedCognitionResult::empty();
+        assert!(!empty.is_valid());
+
+        let mut valid = UnifiedCognitionResult::empty();
+        valid.primary_output = Some("output".to_string());
+        valid.confidence = 0.8;
+        assert!(valid.is_valid());
+    }
+
+    #[test]
+    fn test_system_health_overview_is_healthy() {
+        let healthy = SystemHealthOverview {
+            active_brains: 5,
+            total_brains: 7,
+            average_load: 0.3,
+            overloaded_brains: vec![],
+            success_rate: 0.8,
+            last_health_score: 0.9,
+            total_requests: 100,
+        };
+        assert!(healthy.is_healthy());
+
+        let unhealthy = SystemHealthOverview {
+            active_brains: 0,
+            ..healthy.clone()
+        };
+        assert!(!unhealthy.is_healthy());
     }
 }
