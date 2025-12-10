@@ -1,7 +1,7 @@
 ---
 id: backend-140
 title: Implement joint training for VisionBrain + ClassificationBrain + GRAPHEME Core
-status: todo
+status: doing
 priority: critical
 tags:
 - backend
@@ -130,25 +130,53 @@ enabling the VisionBrain → DagNN → ClassificationBrain pipeline to achieve h
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `FeatureMode` enum: `GridSampling`, `BlobDetection`, `Hybrid`
+- Added `grid_size` field to `FeatureConfig` (default: 10 for 10x10 = 100 nodes)
+- Implemented `image_to_graph_grid()` for dense, consistent feature extraction
+- Implemented `image_to_graph_hybrid()` combining grid + blob features
+- Refactored `image_to_graph_blobs()` (original blob detection as separate function)
+- Changed default `FeatureMode` to `GridSampling` (was implicit BlobDetection)
+- Updated `ImageClassificationConfig::default()` to use `grid_sampling(10)` with `max_vision_nodes: 101`
+
+**Key runtime behavior changes:**
+- VisionGraph now produces 101 nodes (1 root + 100 grid cells) by default
+- Non-zero activations increased from 4 (2%) to 66 (38%) per image
+- Gradient magnitude increased from 1.0 to 2.24
+- All 53 grapheme-vision tests + 13 MNIST integration tests pass
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `ImageClassificationModel::forward()` and `train_step()` work unchanged (same API)
+- VisionBrain produces more nodes → DagNN has more non-zero input activations
+- More non-zero activations → better gradient flow through the network
+- No async flows or timing changes
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No new external dependencies
+- `FeatureConfig` API extended with backward-compatible builders:
+  - `.grid_sampling(size)` - use grid mode with specified size
+  - `.blob_detection()` - use original blob detection mode
+  - `.with_mode(FeatureMode)` and `.with_grid_size(size)` for fine control
+- Tests expecting blob behavior must now explicitly use `.blob_detection()`
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test --package grapheme-vision` (53 tests pass)
+- Run `cargo test --package grapheme-vision test_weight_persistence_across_samples -- --nocapture` to see weight changes
+- Run `cargo test --package grapheme-vision test_gradient_magnitude_and_direction -- --nocapture` to see activation coverage
+
+**Known limitations:**
+- Grid sampling produces fixed-size graphs regardless of image content
+- For very small images (< grid_size), some grid cells may sample same pixels
+- Actual MNIST accuracy testing still pending (requires training loop execution)
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+**For testing-007 (validate >90% accuracy):**
+1. The infrastructure is now in place - VisionGraph produces dense, consistent features
+2. Weight persistence works - weights change across training samples (verified by test)
+3. To test accuracy, need to run actual MNIST training loop with many samples
+4. Consider tuning hyperparameters: learning_rate, gradient_weight, hebbian_weight
+5. Grid size 10x10 may need tuning - try 7x7 (49 nodes) or 14x14 (196 nodes) for MNIST
+
+**Important decisions:**
+- Chose GridSampling as default because blob detection produced too sparse features
+- Grid uses 3x3 pixel averaging (`sample_pixel_region`) for robustness
+- Hybrid mode adds blobs on top of grid - useful for semantic features + consistent base

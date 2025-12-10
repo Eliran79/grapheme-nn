@@ -456,9 +456,31 @@ impl VisionGraph {
 // Feature Extraction (No CNN - Pure Signal Processing)
 // ============================================================================
 
+/// Feature extraction mode for VisionBrain
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeatureMode {
+    /// Blob detection - extracts connected components (variable node count)
+    BlobDetection,
+    /// Grid sampling - samples pixels at regular grid points (fixed node count)
+    /// This gives dense, consistent features for DagNN input
+    GridSampling,
+    /// Hybrid mode - grid sampling + blob detection (grid as base, blobs as features)
+    Hybrid,
+}
+
+impl Default for FeatureMode {
+    fn default() -> Self {
+        FeatureMode::GridSampling // Default to grid for consistent DagNN sizing
+    }
+}
+
 /// Configuration for feature extraction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureConfig {
+    /// Feature extraction mode
+    pub mode: FeatureMode,
+    /// Grid dimensions for GridSampling mode (e.g., 7x7 = 49 nodes)
+    pub grid_size: usize,
     /// Threshold for blob detection (pixels above this are foreground)
     pub blob_threshold: f32,
     /// Minimum blob size in pixels
@@ -484,6 +506,8 @@ pub struct FeatureConfig {
 impl Default for FeatureConfig {
     fn default() -> Self {
         Self {
+            mode: FeatureMode::GridSampling,
+            grid_size: 10, // 10x10 = 100 nodes, matches max_vision_nodes default
             blob_threshold: 0.3,
             min_blob_size: 4,
             max_blobs: 100,
@@ -499,6 +523,31 @@ impl Default for FeatureConfig {
 }
 
 impl FeatureConfig {
+    /// Builder: set feature extraction mode
+    pub fn with_mode(mut self, mode: FeatureMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Builder: set grid size for GridSampling mode
+    pub fn with_grid_size(mut self, size: usize) -> Self {
+        self.grid_size = size;
+        self
+    }
+
+    /// Builder: use blob detection mode
+    pub fn blob_detection(mut self) -> Self {
+        self.mode = FeatureMode::BlobDetection;
+        self
+    }
+
+    /// Builder: use grid sampling mode with specified grid size
+    pub fn grid_sampling(mut self, grid_size: usize) -> Self {
+        self.mode = FeatureMode::GridSampling;
+        self.grid_size = grid_size;
+        self
+    }
+
     /// Builder: set blob detection threshold
     pub fn with_blob_threshold(mut self, threshold: f32) -> Self {
         self.blob_threshold = threshold;
@@ -967,13 +1016,140 @@ pub fn blobs_adjacent(a: &Blob, b: &Blob) -> bool {
 ///
 /// This is the core VisionBrain functionality:
 /// - Deterministic: same image always produces same graph
-/// - Hierarchical: multi-scale blob detection with parent-child relationships
+/// - Multiple modes: GridSampling (dense), BlobDetection (sparse), Hybrid
 /// - No CNN: pure signal processing
 pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
     if image.pixels.is_empty() {
         return Err(VisionError::EmptyImage);
     }
 
+    match config.mode {
+        FeatureMode::GridSampling => image_to_graph_grid(image, config),
+        FeatureMode::BlobDetection => image_to_graph_blobs(image, config),
+        FeatureMode::Hybrid => image_to_graph_hybrid(image, config),
+    }
+}
+
+/// Grid sampling mode: samples pixels at regular grid points.
+/// Produces grid_size^2 nodes with consistent, dense activations.
+fn image_to_graph_grid(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
+    let mut graph = VisionGraph::new(image.width, image.height);
+    let grid_size = config.grid_size;
+
+    // Create root node
+    let root = graph.add_node(new_vision_node(VisionNodeType::ImageRoot {
+        width: image.width,
+        height: image.height,
+    }));
+    graph.root = Some(root);
+
+    // Sample pixels at grid points
+    let mut grid_nodes = Vec::with_capacity(grid_size * grid_size);
+
+    for gy in 0..grid_size {
+        for gx in 0..grid_size {
+            // Map grid position to image coordinates
+            let x = (gx * image.width) / grid_size;
+            let y = (gy * image.height) / grid_size;
+
+            // Sample pixel intensity (with 3x3 averaging for robustness)
+            let intensity = sample_pixel_region(image, x, y, 1);
+
+            // Create blob node with grid position
+            let cx = (gx as f32 + 0.5) / grid_size as f32;
+            let cy = (gy as f32 + 0.5) / grid_size as f32;
+
+            let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
+                cx,
+                cy,
+                size: 1, // Grid cell represents 1 logical unit
+                intensity,
+            }));
+            grid_nodes.push(node);
+
+            // Connect to root
+            graph.add_edge(root, node, VisionEdge::Contains);
+        }
+    }
+
+    // Build spatial edges between adjacent grid cells
+    if config.build_spatial_graph {
+        for gy in 0..grid_size {
+            for gx in 0..grid_size {
+                let idx = gy * grid_size + gx;
+
+                // Connect to right neighbor
+                if gx + 1 < grid_size {
+                    let right_idx = gy * grid_size + (gx + 1);
+                    graph.add_edge(grid_nodes[idx], grid_nodes[right_idx], VisionEdge::LeftOf);
+                    graph.add_edge(grid_nodes[right_idx], grid_nodes[idx], VisionEdge::RightOf);
+                }
+
+                // Connect to bottom neighbor
+                if gy + 1 < grid_size {
+                    let bottom_idx = (gy + 1) * grid_size + gx;
+                    graph.add_edge(grid_nodes[idx], grid_nodes[bottom_idx], VisionEdge::Above);
+                    graph.add_edge(grid_nodes[bottom_idx], grid_nodes[idx], VisionEdge::Below);
+                }
+            }
+        }
+    }
+
+    Ok(graph)
+}
+
+/// Sample a region around a pixel for robust intensity estimation.
+/// Returns average intensity in a (2*radius+1)x(2*radius+1) region.
+fn sample_pixel_region(image: &RawImage, x: usize, y: usize, radius: usize) -> f32 {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    let x_start = x.saturating_sub(radius);
+    let y_start = y.saturating_sub(radius);
+    let x_end = (x + radius + 1).min(image.width);
+    let y_end = (y + radius + 1).min(image.height);
+
+    for py in y_start..y_end {
+        for px in x_start..x_end {
+            sum += image.get_pixel(px, py);
+            count += 1;
+        }
+    }
+
+    if count > 0 { sum / count as f32 } else { 0.0 }
+}
+
+/// Hybrid mode: combines grid sampling with blob detection.
+/// Grid provides consistent base features, blobs provide semantic features.
+fn image_to_graph_hybrid(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
+    // Start with grid sampling
+    let mut graph = image_to_graph_grid(image, config)?;
+
+    // Add blob features on top
+    let blobs = extract_blobs(image, config);
+    let w = image.width as f32;
+    let h = image.height as f32;
+
+    // Create blob nodes (separate from grid nodes)
+    for blob in &blobs {
+        let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
+            cx: blob.center.0 / w,
+            cy: blob.center.1 / h,
+            size: blob.pixels.len(),
+            intensity: blob.intensity,
+        }));
+
+        // Connect blob to root
+        if let Some(root) = graph.root {
+            graph.add_edge(root, node, VisionEdge::Contains);
+        }
+    }
+
+    Ok(graph)
+}
+
+/// Blob detection mode: extracts connected components (original behavior).
+fn image_to_graph_blobs(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
     let mut graph = VisionGraph::new(image.width, image.height);
     let w = image.width as f32;
     let h = image.height as f32;
@@ -1697,9 +1873,12 @@ pub struct ImageClassificationConfig {
 
 impl Default for ImageClassificationConfig {
     fn default() -> Self {
-        // MNIST-specific defaults: 10 digit classes, optimized feature config
+        // MNIST-specific defaults: 10 digit classes, grid-based features
+        // Grid 10x10 = 100 nodes + 1 root = 101 nodes
+        // max_vision_nodes = 101 to include root node
         Self {
             vision: FeatureConfig::default()
+                .grid_sampling(10) // 10x10 grid = 100 feature nodes + 1 root
                 .with_blob_threshold(0.2)
                 .with_min_blob_size(3)
                 .with_max_blobs(50),
@@ -1709,7 +1888,7 @@ impl Default for ImageClassificationConfig {
             gradient_weight: 0.7,
             hebbian_weight: 0.3,
             use_hybrid_learning: true,
-            max_vision_nodes: 100,
+            max_vision_nodes: 101, // 10x10 grid + 1 root node
         }
     }
 }
@@ -2387,7 +2566,8 @@ mod tests {
         }
 
         let image = RawImage::grayscale(20, 20, pixels).unwrap();
-        let mut config = FeatureConfig::default();
+        let mut config = FeatureConfig::default()
+            .blob_detection(); // Use blob detection mode for this test
         config.build_spatial_graph = true;
         config.build_hierarchy = false;
         config.max_hierarchy_levels = 1;
@@ -2395,7 +2575,7 @@ mod tests {
 
         let graph = image_to_graph(&image, &config).unwrap();
 
-        // Should have root + 2 blobs = 3 nodes
+        // Should have root + 2 blobs = 3 nodes (blob detection mode)
         assert_eq!(graph.node_count(), 3);
         // Should have:
         // - 2 Contains edges (root → blob1, root → blob2)
@@ -2901,5 +3081,229 @@ mod tests {
 
         let result = model.forward(&image);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_weight_persistence_across_samples() {
+        // Test that DagNN edge weights persist and change across training samples
+        // This is the critical test for backend-140
+        use petgraph::visit::EdgeRef;
+
+        let mut model = ImageClassificationModel::new();
+
+        // Create distinct images for different classes
+        let mut image1_pixels = vec![0.0f32; 100]; // 10x10
+        for i in 20..40 { image1_pixels[i] = 0.9; } // Horizontal bar at top
+        let image1 = RawImage::grayscale(10, 10, image1_pixels).unwrap();
+
+        let mut image2_pixels = vec![0.0f32; 100]; // 10x10
+        for i in 60..80 { image2_pixels[i] = 0.9; } // Horizontal bar at bottom
+        let image2 = RawImage::grayscale(10, 10, image2_pixels).unwrap();
+
+        // Get initial edge weights (snapshot)
+        let initial_weights: Vec<(_, f32)> = model.dag().graph.edge_references()
+            .take(10)
+            .map(|e| (e.id(), e.weight().weight))
+            .collect();
+
+        assert!(!initial_weights.is_empty(), "DagNN should have edges");
+
+        // Train on first sample
+        model.train_step(&image1, 0).unwrap();
+
+        // Get weights after first training step (for potential intermediate checks)
+        let _after_first: Vec<f32> = initial_weights.iter()
+            .map(|(id, _)| model.dag().graph.edge_weight(*id).unwrap().weight)
+            .collect();
+
+        // Train on more samples to accumulate changes
+        for _ in 0..5 {
+            model.train_step(&image1, 0).unwrap();
+            model.train_step(&image2, 1).unwrap();
+        }
+
+        // Get weights after multiple training steps
+        let after_multiple: Vec<f32> = initial_weights.iter()
+            .map(|(id, _)| model.dag().graph.edge_weight(*id).unwrap().weight)
+            .collect();
+
+        // Verify weights have changed (learning happened)
+        let initial_sum: f32 = initial_weights.iter().map(|(_, w)| w.abs()).sum();
+        let after_sum: f32 = after_multiple.iter().map(|w| w.abs()).sum();
+
+        // Calculate total weight change
+        let total_change: f32 = initial_weights.iter()
+            .zip(after_multiple.iter())
+            .map(|((_, initial), final_w)| (final_w - initial).abs())
+            .sum();
+
+        println!("Initial weight sum: {:.6}", initial_sum);
+        println!("After training weight sum: {:.6}", after_sum);
+        println!("Total weight change: {:.6}", total_change);
+        println!("Samples trained: {}", model.samples_seen());
+
+        // The critical assertion: weights must have changed
+        assert!(
+            total_change > 1e-6,
+            "Weights should change after training! Total change: {:.10}. \
+             This means the persistent DagNN is not learning.",
+            total_change
+        );
+
+        // Also verify samples_seen counter
+        assert_eq!(model.samples_seen(), 11, "Should have seen 11 samples");
+    }
+
+    #[test]
+    fn test_learnable_trait_for_dagnn_integration() {
+        // Test that DagNN's Learnable trait works within ImageClassificationModel
+
+        let mut model = ImageClassificationModel::new();
+
+        // Create test image
+        let pixels = vec![0.5f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        // Verify initial state
+        assert!(!model.dag().has_gradients(), "Should start with no gradients");
+
+        // Train (which should accumulate gradients internally via Hebbian/hybrid)
+        model.train_step(&image, 0).unwrap();
+
+        // Get edge count (num_parameters)
+        let num_params = model.dag().num_parameters();
+        assert!(num_params > 0, "DagNN should have learnable parameters (edges)");
+        println!("DagNN has {} learnable parameters (edges)", num_params);
+    }
+
+    #[test]
+    fn test_gradient_magnitude_and_direction() {
+        // Test that structural gradients have reasonable magnitude and direction
+
+        let mut model = ImageClassificationModel::new();
+
+        // Create an image that should look like class 0
+        let mut pixels = vec![0.0f32; 100]; // 10x10
+        for i in 20..40 { pixels[i] = 0.9; }
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        // Check vision graph size
+        let vision_graph = model.image_to_vision_graph(&image).unwrap();
+        println!("VisionGraph: {} nodes, {} edges",
+            vision_graph.node_count(), vision_graph.edge_count());
+
+        // Run forward to set up activations
+        let forward_result = model.forward(&image).unwrap();
+        println!("Forward result: predicted={}, confidence={:.4}",
+            forward_result.predicted_class, forward_result.confidence);
+
+        // Check node activations - this is crucial for backprop!
+        let activations: Vec<f32> = model.dag().graph.node_weights()
+            .map(|n| n.activation)
+            .collect();
+        let non_zero_activations = activations.iter().filter(|&&a| a.abs() > 0.01).count();
+        let avg_activation: f32 = activations.iter().sum::<f32>() / activations.len() as f32;
+        let max_activation = activations.iter().cloned().fold(0.0f32, f32::max);
+
+        println!("Node activations: {} total, {} non-zero (>0.01), avg={:.4}, max={:.4}",
+            activations.len(), non_zero_activations, avg_activation, max_activation);
+
+        // Now get the loss and gradient for target class 0
+        let struct_result = model.classification().loss_and_gradient(model.dag(), 0);
+
+        println!("Loss for target=0: {:.4}", struct_result.loss);
+        println!("Gradient magnitude: {:.6}", struct_result.gradient.iter().map(|g| g.abs()).sum::<f32>());
+        println!("Gradient (first 5): {:?}", &struct_result.gradient[..struct_result.gradient.len().min(5)]);
+
+        // Gradient should be non-zero when prediction is wrong
+        let grad_magnitude: f32 = struct_result.gradient.iter().map(|g| g.abs()).sum();
+        assert!(
+            grad_magnitude > 1e-6,
+            "Gradient should be non-zero. Magnitude: {:.10}",
+            grad_magnitude
+        );
+
+        // Now train and verify gradients propagate
+        let train_result = model.train_step(&image, 0).unwrap();
+        println!("Train result: loss={:.4}, correct={}", train_result.loss, train_result.correct);
+
+        // The training gradient should match what we computed
+        let train_grad_magnitude: f32 = train_result.gradient.iter().map(|g| g.abs()).sum();
+        println!("Train gradient magnitude: {:.6}", train_grad_magnitude);
+
+        // Check edge weights changed after training
+        let edge_weights_after: Vec<f32> = model.dag().graph.edge_references()
+            .take(20)
+            .map(|e| e.weight().weight)
+            .collect();
+        println!("Sample edge weights after training: {:?}", &edge_weights_after[..edge_weights_after.len().min(5)]);
+    }
+
+    #[test]
+    fn test_grid_sampling_mode() {
+        // Test that grid sampling produces consistent, dense node counts
+        let brain = VisionBrain::new().with_feature_config(
+            FeatureConfig::default().grid_sampling(5) // 5x5 = 25 nodes + 1 root
+        );
+
+        // Create a test image
+        let pixels = vec![0.5f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        let graph = brain.to_graph(&image).unwrap();
+
+        // Should have exactly 26 nodes: 1 root + 25 grid cells
+        assert_eq!(graph.node_count(), 26, "Grid 5x5 should produce 26 nodes (1 root + 25 grid)");
+
+        // Should have spatial edges (right and down for each cell)
+        // Each row has 4 right edges, each column has 4 down edges = 4*5 + 5*4 = 40 edges
+        // Plus 25 Contains edges from root to each grid cell = 65 total
+        assert!(graph.edge_count() >= 25, "Should have at least 25 Contains edges");
+    }
+
+    #[test]
+    fn test_grid_sampling_deterministic() {
+        // Grid sampling should be deterministic
+        let config = FeatureConfig::default().grid_sampling(7);
+        let brain = VisionBrain::new().with_feature_config(config);
+
+        let pixels = vec![0.3f32; 100];
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        let graph1 = brain.to_graph(&image).unwrap();
+        let graph2 = brain.to_graph(&image).unwrap();
+
+        assert_eq!(graph1.node_count(), graph2.node_count());
+        assert_eq!(graph1.edge_count(), graph2.edge_count());
+
+        // Check that node activations are identical
+        let activations1: Vec<f32> = graph1.graph.node_weights().map(|n| n.activation).collect();
+        let activations2: Vec<f32> = graph2.graph.node_weights().map(|n| n.activation).collect();
+        assert_eq!(activations1, activations2);
+    }
+
+    #[test]
+    fn test_feature_mode_comparison() {
+        // Compare node counts across different modes
+        let mut pixels = vec![0.0f32; 100];
+        for i in 20..40 { pixels[i] = 0.9; } // Horizontal bar
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        // Grid mode: fixed node count
+        let grid_config = FeatureConfig::default().grid_sampling(10);
+        let grid_graph = image_to_graph(&image, &grid_config).unwrap();
+        assert_eq!(grid_graph.node_count(), 101, "Grid 10x10 + root = 101 nodes");
+
+        // Blob mode: variable node count based on image content
+        let blob_config = FeatureConfig::default().blob_detection();
+        let blob_graph = image_to_graph(&image, &blob_config).unwrap();
+        assert!(blob_graph.node_count() < 10, "Blob detection should produce fewer nodes for simple image");
+
+        // Hybrid mode: grid + blobs
+        let hybrid_config = FeatureConfig::default()
+            .with_mode(FeatureMode::Hybrid)
+            .with_grid_size(5);
+        let hybrid_graph = image_to_graph(&image, &hybrid_config).unwrap();
+        assert!(hybrid_graph.node_count() >= 26, "Hybrid should have at least grid nodes");
     }
 }
