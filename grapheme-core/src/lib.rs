@@ -723,6 +723,13 @@ pub struct DagNN {
     position_index: BTreeMap<usize, NodeId>,
     /// Output nodes
     output_nodes: Vec<NodeId>,
+    /// Accumulated edge gradients for training (backend-142)
+    /// Key: (source NodeId, target NodeId), Value: accumulated gradient
+    #[serde(skip)]
+    edge_grads: HashMap<(NodeId, NodeId), f32>,
+    /// Whether to accumulate gradients during backward pass (backend-142)
+    #[serde(skip)]
+    pub requires_grad: bool,
 }
 
 impl Default for DagNN {
@@ -743,6 +750,8 @@ impl DagNN {
             input_nodes_set: HashSet::new(),
             position_index: BTreeMap::new(),
             output_nodes: Vec::new(),
+            edge_grads: HashMap::new(),
+            requires_grad: true, // Default to training mode
         }
     }
 
@@ -1064,6 +1073,135 @@ impl DagNN {
     /// Initialize edge weights with He initialization (convenience method)
     pub fn init_edge_weights_he(&mut self) {
         self.init_edge_weights(InitStrategy::He);
+    }
+
+    // ========================================================================
+    // Gradient Accumulation API (backend-142)
+    // ========================================================================
+
+    /// Zero out all accumulated edge gradients
+    ///
+    /// Call this at the start of each training step (or after optimizer.step())
+    /// to clear gradients from the previous iteration.
+    ///
+    /// # Example
+    /// ```ignore
+    /// for batch in data {
+    ///     dag.zero_grad();
+    ///     let loss = forward_and_loss(&dag, batch);
+    ///     dag.backward_accumulate(&loss_grad, &mut embedding);
+    ///     dag.step(learning_rate);
+    /// }
+    /// ```
+    pub fn zero_grad(&mut self) {
+        self.edge_grads.clear();
+    }
+
+    /// Apply accumulated gradients to edge weights (SGD step)
+    ///
+    /// Updates each edge weight: w = w - lr * grad
+    ///
+    /// # Arguments
+    /// * `lr` - Learning rate for the update step
+    ///
+    /// # Example
+    /// ```ignore
+    /// dag.zero_grad();
+    /// dag.backward_accumulate(&loss_grad, &mut embedding);
+    /// dag.step(0.01); // Apply gradients with lr=0.01
+    /// ```
+    pub fn step(&mut self, lr: f32) {
+        for ((from, to), grad) in &self.edge_grads {
+            if let Some(edge_idx) = self.graph.find_edge(*from, *to) {
+                self.graph[edge_idx].weight -= lr * grad;
+            }
+        }
+    }
+
+    /// Get the L2 norm of all accumulated edge gradients
+    ///
+    /// Useful for monitoring training stability and implementing gradient clipping.
+    ///
+    /// # Returns
+    /// The L2 norm (sqrt of sum of squared gradients)
+    pub fn gradient_norm(&self) -> f32 {
+        let sum_sq: f32 = self.edge_grads.values().map(|g| g * g).sum();
+        sum_sq.sqrt()
+    }
+
+    /// Check if any gradients have been accumulated
+    ///
+    /// # Returns
+    /// `true` if there are accumulated gradients, `false` otherwise
+    pub fn has_gradients(&self) -> bool {
+        !self.edge_grads.is_empty()
+    }
+
+    /// Get the total number of trainable edge parameters
+    ///
+    /// # Returns
+    /// Number of edges in the graph (each edge has one trainable weight)
+    pub fn num_parameters(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    /// Clip gradients to prevent exploding gradients
+    ///
+    /// If the gradient norm exceeds `max_norm`, scales all gradients so the
+    /// total norm equals `max_norm`.
+    ///
+    /// # Arguments
+    /// * `max_norm` - Maximum allowed gradient norm
+    ///
+    /// # Returns
+    /// The original gradient norm (before clipping)
+    pub fn clip_gradients(&mut self, max_norm: f32) -> f32 {
+        let norm = self.gradient_norm();
+        if norm > max_norm && norm > 0.0 {
+            let scale = max_norm / norm;
+            for grad in self.edge_grads.values_mut() {
+                *grad *= scale;
+            }
+        }
+        norm
+    }
+
+    /// Accumulate gradient for a specific edge
+    ///
+    /// This is called internally by `backward_accumulate` but can also be used
+    /// directly for custom gradient computation.
+    ///
+    /// # Arguments
+    /// * `from` - Source node ID
+    /// * `to` - Target node ID
+    /// * `grad` - Gradient value to accumulate
+    pub fn accumulate_edge_grad(&mut self, from: NodeId, to: NodeId, grad: f32) {
+        *self.edge_grads.entry((from, to)).or_insert(0.0) += grad;
+    }
+
+    /// Get accumulated gradient for a specific edge
+    ///
+    /// # Arguments
+    /// * `from` - Source node ID
+    /// * `to` - Target node ID
+    ///
+    /// # Returns
+    /// The accumulated gradient, or `None` if no gradient exists for this edge
+    pub fn get_edge_grad(&self, from: NodeId, to: NodeId) -> Option<f32> {
+        self.edge_grads.get(&(from, to)).copied()
+    }
+
+    /// Set training mode (whether to accumulate gradients)
+    ///
+    /// # Arguments
+    /// * `mode` - `true` for training mode, `false` for inference mode
+    pub fn train(&mut self, mode: bool) {
+        self.requires_grad = mode;
+    }
+
+    /// Check if in training mode
+    pub fn is_training(&self) -> bool {
+        self.requires_grad
     }
 
     // ========================================================================
@@ -5844,11 +5982,34 @@ pub trait BackwardPass {
     ) -> NodeGradients;
 
     /// Compute backward pass and update edge weights
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use backward_accumulate() + step() for proper gradient accumulation"
+    )]
     fn backward_and_update(
         &mut self,
         output_grad: &HashMap<NodeId, Array1<f32>>,
         embedding: &mut Embedding,
         lr: f32,
+    );
+
+    /// Compute backward pass and accumulate gradients into DagNN's edge_grads (backend-142)
+    ///
+    /// Unlike `backward()` which returns gradients, this method accumulates them
+    /// into the DagNN's internal gradient storage for later application via `step()`.
+    ///
+    /// This enables:
+    /// - Mini-batch gradient accumulation
+    /// - Gradient clipping before update
+    /// - Standard training loop pattern: zero_grad → backward_accumulate → step
+    ///
+    /// # Arguments
+    /// * `output_grad` - Gradient from the loss with respect to output nodes
+    /// * `embedding` - The embedding layer to accumulate gradients to
+    fn backward_accumulate(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
     );
 }
 
@@ -5913,6 +6074,25 @@ impl BackwardPass for DagNN {
             if let Some(edge_idx) = self.graph.find_edge(from, to) {
                 self.graph[edge_idx].weight -= lr * edge_grad;
             }
+        }
+    }
+
+    fn backward_accumulate(
+        &mut self,
+        output_grad: &HashMap<NodeId, Array1<f32>>,
+        embedding: &mut Embedding,
+    ) {
+        // Skip if not in training mode
+        if !self.requires_grad {
+            return;
+        }
+
+        // Compute gradients using existing backward pass
+        let grads = self.backward(output_grad, embedding);
+
+        // Accumulate edge gradients into DagNN's internal storage
+        for ((from, to), edge_grad) in grads.edge_grads {
+            self.accumulate_edge_grad(from, to, edge_grad);
         }
     }
 }
@@ -13157,5 +13337,218 @@ mod tests {
         // Highest prob should be for class 0 (closest)
         assert!(probs[0] > probs[1]);
         assert!(probs[0] > probs[2]);
+    }
+
+    // ========================================================================
+    // Gradient Accumulation Tests (backend-142)
+    // ========================================================================
+
+    #[test]
+    fn test_dagnn_zero_grad() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Manually add some gradients
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 1.0);
+        dag.accumulate_edge_grad(nodes[1], nodes[2], 2.0);
+
+        assert!(dag.has_gradients());
+        assert_eq!(dag.edge_grads.len(), 2);
+
+        // Zero gradients
+        dag.zero_grad();
+
+        assert!(!dag.has_gradients());
+        assert_eq!(dag.edge_grads.len(), 0);
+    }
+
+    #[test]
+    fn test_dagnn_gradient_accumulation() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+
+        // Accumulate gradient twice for same edge
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 1.0);
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 2.0);
+
+        // Should sum to 3.0
+        let grad = dag.get_edge_grad(nodes[0], nodes[1]).unwrap();
+        assert!((grad - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dagnn_gradient_norm() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+
+        // Add gradients: 3.0 and 4.0 -> norm should be 5.0
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 3.0);
+        dag.accumulate_edge_grad(nodes[1], nodes[2], 4.0);
+
+        let norm = dag.gradient_norm();
+        assert!((norm - 5.0).abs() < 1e-6, "Expected norm 5.0, got {}", norm);
+    }
+
+    #[test]
+    fn test_dagnn_clip_gradients() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+
+        // Add gradients: 3.0 and 4.0 -> norm is 5.0
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 3.0);
+        dag.accumulate_edge_grad(nodes[1], nodes[2], 4.0);
+
+        // Clip to max_norm=2.5 (half of 5.0)
+        let original_norm = dag.clip_gradients(2.5);
+        assert!((original_norm - 5.0).abs() < 1e-6);
+
+        // After clipping, norm should be 2.5
+        let new_norm = dag.gradient_norm();
+        assert!((new_norm - 2.5).abs() < 1e-6, "Expected norm 2.5 after clipping, got {}", new_norm);
+
+        // Individual gradients should be scaled by 0.5
+        let grad1 = dag.get_edge_grad(nodes[0], nodes[1]).unwrap();
+        let grad2 = dag.get_edge_grad(nodes[1], nodes[2]).unwrap();
+        assert!((grad1 - 1.5).abs() < 1e-6, "Expected grad 1.5, got {}", grad1);
+        assert!((grad2 - 2.0).abs() < 1e-6, "Expected grad 2.0, got {}", grad2);
+    }
+
+    #[test]
+    fn test_dagnn_step_updates_weights() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Initialize with known weights
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 1.0;
+        }
+
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+
+        // Add gradient of 0.5 to first edge
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 0.5);
+
+        // Get initial weight
+        let edge_idx = dag.graph.find_edge(nodes[0], nodes[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        // Step with lr=0.1
+        dag.step(0.1);
+
+        // Weight should be updated: w = w - lr * grad = 1.0 - 0.1 * 0.5 = 0.95
+        let new_weight = dag.graph[edge_idx].weight;
+        assert!(
+            (new_weight - 0.95).abs() < 1e-6,
+            "Expected weight 0.95, got {}",
+            new_weight
+        );
+
+        // Other edge should be unchanged (no gradient for it)
+        let other_edge_idx = dag.graph.find_edge(nodes[1], nodes[2]).unwrap();
+        assert!(
+            (dag.graph[other_edge_idx].weight - 1.0).abs() < 1e-6,
+            "Edge without gradient should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_dagnn_num_parameters() {
+        let dag = DagNN::from_text("abc").unwrap();
+        // "abc" has 3 nodes and 2 edges (a->b, b->c)
+        assert_eq!(dag.num_parameters(), 2);
+
+        let dag2 = DagNN::from_text("hello").unwrap();
+        // "hello" has 5 nodes and 4 edges
+        assert_eq!(dag2.num_parameters(), 4);
+    }
+
+    #[test]
+    fn test_dagnn_train_mode() {
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Default should be training mode
+        assert!(dag.is_training());
+        assert!(dag.requires_grad);
+
+        // Switch to eval mode
+        dag.train(false);
+        assert!(!dag.is_training());
+        assert!(!dag.requires_grad);
+
+        // Switch back to train mode
+        dag.train(true);
+        assert!(dag.is_training());
+    }
+
+    #[test]
+    fn test_dagnn_backward_accumulate_respects_requires_grad() {
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let mut embedding = Embedding::xavier(256, 8);
+
+        // Set known activations
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        for &node in &nodes {
+            dag.graph[node].activation = 1.0;
+        }
+
+        // Create output gradient
+        let output_grad: HashMap<NodeId, ndarray::Array1<f32>> =
+            [(nodes[1], ndarray::Array1::from_vec(vec![1.0]))].into_iter().collect();
+
+        // Backward in training mode should accumulate gradients
+        dag.train(true);
+        dag.backward_accumulate(&output_grad, &mut embedding);
+        assert!(dag.has_gradients(), "Should have gradients in training mode");
+
+        // Clear and try in eval mode
+        dag.zero_grad();
+        dag.train(false);
+        dag.backward_accumulate(&output_grad, &mut embedding);
+        assert!(!dag.has_gradients(), "Should NOT accumulate gradients in eval mode");
+    }
+
+    #[test]
+    fn test_dagnn_full_training_loop() {
+        // Test the complete: zero_grad -> backward_accumulate -> step pattern
+        let mut dag = DagNN::from_text("ab").unwrap();
+        let mut embedding = Embedding::xavier(256, 8);
+
+        // Initialize with known weights
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 1.0;
+        }
+
+        // Set known activations
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        for &node in &nodes {
+            dag.graph[node].activation = 1.0;
+        }
+
+        // Get initial weight
+        let edge_idx = dag.graph.find_edge(nodes[0], nodes[1]).unwrap();
+        let initial_weight = dag.graph[edge_idx].weight;
+
+        // Training loop iteration
+        dag.zero_grad();
+
+        // Create output gradient (gradient of 1.0 at output node)
+        let output_grad: HashMap<NodeId, ndarray::Array1<f32>> =
+            [(nodes[1], ndarray::Array1::from_vec(vec![1.0]))].into_iter().collect();
+
+        dag.backward_accumulate(&output_grad, &mut embedding);
+        assert!(dag.has_gradients(), "Should have accumulated gradients");
+
+        let grad_norm_before_step = dag.gradient_norm();
+        assert!(grad_norm_before_step > 0.0, "Gradient norm should be positive");
+
+        dag.step(0.1);
+
+        // Weight should have changed
+        let new_weight = dag.graph[edge_idx].weight;
+        assert!(
+            (new_weight - initial_weight).abs() > 1e-10,
+            "Weight should change after step: {} -> {}",
+            initial_weight,
+            new_weight
+        );
     }
 }

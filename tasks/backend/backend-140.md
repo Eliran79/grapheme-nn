@@ -10,6 +10,7 @@ tags:
 - image-classification
 dependencies:
 - backend-139
+- backend-143
 assignee: developer
 created: 2025-12-09T19:29:33.452991788Z
 estimate: 8h
