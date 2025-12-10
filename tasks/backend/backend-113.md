@@ -91,23 +91,30 @@ pub enum NodeType {
 }
 ```
 
-### Image Encoding API
+### Image Encoding API (Generic - Refactored 2025-12-10)
 
 ```rust
-// Basic image encoding (any dimensions)
+// Generic image encoding (any dimensions) - grapheme-core
 let dag = DagNN::from_image(&pixels, width, height)?;
 
-// MNIST-specific (28×28)
-let dag = DagNN::from_mnist(&pixels)?;
-
-// With classifier (input → hidden → 10 outputs)
-let dag = DagNN::from_mnist_with_classifier(&pixels, 128)?;
+// Generic classifier (input → hidden → N outputs) - grapheme-core
+let dag = DagNN::with_classifier(num_inputs, hidden_size, num_classes, Some(&activations))?;
 
 // Classification
 dag.neuromorphic_forward()?;
-let logits = dag.get_classification_logits(); // Vec<f32> len 10
-let predicted = dag.predict_class(); // 0-9
+let logits = dag.get_classification_logits(); // Vec<f32> len num_classes
+let predicted = dag.predict_class(); // 0..num_classes-1
+
+// For image classification use grapheme-vision ImageClassificationModel:
+let config = ImageClassificationConfig::default();
+let model = ImageClassificationModel::new(config);
+let image = RawImage::grayscale(28, 28, &pixels)?;
+let result = model.forward(&image);
 ```
+
+**Note:** MNIST-specific methods (`from_mnist()`, `from_mnist_with_classifier()`) were
+removed in refactoring (2025-12-10). Use generic `with_classifier()` and
+`ImageClassificationModel` from grapheme-vision instead.
 
 ### Training Command
 
@@ -140,6 +147,7 @@ Current architecture creates fresh DAG per image with random weights. No weight 
 ## Updates
 - 2025-12-08: Task created
 - 2025-12-09: Implementation completed and verified
+- 2025-12-10: **Refactored**: Removed MNIST-specific methods from grapheme-core. Now uses generic `with_classifier()` and `ImageClassificationModel` from grapheme-vision
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
@@ -150,7 +158,7 @@ Current architecture creates fresh DAG per image with random weights. No weight 
 - Added `NodeType::Pixel { row, col }` and `NodeType::ClassOutput(usize)` variants
 - Added `GraphemeError::DimensionMismatch` error variant
 - Added `Node::pixel()` and `Node::class_output()` constructors
-- Added `DagNN::from_image()`, `DagNN::from_mnist()`, `DagNN::from_mnist_with_classifier()`
+- Added `DagNN::from_image()`, `DagNN::with_classifier()` (MNIST-specific methods removed 2025-12-10)
 - Added `DagNN::get_classification_logits()` and `DagNN::predict_class()`
 - Added `softmax()`, `cross_entropy_loss()`, `cross_entropy_loss_with_grad()`
 - Added `compute_accuracy()` helper

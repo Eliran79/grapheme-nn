@@ -1,11 +1,11 @@
 ---
 id: testing-007
-title: Validate MNIST accuracy with GRAPHEME-native architecture (target >90%)
+title: Validate image classification accuracy with GRAPHEME-native architecture (target >90%)
 status: todo
 priority: high
 tags:
 - testing
-- mnist
+- image-classification
 - validation
 - benchmark
 dependencies:
@@ -17,7 +17,7 @@ complexity: 5
 area: testing
 ---
 
-# Validate MNIST accuracy with GRAPHEME-native architecture (target >90%)
+# Validate image classification accuracy with GRAPHEME-native architecture (target >90%)
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -31,29 +31,50 @@ area: testing
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Validate that the GRAPHEME-native image classification pipeline (using `ImageClassificationModel`
+from grapheme-vision) achieves competitive accuracy on standard benchmarks. This validates
+the vision that graph-based learning can match or exceed traditional CNNs.
+
+**Pipeline being validated:**
+```
+RawImage → VisionBrain.to_graph() → DagNN → ClassificationBrain → class label
+```
+
+**Generic API (2025-12-10):**
+- Uses `ImageClassificationModel`, `ImageClassificationConfig` from grapheme-vision
+- Works with any image size via `RawImage::grayscale(w, h, &pixels)`
+- Works with any number of classes via `ClassificationConfig`
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [ ] Achieve >90% accuracy on MNIST test set
+- [ ] Document training configuration that achieves target accuracy
+- [ ] Benchmark training time vs accuracy tradeoff
+- [ ] Compare with baseline CNN accuracy (~98-99%)
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [ ] Train ImageClassificationModel on full MNIST training set (60K samples)
+- [ ] Evaluate on full MNIST test set (10K samples)
+- [ ] Record accuracy, loss, and training time
+- [ ] Tune hyperparameters (hidden_size, learning_rate, epochs) if needed
+- [ ] Document best configuration
+- [ ] Add benchmark script for reproducible validation
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- ImageClassificationModel achieves >90% accuracy on MNIST test set
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Training configuration is documented and reproducible
+
+✅ **Criteria 3:**
+- Validation script can be run to verify results
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Depends on backend-140 for weight persistence (without it, ~10-20% accuracy)
+- Use `--vision` flag with train_mnist binary
+- MNIST data must be downloaded to data/mnist/ directory
+- Consider using structural loss (`--structural`) vs cross-entropy
+- Graph structure matching should enable learning without softmax/cross-entropy
 
 ## Testing
 - [ ] Write unit tests for new functionality

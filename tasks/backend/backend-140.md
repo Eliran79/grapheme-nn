@@ -7,7 +7,7 @@ tags:
 - backend
 - training
 - joint-learning
-- mnist
+- image-classification
 dependencies:
 - backend-139
 assignee: developer
@@ -31,29 +31,70 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Currently, `ImageClassificationModel` creates a fresh DagNN for each sample, which means
+gradient updates are applied to temporary graphs that are discarded. This limits accuracy
+because learned weights don't persist across samples.
+
+This task implements weight persistence so the model can learn across the training dataset,
+enabling the VisionBrain → DagNN → ClassificationBrain pipeline to achieve high accuracy
+(target >90% on MNIST).
+
+**Current state (backend-139):**
+- Forward pass works end-to-end
+- Loss and gradient computation works
+- But gradients applied to temp DAG (discarded after each sample)
+- Classification templates DO persist in ClassificationBrain
+
+**Needed:**
+- Persistent weight matrix separate from graph topology
+- Weight accumulation across batches
+- Shared model state between samples
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [ ] Implement weight persistence for DagNN across training samples
+- [ ] Enable gradient accumulation over mini-batches
+- [ ] Achieve >90% accuracy on MNIST validation set
+- [ ] Support saving/loading trained models
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [ ] Design persistent weight storage strategy (global weight matrix vs. persistent DagNN)
+- [ ] Implement shared weight updates across samples
+- [ ] Add mini-batch gradient accumulation
+- [ ] Implement model checkpoint save/load for ImageClassificationModel
+- [ ] Add weight decay / regularization option
+- [ ] Update train_mnist.rs to use persistent weights
+- [ ] Add training metrics logging (loss, accuracy per epoch)
+- [ ] Benchmark training performance
+- [ ] Verify >90% accuracy on MNIST test set
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- Weights persist across training samples (not discarded per sample)
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Model achieves >90% accuracy on MNIST test set after training
+
+✅ **Criteria 3:**
+- Trained model can be saved to disk and loaded for inference
+
+✅ **Criteria 4:**
+- Training loop shows decreasing loss over epochs
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- **Weight Persistence Options:**
+  1. Global weight store indexed by edge type
+  2. Persistent "template DagNN" with shared weights copied to per-sample DAGs
+  3. Weight matrix separate from graph topology (like classic NNs)
+
+- **Integration with existing code:**
+  - ClassificationBrain templates already persist via momentum updates
+  - Use similar pattern for DagNN edge weights
+  - May need to refactor DagNN to separate topology from weights
+
+- **Generic API (2025-12-10 refactoring):**
+  - Use `ImageClassificationModel`, `ImageClassificationConfig` from grapheme-vision
+  - Model works with any image size via `RawImage::grayscale(w, h, &pixels)`
+  - Works with any number of classes via `ClassificationConfig`
 
 ## Testing
 - [ ] Write unit tests for new functionality

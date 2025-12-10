@@ -1,6 +1,6 @@
 ---
 id: backend-139
-title: 'Implement MNIST model: VisionBrain + ClassificationBrain + GRAPHEME Core pipeline'
+title: 'Implement ImageClassificationModel: VisionBrain + ClassificationBrain + GRAPHEME Core pipeline'
 status: done
 priority: critical
 tags:
@@ -18,7 +18,7 @@ complexity: 8
 area: backend
 ---
 
-# Implement MNIST model: VisionBrain + ClassificationBrain + GRAPHEME Core pipeline
+# Implement ImageClassificationModel: VisionBrain + ClassificationBrain + GRAPHEME Core pipeline
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -32,22 +32,28 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Create the complete MNIST end-to-end pipeline combining VisionBrain (image-to-graph),
+Create the complete image classification pipeline combining VisionBrain (image-to-graph),
 GRAPHEME Core (graph processing), and ClassificationBrain (graph-to-class) into a
-unified MnistModel that can be trained and evaluated.
+unified ImageClassificationModel that can be trained and evaluated on any image dataset.
+
+**Note (2025-12-10):** Types renamed from MNIST-specific to generic:
+- `MnistModel` → `ImageClassificationModel`
+- `MnistModelConfig` → `ImageClassificationConfig`
+- `MnistForwardResult` → `ForwardResult`
+- `MnistTrainResult` → `TrainResult`
 
 ## Objectives
-- [x] Create MnistModel combining all components
+- [x] Create ImageClassificationModel combining all components
 - [x] Implement forward pass through full pipeline
 - [x] Implement train_step with loss and gradient computation
 - [x] Add --vision flag to train_mnist binary
-- [x] Test pipeline on real MNIST data
+- [x] Test pipeline on real image data (MNIST used for verification)
 
 ## Tasks
-- [x] Create MnistModelConfig struct
-- [x] Create MnistForwardResult struct
-- [x] Create MnistTrainResult struct
-- [x] Implement MnistModel with forward() method
+- [x] Create ImageClassificationConfig struct (was MnistModelConfig)
+- [x] Create ForwardResult struct (was MnistForwardResult)
+- [x] Create TrainResult struct (was MnistTrainResult)
+- [x] Implement ImageClassificationModel with forward() method
 - [x] Implement train_step() returning loss and gradient
 - [x] Add unit tests (11 tests)
 - [x] Add integration tests on real MNIST (5 tests)
@@ -56,7 +62,7 @@ unified MnistModel that can be trained and evaluated.
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- MnistModel::forward() runs complete pipeline: pixels → VisionBrain → DagNN → ClassificationBrain → class
+- ImageClassificationModel::forward() runs complete pipeline: RawImage → VisionBrain → DagNN → ClassificationBrain → class
 
 ✅ **Criteria 2:**
 - train_step() returns structural loss and gradient for backpropagation
@@ -68,11 +74,12 @@ unified MnistModel that can be trained and evaluated.
 - All 58 grapheme-vision tests pass (44 unit + 13 integration + 1 doc)
 
 ## Technical Notes
-- MnistModel creates fresh DagNN per sample (stateless inference)
+- ImageClassificationModel creates fresh DagNN per sample (stateless inference)
 - Weight persistence for training requires backend-140 (joint training)
-- VisionBrain extracts blob features deterministically
-- ClassificationBrain uses structural template matching
-- Pipeline is: pixels → VisionGraph → DagNN → forward → classify
+- VisionBrain extracts blob features deterministically (any image size)
+- ClassificationBrain uses structural template matching (any number of classes)
+- Pipeline is: RawImage → VisionGraph → DagNN → forward → classify
+- **Generic API**: Works with any image dimensions and any number of output classes
 
 ## Testing
 - [x] test_mnist_model_config_default
@@ -100,18 +107,19 @@ unified MnistModel that can be trained and evaluated.
 ## Updates
 - 2025-12-09: Task created
 - 2025-12-09: Implementation complete
+- 2025-12-10: **Refactored**: Renamed types to generic names (MnistModel→ImageClassificationModel, etc.). API now works with any image size and number of classes
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
 - **grapheme-vision/src/lib.rs** (~300 new lines):
-  - `MnistModelConfig`: Configuration (vision, classification, hidden_size)
-  - `MnistForwardResult`: Forward pass result (class, confidence, vision stats)
-  - `MnistTrainResult`: Training result (loss, gradient, correct)
-  - `MnistModel`: Complete end-to-end pipeline
-  - `forward()`: Pixels → VisionBrain → DagNN → ClassificationBrain → class
-  - `train_step()`: Forward + compute structural loss + get gradient
+  - `ImageClassificationConfig` (was MnistModelConfig): Configuration (vision, classification, hidden_size)
+  - `ForwardResult` (was MnistForwardResult): Forward pass result (class, confidence, vision stats)
+  - `TrainResult` (was MnistTrainResult): Training result (loss, gradient, correct)
+  - `ImageClassificationModel` (was MnistModel): Complete end-to-end pipeline
+  - `forward(&RawImage)`: RawImage → VisionBrain → DagNN → ClassificationBrain → class
+  - `train_step(&RawImage, label)`: Forward + compute structural loss + get gradient
 
 - **grapheme-vision/tests/mnist_integration.rs** (+175 lines):
   - 5 new MnistModel integration tests on real MNIST data
@@ -124,16 +132,17 @@ unified MnistModel that can be trained and evaluated.
 - **grapheme-train/Cargo.toml**: Added grapheme-vision dependency
 
 ### Causality Impact
-- MnistModel creates FRESH DagNN for each sample
+- ImageClassificationModel creates FRESH DagNN for each sample
 - Gradient updates are computed but applied to temporary DAG
 - For high accuracy (>90%), need backend-140 to persist weights between samples
 - Vision graph extraction IS deterministic (same image = same graph)
 - Template updates DO persist in ClassificationBrain across samples
+- **Generic**: Works with any image size via RawImage::grayscale(w, h, &pixels) or RawImage::rgb(w, h, &pixels)
 
 ### Dependencies & Integration
 - Uses: VisionBrain, ClassificationBrain from grapheme-vision
 - Uses: DagNN, StructuralClassifier from grapheme-core
-- Exports: MnistModel, MnistModelConfig, MnistForwardResult, MnistTrainResult
+- Exports: ImageClassificationModel, ImageClassificationConfig, ForwardResult, TrainResult, ModelStats
 - Unblocks: backend-140 (joint training with weight persistence)
 
 ### Verification & Testing

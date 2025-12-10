@@ -97,6 +97,7 @@ Same image → same input graph (always).
 ## Updates
 - 2025-12-09: Task created
 - 2025-12-09: Implementation complete
+- 2025-12-10: **Refactored**: Removed MNIST-specific methods (`from_mnist()`, `VisionBrain::mnist()`, `mnist_to_graph()`). Now fully generic for any image size/format
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
@@ -132,6 +133,7 @@ Same image → same input graph (always).
 ### Dependencies & Integration
 - Depends on: grapheme-core (DagNN), grapheme-brain-common (DomainBrain trait)
 - Exports: `RawImage`, `VisionBrain`, `VisionGraph`, `VisionNodeType`, `Blob`, `extract_blobs`, `image_to_graph`, `FeatureConfig`
+- **Generic API (2025-12-10)**: Use `RawImage::grayscale(w, h, &pixels)` or `RawImage::rgb(w, h, &pixels)`, `VisionBrain::new()`, `brain.to_graph(&image)`
 - Unblocks: backend-136 (hierarchical blob detection), backend-137 (spatial relationships)
 
 ### Verification & Testing

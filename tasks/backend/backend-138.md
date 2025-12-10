@@ -53,7 +53,8 @@ Uses StructuralClassifier (from backend-141) for GRAPHEME-native classification.
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- ClassificationBrain::mnist() creates 10-class classifier for MNIST
+- ClassificationBrain::new(config) creates N-class classifier (generic, any number of classes)
+- Use `ClassificationConfig::default()` for common defaults
 
 ✅ **Criteria 2:**
 - classify() returns ClassificationOutput with predicted_class, confidence, probabilities
@@ -90,6 +91,7 @@ Uses StructuralClassifier (from backend-141) for GRAPHEME-native classification.
 ## Updates
 - 2025-12-09: Task created
 - 2025-12-09: Implementation complete
+- 2025-12-10: **Refactored**: Removed MNIST-specific methods (`ClassificationBrain::mnist()`, `ClassificationConfig::mnist()`). Now fully generic for any number of classes
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
@@ -116,7 +118,8 @@ Uses StructuralClassifier (from backend-141) for GRAPHEME-native classification.
 - Uses: grapheme_core::StructuralClassifier (from backend-141)
 - Uses: DomainBrain trait from grapheme-brain-common
 - Exports: `ClassificationConfig`, `ClassificationOutput`, `ClassificationBrain`
-- Unblocks: backend-139 (MNIST pipeline needs both VisionBrain and ClassificationBrain)
+- **Generic API (2025-12-10)**: Use `ClassificationConfig::default()`, `ClassificationBrain::new(config)` for any number of classes
+- Unblocks: backend-139 (image classification pipeline needs both VisionBrain and ClassificationBrain)
 
 ### Verification & Testing
 ```bash
