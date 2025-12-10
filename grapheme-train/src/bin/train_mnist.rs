@@ -126,7 +126,7 @@ fn train_epoch(
     epoch: usize,
 ) -> (f32, f32) {
     let num_samples = mnist.trn_lbl.len();
-    let num_batches = (num_samples + config.batch_size - 1) / config.batch_size;
+    let num_batches = num_samples.div_ceil(config.batch_size);
 
     let pb = ProgressBar::new(num_batches as u64);
     pb.set_style(
@@ -279,7 +279,7 @@ fn train_epoch_structural(
     epoch: usize,
 ) -> (f32, f32) {
     let num_samples = mnist.trn_lbl.len();
-    let num_batches = (num_samples + config.batch_size - 1) / config.batch_size;
+    let num_batches = num_samples.div_ceil(config.batch_size);
 
     let pb = ProgressBar::new(num_batches as u64);
     pb.set_style(
@@ -517,7 +517,7 @@ fn train_epoch_vision(
     epoch: usize,
 ) -> (f32, f32) {
     let num_samples = mnist.trn_lbl.len();
-    let num_batches = (num_samples + config.batch_size - 1) / config.batch_size;
+    let num_batches = num_samples.div_ceil(config.batch_size);
 
     let pb = ProgressBar::new(num_batches as u64);
     pb.set_style(

@@ -1,13 +1,13 @@
-/// Finite difference gradient checking for structural loss
-///
-/// Verifies analytical gradients match numerical approximation:
-/// ∂L/∂θ ≈ (L(θ+ε) - L(θ-ε)) / 2ε
-///
-/// Uses DAG structure for efficiency - no NP-hard operations!
-///
-/// NOTE: This tests the COMPLETE gradient path:
-/// embedding → forward(morph graph) → structural loss → backward
-/// The graph structure changes, so gradients must account for morphing!
+//! Finite difference gradient checking for structural loss
+//!
+//! Verifies analytical gradients match numerical approximation:
+//! ∂L/∂θ ≈ (L(θ+ε) - L(θ-ε)) / 2ε
+//!
+//! Uses DAG structure for efficiency - no NP-hard operations!
+//!
+//! NOTE: This tests the COMPLETE gradient path:
+//! embedding → forward(morph graph) → structural loss → backward
+//! The graph structure changes, so gradients must account for morphing!
 
 use grapheme_core::{GraphemeGraph, GraphTransformNet};
 use grapheme_train::{compute_structural_loss, SinkhornConfig, StructuralLossConfig};

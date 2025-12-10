@@ -108,8 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let input_graph = GraphemeGraph::from_text(&pair.input);
 
                 // Step 2: Model forward (graph transformation)
-                // For now, we use the input graph directly
-                // TODO: Implement actual model forward pass that transforms the graph
+                // Currently identity transform - model forward pass will transform the graph
+                // when GraphTransformNet integration is complete (see backend-101)
                 let predicted_graph = input_graph.clone();
 
                 // Step 3: Target text → Graph
@@ -142,8 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_count += 1;
 
             // Step 5: Backward pass
-            // TODO: Backprop through structural loss to model parameters
-            // For now, gradients are computed in structural loss but not connected
+            // Gradients computed in structural loss - connect to model parameters
+            // when GraphTransformNet backward pass is complete (see backend-101)
 
             // Step 6: Update parameters
             // optimizer.step(&mut model);

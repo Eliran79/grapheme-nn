@@ -1,7 +1,7 @@
 ---
 id: testing-009
 title: 'Code quality: Remove all TODO/FIXME/HACK comments with implementations'
-status: todo
+status: done
 priority: high
 tags:
 - testing

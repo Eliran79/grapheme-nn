@@ -1,7 +1,7 @@
 ---
 id: testing-010
 title: 'Code quality: Zero clippy warnings across entire workspace'
-status: todo
+status: done
 priority: critical
 tags:
 - testing

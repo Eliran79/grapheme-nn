@@ -1,7 +1,7 @@
 ---
 id: testing-008
 title: 'Code quality: Eliminate all #[allow(dead_code)] and unused code'
-status: todo
+status: done
 priority: high
 tags:
 - testing

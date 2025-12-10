@@ -1,5 +1,6 @@
-/// Training script that tracks merge threshold evolution
-/// Shows how the learnable threshold adapts during training
+//! Training script that tracks merge threshold evolution
+//!
+//! Shows how the learnable threshold adapts during training
 
 use grapheme_core::{GraphemeGraph, GraphTransformNet};
 use grapheme_train::{compute_structural_loss, SinkhornConfig, StructuralLossConfig};

@@ -1,11 +1,11 @@
-/// Gradient descent direction test
-///
-/// Instead of finite difference (which fails for discrete graph morphing),
-/// verify that gradients point in descent direction:
-/// - Loss should DECREASE when we move in negative gradient direction
-/// - This is the fundamental requirement for optimization
-///
-/// Avoids NP-hard problems: uses existing O(n²) morphing operations
+//! Gradient descent direction test
+//!
+//! Instead of finite difference (which fails for discrete graph morphing),
+//! verify that gradients point in descent direction:
+//! - Loss should DECREASE when we move in negative gradient direction
+//! - This is the fundamental requirement for optimization
+//!
+//! Avoids NP-hard problems: uses existing O(n²) morphing operations
 
 use grapheme_core::{GraphemeGraph, GraphTransformNet};
 use grapheme_train::{compute_structural_loss, SinkhornConfig, StructuralLossConfig};

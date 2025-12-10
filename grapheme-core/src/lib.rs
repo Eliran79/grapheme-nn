@@ -1455,7 +1455,7 @@ impl DagNN {
 
         // Median
         weights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = if weights.len() % 2 == 0 {
+        let median = if weights.len().is_multiple_of(2) {
             (weights[weights.len() / 2 - 1] + weights[weights.len() / 2]) / 2.0
         } else {
             weights[weights.len() / 2]
@@ -1564,7 +1564,7 @@ impl DagNN {
 
         // Remove orphaned nodes (in reverse index order for safety)
         let mut orphaned = orphaned;
-        orphaned.sort_by(|a, b| b.index().cmp(&a.index()));
+        orphaned.sort_by_key(|n| std::cmp::Reverse(n.index()));
 
         for node in orphaned {
             self.graph.remove_node(node);
@@ -1621,7 +1621,7 @@ impl DagNN {
 
         // Remove unreachable nodes (in reverse index order)
         let mut unreachable = unreachable;
-        unreachable.sort_by(|a, b| b.index().cmp(&a.index()));
+        unreachable.sort_by_key(|n| std::cmp::Reverse(n.index()));
 
         for node in unreachable {
             // Also remove from output_nodes if present
@@ -1705,7 +1705,7 @@ impl DagNN {
 
         // Remove dead-end nodes (in reverse index order)
         let mut dead_ends = dead_ends;
-        dead_ends.sort_by(|a, b| b.index().cmp(&a.index()));
+        dead_ends.sort_by_key(|n| std::cmp::Reverse(n.index()));
 
         for node in dead_ends {
             self.graph.remove_node(node);
@@ -3796,8 +3796,8 @@ impl DagNN {
     }
 
     /// Generate all k-combinations of a slice (recursive version)
-    /// Kept for test compatibility - tests call DagNN::combinations directly
-    #[allow(dead_code)]
+    /// Used by tests for validation of combinations_iter
+    #[cfg(test)]
     fn combinations(items: &[NodeId], k: usize) -> Vec<Vec<NodeId>> {
         if k == 0 {
             return vec![vec![]];
@@ -5063,13 +5063,10 @@ impl SabagPooling {
     ) -> Array2<f32> {
         // Gradient through feature coarsening: H_new = S^T · H
         // ∂L/∂H = S · (∂L/∂H_new)
-        let grad_input_features = result.assignment.dot(grad_features);
-
         // Future: Also compute gradient w.r.t. assignment matrix
         // ∂L/∂S = (∂L/∂H_new) · H^T
         // Then backprop through softmax Jacobian to get ∂L/∂Z
-
-        grad_input_features
+        result.assignment.dot(grad_features)
     }
 
     /// Softmax backward pass (Jacobian computation)
@@ -5090,7 +5087,6 @@ impl SabagPooling {
     ///
     /// # Returns
     /// Gradient w.r.t. assignment scores ∂L/∂Z ∈ ℝ^{n × k}
-    #[allow(dead_code)]
     fn softmax_backward(
         &self,
         grad_s: &Array2<f32>,
@@ -6398,10 +6394,8 @@ impl HebbianLearning for DagNN {
             let mut grad = *edge_grad;
 
             // Optional gradient clipping
-            if config.clip_gradients {
-                if grad.abs() > config.max_grad_norm {
-                    grad = grad.signum() * config.max_grad_norm;
-                }
+            if config.clip_gradients && grad.abs() > config.max_grad_norm {
+                grad = grad.signum() * config.max_grad_norm;
             }
 
             let gradient_update = -config.gradient_lr * grad * config.gradient_weight;
