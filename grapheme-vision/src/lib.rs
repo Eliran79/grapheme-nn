@@ -30,14 +30,146 @@
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    HebbianConfig, HebbianLearning, HybridLearningConfig, Embedding,
+    Embedding, NodeId, BackwardPass,
 };
 use ndarray::Array1;
 use std::collections::HashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
-// HashSet removed - not currently needed
 use thiserror::Error;
+
+// ============================================================================
+// Adam Optimizer State (Unified across all learnable parameters)
+// ============================================================================
+
+/// Adam optimizer state for edge weights and template parameters.
+///
+/// Implements Adam (Kingma & Ba, 2014) with decoupled weight decay (AdamW).
+/// Maintains per-parameter first moment (m) and second moment (v) estimates.
+#[derive(Debug, Clone, Default)]
+pub struct AdamState {
+    /// First moment estimates for edge weights: (from_node, to_node) -> m
+    edge_m: HashMap<(NodeId, NodeId), f32>,
+    /// Second moment estimates for edge weights: (from_node, to_node) -> v
+    edge_v: HashMap<(NodeId, NodeId), f32>,
+    /// First moment estimates for template parameters: (class_id, param_idx) -> m
+    template_m: HashMap<(usize, usize), f32>,
+    /// Second moment estimates for template parameters: (class_id, param_idx) -> v
+    template_v: HashMap<(usize, usize), f32>,
+    /// Timestep counter (for bias correction)
+    t: usize,
+}
+
+impl AdamState {
+    /// Create a new Adam state
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get the current timestep
+    pub fn timestep(&self) -> usize {
+        self.t
+    }
+
+    /// Increment timestep (call once per training step)
+    pub fn step(&mut self) {
+        self.t += 1;
+    }
+
+    /// Compute Adam update for an edge weight.
+    ///
+    /// Returns the weight delta to apply: w_new = w_old + delta
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_edge_update(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        gradient: f32,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        epsilon: f32,
+        weight_decay: f32,
+        current_weight: f32,
+    ) -> f32 {
+        let key = (from, to);
+
+        // Get or initialize moment estimates
+        let m = self.edge_m.entry(key).or_insert(0.0);
+        let v = self.edge_v.entry(key).or_insert(0.0);
+
+        // Update biased first moment estimate
+        *m = beta1 * *m + (1.0 - beta1) * gradient;
+
+        // Update biased second moment estimate
+        *v = beta2 * *v + (1.0 - beta2) * gradient * gradient;
+
+        // Compute bias-corrected estimates
+        let t = self.t.max(1) as f32;
+        let m_hat = *m / (1.0 - beta1.powf(t));
+        let v_hat = *v / (1.0 - beta2.powf(t));
+
+        // Compute update (AdamW: weight decay applied separately)
+        let adam_update = -lr * m_hat / (v_hat.sqrt() + epsilon);
+        let decay_update = -lr * weight_decay * current_weight;
+
+        adam_update + decay_update
+    }
+
+    /// Compute Adam update for a template parameter.
+    ///
+    /// Returns the parameter delta to apply.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_template_update(
+        &mut self,
+        class_id: usize,
+        param_idx: usize,
+        gradient: f32,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        epsilon: f32,
+    ) -> f32 {
+        let key = (class_id, param_idx);
+
+        // Get or initialize moment estimates
+        let m = self.template_m.entry(key).or_insert(0.0);
+        let v = self.template_v.entry(key).or_insert(0.0);
+
+        // Update biased first moment estimate
+        *m = beta1 * *m + (1.0 - beta1) * gradient;
+
+        // Update biased second moment estimate
+        *v = beta2 * *v + (1.0 - beta2) * gradient * gradient;
+
+        // Compute bias-corrected estimates
+        let t = self.t.max(1) as f32;
+        let m_hat = *m / (1.0 - beta1.powf(t));
+        let v_hat = *v / (1.0 - beta2.powf(t));
+
+        // Compute update (no weight decay for templates)
+        -lr * m_hat / (v_hat.sqrt() + epsilon)
+    }
+
+    /// Reset all optimizer state (useful when restarting training)
+    pub fn reset(&mut self) {
+        self.edge_m.clear();
+        self.edge_v.clear();
+        self.template_m.clear();
+        self.template_v.clear();
+        self.t = 0;
+    }
+
+    /// Get number of tracked edge parameters
+    pub fn num_edge_params(&self) -> usize {
+        self.edge_m.len()
+    }
+
+    /// Get number of tracked template parameters
+    pub fn num_template_params(&self) -> usize {
+        self.template_m.len()
+    }
+}
 
 // ============================================================================
 // Error Types
@@ -457,21 +589,16 @@ impl VisionGraph {
 // ============================================================================
 
 /// Feature extraction mode for VisionBrain
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FeatureMode {
     /// Blob detection - extracts connected components (variable node count)
     BlobDetection,
     /// Grid sampling - samples pixels at regular grid points (fixed node count)
     /// This gives dense, consistent features for DagNN input
+    #[default]
     GridSampling,
     /// Hybrid mode - grid sampling + blob detection (grid as base, blobs as features)
     Hybrid,
-}
-
-impl Default for FeatureMode {
-    fn default() -> Self {
-        FeatureMode::GridSampling // Default to grid for consistent DagNN sizing
-    }
 }
 
 /// Configuration for feature extraction
@@ -1229,11 +1356,11 @@ fn image_to_graph_blobs(image: &RawImage, config: &FeatureConfig) -> VisionResul
             // Simple adjacency (old behavior)
             for i in 0..hierarchy.blobs.len() {
                 for j in (i + 1)..hierarchy.blobs.len() {
-                    if hierarchy.blobs[i].level == hierarchy.blobs[j].level {
-                        if blobs_adjacent(&hierarchy.blobs[i].blob, &hierarchy.blobs[j].blob) {
-                            graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
-                            graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
-                        }
+                    if hierarchy.blobs[i].level == hierarchy.blobs[j].level
+                        && blobs_adjacent(&hierarchy.blobs[i].blob, &hierarchy.blobs[j].blob)
+                    {
+                        graph.add_edge(blob_nodes[i], blob_nodes[j], VisionEdge::Adjacent);
+                        graph.add_edge(blob_nodes[j], blob_nodes[i], VisionEdge::Adjacent);
                     }
                 }
             }
@@ -2031,6 +2158,8 @@ pub struct ImageClassificationModel {
     config: ImageClassificationConfig,
     /// Number of training samples seen (for statistics)
     samples_seen: usize,
+    /// Adam optimizer state for unified learning across all parameters
+    adam: AdamState,
 }
 
 impl ImageClassificationModel {
@@ -2064,6 +2193,7 @@ impl ImageClassificationModel {
             dag,
             config,
             samples_seen: 0,
+            adam: AdamState::new(),
         }
     }
 
@@ -2102,6 +2232,21 @@ impl ImageClassificationModel {
         self.samples_seen
     }
 
+    /// Get Adam optimizer state reference
+    pub fn adam(&self) -> &AdamState {
+        &self.adam
+    }
+
+    /// Get mutable Adam optimizer state for direct manipulation
+    pub fn adam_mut(&mut self) -> &mut AdamState {
+        &mut self.adam
+    }
+
+    /// Reset Adam optimizer state (useful for learning rate scheduling)
+    pub fn reset_optimizer(&mut self) {
+        self.adam.reset();
+    }
+
     /// Convert a RawImage to VisionGraph.
     ///
     /// This is the deterministic first stage: same image = same graph.
@@ -2128,8 +2273,8 @@ impl ImageClassificationModel {
         }
 
         // If DagNN has more inputs than VisionGraph nodes, set extras to 0
-        for idx in vision_graph.node_count()..input_nodes.len() {
-            input_map.insert(input_nodes[idx], 0.0);
+        for node_id in input_nodes.iter().skip(vision_graph.node_count()) {
+            input_map.insert(*node_id, 0.0);
         }
 
         input_map
@@ -2174,16 +2319,16 @@ impl ImageClassificationModel {
         Ok(result)
     }
 
-    /// Run training step with live learning: forward + learn (both DagNN and ClassificationBrain).
+    /// Run training step with Adam optimizer across all learnable parameters.
     ///
-    /// This is the core GRAPHEME learning loop:
+    /// This is the core GRAPHEME learning loop with unified Adam optimization:
     /// 1. Feed input activations into persistent DagNN
     /// 2. Forward pass through existing structure
     /// 3. Compute loss via ClassificationBrain
-    /// 4. Update ClassificationBrain templates
-    /// 5. Update DagNN weights via Hebbian/hybrid learning
+    /// 4. Adam update for DagNN edge weights (gradient + optional Hebbian)
+    /// 5. Adam update for ClassificationBrain templates
     ///
-    /// Both the DagNN and ClassificationBrain learn and persist across samples.
+    /// Both the DagNN and ClassificationBrain learn with Adam's adaptive learning rates.
     /// Works with any image size and format (grayscale or RGB).
     pub fn train_step(&mut self, image: &RawImage, target: usize) -> VisionResult<TrainResult> {
         // Stage 1: Image to Vision Graph (deterministic)
@@ -2199,39 +2344,15 @@ impl ImageClassificationModel {
         // Stage 4: Compute loss and gradient via ClassificationBrain
         let struct_result = self.classification.loss_and_gradient(&self.dag, target);
 
-        // Stage 5: Update ClassificationBrain templates (online learning)
+        // Increment Adam timestep (once per training step)
+        self.adam.step();
+
+        // Stage 5: Adam update for DagNN edge weights
+        self.apply_adam_edge_updates(&struct_result.gradient)?;
+
+        // Stage 6: Adam update for ClassificationBrain templates
         let activations = self.dag.get_classification_logits();
-        self.classification.classifier_mut().update_template(target, &activations);
-
-        // Stage 6: Update DagNN weights via Hebbian/hybrid learning
-        if self.config.use_hybrid_learning {
-            // Hybrid: gradient descent + Hebbian
-            let hybrid_config = HybridLearningConfig {
-                gradient_lr: self.config.learning_rate,
-                hebbian: HebbianConfig::new(self.config.learning_rate),
-                gradient_weight: self.config.gradient_weight,
-                hebbian_weight: self.config.hebbian_weight,
-                clip_gradients: true,
-                max_grad_norm: 1.0,
-            };
-
-            // Convert gradient to output node gradients for hybrid learning
-            let mut output_grad: HashMap<grapheme_core::NodeId, Array1<f32>> = HashMap::new();
-            for (i, &node_id) in self.dag.output_nodes().iter().enumerate() {
-                if i < struct_result.gradient.len() {
-                    output_grad.insert(node_id, Array1::from_vec(vec![struct_result.gradient[i]]));
-                }
-            }
-
-            // Need embedding for hybrid - use a dummy one for now
-            // In full implementation, this would be the actual embedding
-            let mut dummy_embedding = Embedding::new(256, 16, grapheme_core::InitStrategy::Xavier);
-            let _hybrid_result = self.dag.backward_hybrid(&output_grad, &mut dummy_embedding, &hybrid_config);
-        } else {
-            // Pure Hebbian learning
-            let hebbian_config = HebbianConfig::new(self.config.learning_rate);
-            let _hebbian_result = self.dag.backward_hebbian(&hebbian_config);
-        }
+        self.apply_adam_template_update(target, &activations);
 
         self.samples_seen += 1;
 
@@ -2241,6 +2362,143 @@ impl ImageClassificationModel {
             correct: struct_result.correct,
             gradient: struct_result.gradient,
         })
+    }
+
+    /// Apply Adam optimizer updates to DagNN edge weights.
+    ///
+    /// Combines gradient descent with optional Hebbian learning, both using Adam.
+    fn apply_adam_edge_updates(&mut self, output_gradient: &[f32]) -> VisionResult<()> {
+        // Convert output gradient to node gradients for backprop
+        let mut output_grad: HashMap<NodeId, Array1<f32>> = HashMap::new();
+        for (i, &node_id) in self.dag.output_nodes().iter().enumerate() {
+            if i < output_gradient.len() {
+                output_grad.insert(node_id, Array1::from_vec(vec![output_gradient[i]]));
+            }
+        }
+
+        // Compute gradients via backpropagation
+        let mut dummy_embedding = Embedding::new(256, 16, grapheme_core::InitStrategy::Xavier);
+        let grads = self.dag.backward(&output_grad, &mut dummy_embedding);
+
+        // Collect edge updates with Adam
+        let mut edge_updates: Vec<(NodeId, NodeId, f32)> = Vec::new();
+
+        // Gradient contribution (scaled by gradient_weight)
+        for ((from, to), edge_grad) in &grads.edge_grads {
+            // Clip gradient if needed
+            let mut grad = *edge_grad * self.config.gradient_weight;
+            if grad.abs() > 1.0 {
+                grad = grad.signum();
+            }
+
+            // Get current weight for AdamW decay
+            let current_weight = self.dag.graph
+                .find_edge(*from, *to)
+                .map(|e| self.dag.graph[e].weight)
+                .unwrap_or(0.0);
+
+            // Compute Adam update
+            let delta = self.adam.compute_edge_update(
+                *from,
+                *to,
+                grad,
+                self.config.learning_rate,
+                self.config.beta1,
+                self.config.beta2,
+                self.config.epsilon,
+                self.config.weight_decay,
+                current_weight,
+            );
+
+            edge_updates.push((*from, *to, delta));
+        }
+
+        // Optional Hebbian contribution (scaled by hebbian_weight)
+        if self.config.use_hybrid_learning && self.config.hebbian_weight > 0.0 {
+            let hebbian_lr = self.config.learning_rate * self.config.hebbian_weight;
+            for edge_idx in self.dag.graph.edge_indices() {
+                let (source, target) = self.dag.graph.edge_endpoints(edge_idx).unwrap();
+                let pre = self.dag.graph[source].activation;
+                let post = self.dag.graph[target].activation;
+
+                // Oja's rule for Hebbian: Δw = η * post * (pre - w * post)
+                let current_weight = self.dag.graph[edge_idx].weight;
+                let hebbian_grad = -post * (pre - current_weight * post); // Negative because we subtract
+
+                // Add Hebbian contribution (use same Adam state for momentum)
+                let delta = self.adam.compute_edge_update(
+                    source,
+                    target,
+                    hebbian_grad * self.config.hebbian_weight,
+                    hebbian_lr,
+                    self.config.beta1,
+                    self.config.beta2,
+                    self.config.epsilon,
+                    0.0, // No weight decay for Hebbian
+                    current_weight,
+                );
+
+                // Find and update existing entry or add new
+                if let Some(entry) = edge_updates.iter_mut().find(|(f, t, _)| *f == source && *t == target) {
+                    entry.2 += delta;
+                } else {
+                    edge_updates.push((source, target, delta));
+                }
+            }
+        }
+
+        // Apply all updates
+        for (from, to, delta) in edge_updates {
+            if let Some(edge_idx) = self.dag.graph.find_edge(from, to) {
+                let current = self.dag.graph[edge_idx].weight;
+                let new_weight = (current + delta).clamp(-10.0, 10.0); // Weight bounds
+                self.dag.graph[edge_idx].weight = new_weight;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Apply Adam optimizer update to classification templates.
+    ///
+    /// Instead of simple EMA, uses Adam to adaptively update template parameters.
+    fn apply_adam_template_update(&mut self, target_class: usize, activations: &[f32]) {
+        let classifier = self.classification.classifier_mut();
+
+        if target_class >= classifier.templates.len() {
+            return;
+        }
+
+        let template = &mut classifier.templates[target_class];
+
+        // Compute gradient: template should move toward activations
+        // Loss = ||template - activations||^2, so gradient = 2*(template - activations)
+        // We want to minimize distance, so update: template -= lr * gradient
+        // This simplifies to: gradient = template - activations (direction away from target)
+
+        for (i, &activation) in activations.iter().enumerate() {
+            if i >= template.activation_pattern.len() {
+                break;
+            }
+
+            let current = template.activation_pattern[i];
+            let gradient = current - activation; // Gradient pointing away from target
+
+            // Compute Adam update
+            let delta = self.adam.compute_template_update(
+                target_class,
+                i,
+                gradient,
+                self.config.learning_rate * 0.1, // Templates learn slower
+                self.config.beta1,
+                self.config.beta2,
+                self.config.epsilon,
+            );
+
+            template.activation_pattern[i] = (current + delta).clamp(0.0, 1.0);
+        }
+
+        template.sample_count += 1;
     }
 
     /// Batch forward pass for evaluation.
@@ -3096,6 +3354,50 @@ mod tests {
         assert_eq!(stats.samples_seen, 1);
         assert!(stats.dag_nodes > 0);
         assert!(stats.dag_edges > 0);
+    }
+
+    #[test]
+    fn test_adam_state_accumulation() {
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.5f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        // Adam state should start empty
+        assert_eq!(model.adam().timestep(), 0);
+        assert_eq!(model.adam().num_edge_params(), 0);
+        assert_eq!(model.adam().num_template_params(), 0);
+
+        // Train for a few steps
+        for i in 0..5 {
+            model.train_step(&image, i % 10).unwrap();
+        }
+
+        // Adam state should have accumulated
+        assert_eq!(model.adam().timestep(), 5);
+        assert!(model.adam().num_edge_params() > 0, "Adam should track edge momentum");
+        assert!(model.adam().num_template_params() > 0, "Adam should track template momentum");
+    }
+
+    #[test]
+    fn test_adam_state_reset() {
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.5f32; 100];
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        // Train to accumulate state
+        model.train_step(&image, 0).unwrap();
+        model.train_step(&image, 1).unwrap();
+
+        assert!(model.adam().timestep() > 0);
+        assert!(model.adam().num_edge_params() > 0);
+
+        // Reset optimizer
+        model.reset_optimizer();
+
+        // State should be cleared
+        assert_eq!(model.adam().timestep(), 0);
+        assert_eq!(model.adam().num_edge_params(), 0);
+        assert_eq!(model.adam().num_template_params(), 0);
     }
 
     #[test]
