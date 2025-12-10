@@ -1,7 +1,7 @@
 ---
 id: backend-133
 title: Migrate grapheme-chem to use brain-common abstractions
-status: doing
+status: done
 priority: medium
 tags:
 - backend

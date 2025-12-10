@@ -1,7 +1,7 @@
 ---
 id: testing-007
 title: Validate image classification accuracy with GRAPHEME-native architecture (target >90%)
-status: doing
+status: done
 priority: high
 tags:
 - testing
