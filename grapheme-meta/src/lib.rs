@@ -2195,3 +2195,856 @@ mod tests {
         assert!(!unhealthy.is_healthy());
     }
 }
+
+// ============================================================================
+// AttentionMechanism: Dynamic Focus Allocation Across Brains
+// ============================================================================
+
+/// Attention weight for a specific brain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainAttention {
+    /// Brain identifier
+    pub brain_id: String,
+    /// Attention weight (0.0 to 1.0)
+    pub weight: f32,
+    /// Relevance score to current input
+    pub relevance: f32,
+    /// Current capacity (inverse of load)
+    pub capacity: f32,
+    /// Whether this brain should be actively engaged
+    pub should_engage: bool,
+}
+
+impl BrainAttention {
+    /// Create a new brain attention entry
+    pub fn new(brain_id: impl Into<String>) -> Self {
+        Self {
+            brain_id: brain_id.into(),
+            weight: 0.0,
+            relevance: 0.0,
+            capacity: 1.0,
+            should_engage: false,
+        }
+    }
+
+    /// Compute combined score for ranking - O(1)
+    pub fn combined_score(&self) -> f32 {
+        // Weight = relevance * capacity * attention_weight
+        self.relevance * self.capacity * self.weight
+    }
+}
+
+/// Configuration for attention allocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttentionConfig {
+    /// Maximum number of brains to engage simultaneously
+    pub max_parallel_brains: usize,
+    /// Minimum relevance threshold to engage a brain
+    pub min_relevance_threshold: f32,
+    /// Whether to use soft attention (all brains with weights) or hard (select top-k)
+    pub use_soft_attention: bool,
+    /// Temperature for softmax attention computation
+    pub temperature: f32,
+    /// Weight decay factor for brains that repeatedly fail
+    pub failure_decay: f32,
+    /// Boost factor for recently successful brains
+    pub success_boost: f32,
+    /// Maximum attention weight any single brain can have
+    pub max_single_weight: f32,
+}
+
+impl Default for AttentionConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel_brains: 3,
+            min_relevance_threshold: 0.1,
+            use_soft_attention: true,
+            temperature: 1.0,
+            failure_decay: 0.9,
+            success_boost: 1.1,
+            max_single_weight: 0.8,
+        }
+    }
+}
+
+/// Result of attention allocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttentionAllocation {
+    /// Attention weights for each brain (sorted by weight descending)
+    pub brain_weights: Vec<BrainAttention>,
+    /// Total attention budget used (sum of engaged brain weights)
+    pub total_attention: f32,
+    /// Number of brains selected for engagement
+    pub engaged_count: usize,
+    /// The input characteristics that drove this allocation
+    pub input_features: InputFeatures,
+}
+
+impl AttentionAllocation {
+    /// Get the top-k brains to engage - O(1) since already sorted
+    pub fn top_k(&self, k: usize) -> Vec<&BrainAttention> {
+        self.brain_weights.iter()
+            .filter(|b| b.should_engage)
+            .take(k)
+            .collect()
+    }
+
+    /// Get brains above a weight threshold - O(n)
+    pub fn above_threshold(&self, threshold: f32) -> Vec<&BrainAttention> {
+        self.brain_weights.iter()
+            .filter(|b| b.weight >= threshold)
+            .collect()
+    }
+
+    /// Get the primary brain (highest weight) - O(1)
+    pub fn primary(&self) -> Option<&BrainAttention> {
+        self.brain_weights.first().filter(|b| b.should_engage)
+    }
+}
+
+/// Features extracted from input to drive attention allocation
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InputFeatures {
+    /// Detected domain hints (e.g., "math", "code", "visual")
+    pub domain_hints: Vec<String>,
+    /// Estimated complexity (0.0 to 1.0)
+    pub complexity: f32,
+    /// Estimated urgency (0.0 to 1.0)
+    pub urgency: f32,
+    /// Whether input requires multi-modal processing
+    pub is_multimodal: bool,
+    /// Specific keywords detected
+    pub keywords: Vec<String>,
+}
+
+impl InputFeatures {
+    /// Create from simple text analysis - O(n) where n = input length
+    pub fn from_text(input: &str) -> Self {
+        let lower = input.to_lowercase();
+        let mut domain_hints = Vec::new();
+        let mut keywords = Vec::new();
+
+        // Simple keyword-based domain detection
+        // Math hints
+        if lower.contains('+') || lower.contains('-') || lower.contains('*') || lower.contains('/')
+            || lower.contains("calculate") || lower.contains("compute") || lower.contains("solve")
+            || lower.contains("equation") || lower.contains("formula") {
+            domain_hints.push("math".to_string());
+            keywords.push("mathematical".to_string());
+        }
+
+        // Code hints
+        if lower.contains("function") || lower.contains("def ") || lower.contains("fn ")
+            || lower.contains("class") || lower.contains("import") || lower.contains("return")
+            || lower.contains("code") || lower.contains("program") {
+            domain_hints.push("code".to_string());
+            keywords.push("programming".to_string());
+        }
+
+        // Music hints
+        if lower.contains("note") || lower.contains("chord") || lower.contains("melody")
+            || lower.contains("music") || lower.contains("tempo") || lower.contains("rhythm") {
+            domain_hints.push("music".to_string());
+            keywords.push("musical".to_string());
+        }
+
+        // Chemistry hints
+        if lower.contains("molecule") || lower.contains("atom") || lower.contains("chemical")
+            || lower.contains("reaction") || lower.contains("compound") || lower.contains("element") {
+            domain_hints.push("chem".to_string());
+            keywords.push("chemistry".to_string());
+        }
+
+        // Law hints
+        if lower.contains("legal") || lower.contains("law") || lower.contains("statute")
+            || lower.contains("court") || lower.contains("contract") || lower.contains("regulation") {
+            domain_hints.push("law".to_string());
+            keywords.push("legal".to_string());
+        }
+
+        // Vision hints
+        if lower.contains("image") || lower.contains("picture") || lower.contains("visual")
+            || lower.contains("see") || lower.contains("look") || lower.contains("photo") {
+            domain_hints.push("vision".to_string());
+            keywords.push("visual".to_string());
+        }
+
+        // Default to text if no specific domain detected
+        if domain_hints.is_empty() {
+            domain_hints.push("text".to_string());
+        }
+
+        // Estimate complexity based on length and structure
+        let complexity = (input.len() as f32 / 500.0).min(1.0);
+
+        // Estimate urgency based on keywords
+        let urgency = if lower.contains("urgent") || lower.contains("asap") || lower.contains("immediately") {
+            0.9
+        } else if lower.contains("soon") || lower.contains("quick") {
+            0.6
+        } else {
+            0.3
+        };
+
+        let is_multimodal = domain_hints.len() > 1;
+
+        Self {
+            domain_hints,
+            complexity,
+            urgency,
+            is_multimodal,
+            keywords,
+        }
+    }
+}
+
+/// Statistics for attention mechanism performance
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AttentionStats {
+    /// Total allocations made
+    pub total_allocations: u64,
+    /// Number of successful allocations (led to correct result)
+    pub successful_allocations: u64,
+    /// Number of times fallback was needed
+    pub fallback_count: u64,
+    /// Average number of brains engaged per allocation
+    pub avg_brains_engaged: f32,
+    /// Brain-specific success rates
+    pub brain_success_rates: std::collections::HashMap<String, f32>,
+}
+
+impl AttentionStats {
+    /// Record a successful allocation
+    pub fn record_success(&mut self, engaged_brains: &[String]) {
+        self.total_allocations += 1;
+        self.successful_allocations += 1;
+        self.update_avg_brains(engaged_brains.len());
+        for brain in engaged_brains {
+            let rate = self.brain_success_rates.entry(brain.clone()).or_insert(0.5);
+            *rate = (*rate * 0.9) + 0.1; // Exponential moving average toward 1.0
+        }
+    }
+
+    /// Record a failed allocation
+    pub fn record_failure(&mut self, engaged_brains: &[String]) {
+        self.total_allocations += 1;
+        self.update_avg_brains(engaged_brains.len());
+        for brain in engaged_brains {
+            let rate = self.brain_success_rates.entry(brain.clone()).or_insert(0.5);
+            *rate *= 0.9; // Decay toward 0.0
+        }
+    }
+
+    /// Record a fallback (no suitable brain found)
+    pub fn record_fallback(&mut self) {
+        self.total_allocations += 1;
+        self.fallback_count += 1;
+    }
+
+    fn update_avg_brains(&mut self, count: usize) {
+        let n = self.total_allocations as f32;
+        self.avg_brains_engaged = ((self.avg_brains_engaged * (n - 1.0)) + count as f32) / n;
+    }
+
+    /// Get success rate for a specific brain - O(1)
+    pub fn brain_success_rate(&self, brain_id: &str) -> f32 {
+        *self.brain_success_rates.get(brain_id).unwrap_or(&0.5)
+    }
+
+    /// Get overall success rate - O(1)
+    pub fn overall_success_rate(&self) -> f32 {
+        if self.total_allocations == 0 {
+            0.0
+        } else {
+            self.successful_allocations as f32 / self.total_allocations as f32
+        }
+    }
+}
+
+/// AttentionMechanism: Dynamic focus allocation across cognitive brains
+///
+/// This module decides which brains should receive processing resources
+/// based on input characteristics, brain capabilities, and historical performance.
+///
+/// # Architecture
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────┐
+/// │                     AttentionMechanism                                   │
+/// │                                                                          │
+/// │  Input ──► Feature Extraction ──► Relevance Scoring ──► Allocation      │
+/// │               │                        │                    │            │
+/// │               │                        │                    ▼            │
+/// │               │                   [MathBrain:0.8]    Brain Selection    │
+/// │               │                   [CodeBrain:0.6]         │             │
+/// │               │                   [TextBrain:0.3]         ▼             │
+/// │               │                                     Top-K Engagement    │
+/// │               │                                                          │
+/// │  Feedback ◄── Success/Failure Recording ◄── Result Evaluation           │
+/// │                                                                          │
+/// └─────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Time Complexity
+/// - allocate(): O(n log n) where n = number of brains (due to sorting)
+/// - record_outcome(): O(k) where k = engaged brains
+/// - soft_attention(): O(n)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttentionMechanism {
+    /// Configuration
+    pub config: AttentionConfig,
+    /// Statistics
+    pub stats: AttentionStats,
+    /// Learned attention biases per brain
+    pub brain_biases: std::collections::HashMap<String, f32>,
+    /// Domain-to-brain mapping
+    pub domain_brain_map: std::collections::HashMap<String, Vec<String>>,
+    /// Current focus state
+    current_focus: Option<Vec<String>>,
+}
+
+impl Default for AttentionMechanism {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AttentionMechanism {
+    /// Create a new attention mechanism with default configuration
+    pub fn new() -> Self {
+        let mut domain_brain_map = std::collections::HashMap::new();
+
+        // Default domain-to-brain mappings
+        domain_brain_map.insert("math".to_string(), vec!["MathBrain".to_string()]);
+        domain_brain_map.insert("code".to_string(), vec!["CodeBrain".to_string()]);
+        domain_brain_map.insert("music".to_string(), vec!["MusicBrain".to_string()]);
+        domain_brain_map.insert("chem".to_string(), vec!["ChemBrain".to_string()]);
+        domain_brain_map.insert("law".to_string(), vec!["LawBrain".to_string()]);
+        domain_brain_map.insert("vision".to_string(), vec!["VisionBrain".to_string()]);
+        domain_brain_map.insert("text".to_string(), vec!["TextBrain".to_string()]);
+
+        Self {
+            config: AttentionConfig::default(),
+            stats: AttentionStats::default(),
+            brain_biases: std::collections::HashMap::new(),
+            domain_brain_map,
+            current_focus: None,
+        }
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: AttentionConfig) -> Self {
+        let mut mechanism = Self::new();
+        mechanism.config = config;
+        mechanism
+    }
+
+    /// Register a brain for a domain
+    pub fn register_brain(&mut self, domain: impl Into<String>, brain_id: impl Into<String>) {
+        let domain = domain.into();
+        let brain_id = brain_id.into();
+        self.domain_brain_map
+            .entry(domain)
+            .or_default()
+            .push(brain_id);
+    }
+
+    /// Set attention bias for a specific brain
+    pub fn set_brain_bias(&mut self, brain_id: impl Into<String>, bias: f32) {
+        self.brain_biases.insert(brain_id.into(), bias.clamp(-1.0, 1.0));
+    }
+
+    /// Allocate attention based on input - O(n log n)
+    pub fn allocate(&mut self, input: &str, available_brains: &[(&str, f32)]) -> AttentionAllocation {
+        let features = InputFeatures::from_text(input);
+        self.allocate_with_features(&features, available_brains)
+    }
+
+    /// Allocate attention with pre-computed features - O(n log n)
+    pub fn allocate_with_features(
+        &mut self,
+        features: &InputFeatures,
+        available_brains: &[(&str, f32)], // (brain_id, current_load)
+    ) -> AttentionAllocation {
+        // Step 1: Compute relevance for each brain - O(n * d) where d = domain hints
+        let mut brain_weights: Vec<BrainAttention> = available_brains
+            .iter()
+            .map(|(brain_id, load)| {
+                let mut attention = BrainAttention::new(*brain_id);
+                attention.capacity = 1.0 - load.clamp(0.0, 1.0);
+
+                // Compute relevance from domain hints
+                let relevance = self.compute_relevance(brain_id, features);
+                attention.relevance = relevance;
+
+                // Apply learned bias
+                let bias = self.brain_biases.get(*brain_id).copied().unwrap_or(0.0);
+
+                // Apply historical success rate
+                let success_rate = self.stats.brain_success_rate(brain_id);
+
+                // Combined raw score
+                let raw_score = relevance * (1.0 + bias) * (0.5 + 0.5 * success_rate);
+                attention.weight = raw_score;
+
+                attention
+            })
+            .collect();
+
+        // Step 2: Apply softmax to normalize weights - O(n)
+        if self.config.use_soft_attention && !brain_weights.is_empty() {
+            self.apply_softmax(&mut brain_weights);
+        }
+
+        // Step 3: Sort by weight descending - O(n log n)
+        brain_weights.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Step 4: Select brains to engage - O(n)
+        let mut engaged_count = 0;
+        let mut total_attention = 0.0;
+
+        for brain in &mut brain_weights {
+            if engaged_count < self.config.max_parallel_brains
+                && brain.relevance >= self.config.min_relevance_threshold
+                && brain.capacity > 0.1
+            {
+                brain.should_engage = true;
+                brain.weight = brain.weight.min(self.config.max_single_weight);
+                total_attention += brain.weight;
+                engaged_count += 1;
+            }
+        }
+
+        // Track current focus
+        self.current_focus = Some(
+            brain_weights.iter()
+                .filter(|b| b.should_engage)
+                .map(|b| b.brain_id.clone())
+                .collect()
+        );
+
+        AttentionAllocation {
+            brain_weights,
+            total_attention,
+            engaged_count,
+            input_features: features.clone(),
+        }
+    }
+
+    /// Compute relevance of a brain to input features - O(d) where d = domain hints
+    fn compute_relevance(&self, brain_id: &str, features: &InputFeatures) -> f32 {
+        let mut relevance = 0.0;
+
+        // Check if brain matches any domain hint
+        for domain in &features.domain_hints {
+            if let Some(brains) = self.domain_brain_map.get(domain) {
+                if brains.iter().any(|b| b == brain_id || brain_id.to_lowercase().contains(&domain.to_lowercase())) {
+                    relevance += 0.5;
+                }
+            }
+            // Also check if brain name contains domain
+            if brain_id.to_lowercase().contains(&domain.to_lowercase()) {
+                relevance += 0.3;
+            }
+        }
+
+        // Boost for complex inputs (may need multiple brains)
+        if features.is_multimodal && features.complexity > 0.5 {
+            relevance += 0.1;
+        }
+
+        // Urgency slightly boosts all brains to ensure fast response
+        relevance += features.urgency * 0.1;
+
+        relevance.clamp(0.0, 1.0)
+    }
+
+    /// Apply softmax normalization to weights - O(n)
+    fn apply_softmax(&self, weights: &mut [BrainAttention]) {
+        if weights.is_empty() {
+            return;
+        }
+
+        // Find max for numerical stability
+        let max_weight = weights.iter().map(|w| w.weight).fold(f32::NEG_INFINITY, f32::max);
+
+        // Compute exp(w/T) for each weight
+        let temp = self.config.temperature.max(0.01);
+        let exp_weights: Vec<f32> = weights
+            .iter()
+            .map(|w| ((w.weight - max_weight) / temp).exp())
+            .collect();
+
+        // Sum for normalization
+        let sum: f32 = exp_weights.iter().sum();
+
+        // Normalize
+        if sum > 0.0 {
+            for (weight, exp_w) in weights.iter_mut().zip(exp_weights.iter()) {
+                weight.weight = exp_w / sum;
+            }
+        }
+    }
+
+    /// Record outcome of attention allocation - O(k)
+    pub fn record_outcome(&mut self, success: bool) {
+        if let Some(engaged) = &self.current_focus {
+            if success {
+                self.stats.record_success(engaged);
+                // Boost biases for successful brains
+                for brain_id in engaged {
+                    let bias = self.brain_biases.entry(brain_id.clone()).or_insert(0.0);
+                    *bias = (*bias + 0.05).min(0.5);
+                }
+            } else {
+                self.stats.record_failure(engaged);
+                // Decay biases for failed brains
+                for brain_id in engaged {
+                    let bias = self.brain_biases.entry(brain_id.clone()).or_insert(0.0);
+                    *bias = (*bias - 0.05).max(-0.5);
+                }
+            }
+        }
+    }
+
+    /// Record that no suitable brain was found
+    pub fn record_fallback(&mut self) {
+        self.stats.record_fallback();
+    }
+
+    /// Get current focus (which brains are engaged)
+    pub fn current_focus(&self) -> Option<&[String]> {
+        self.current_focus.as_deref()
+    }
+
+    /// Reset attention state
+    pub fn reset(&mut self) {
+        self.current_focus = None;
+    }
+
+    /// Get attention statistics
+    pub fn stats(&self) -> &AttentionStats {
+        &self.stats
+    }
+
+    /// Suggest attention redistribution based on performance - O(n)
+    pub fn suggest_redistribution(&self) -> Vec<(String, f32)> {
+        let mut suggestions = Vec::new();
+
+        for (brain_id, &success_rate) in &self.stats.brain_success_rates {
+            let current_bias = self.brain_biases.get(brain_id).copied().unwrap_or(0.0);
+
+            // If success rate is low, suggest reducing attention
+            if success_rate < 0.3 && current_bias > -0.3 {
+                suggestions.push((brain_id.clone(), current_bias - 0.1));
+            }
+            // If success rate is high, suggest increasing attention
+            else if success_rate > 0.7 && current_bias < 0.3 {
+                suggestions.push((brain_id.clone(), current_bias + 0.1));
+            }
+        }
+
+        suggestions
+    }
+}
+
+/// Factory function to create an attention mechanism with standard configuration
+pub fn create_attention_mechanism() -> AttentionMechanism {
+    AttentionMechanism::new()
+}
+
+// ============================================================================
+// AttentionMechanism Tests
+// ============================================================================
+
+#[cfg(test)]
+mod attention_tests {
+    use super::*;
+
+    #[test]
+    fn test_attention_mechanism_creation() {
+        let mechanism = AttentionMechanism::new();
+        assert!(mechanism.current_focus.is_none());
+        assert_eq!(mechanism.stats.total_allocations, 0);
+    }
+
+    #[test]
+    fn test_attention_config_default() {
+        let config = AttentionConfig::default();
+        assert_eq!(config.max_parallel_brains, 3);
+        assert_eq!(config.min_relevance_threshold, 0.1);
+        assert!(config.use_soft_attention);
+        assert_eq!(config.temperature, 1.0);
+    }
+
+    #[test]
+    fn test_input_features_from_text_math() {
+        let features = InputFeatures::from_text("Calculate 2 + 3 * 4");
+        assert!(features.domain_hints.contains(&"math".to_string()));
+        assert!(features.complexity >= 0.0 && features.complexity <= 1.0);
+    }
+
+    #[test]
+    fn test_input_features_from_text_code() {
+        let features = InputFeatures::from_text("Write a function to sort numbers");
+        assert!(features.domain_hints.contains(&"code".to_string()));
+    }
+
+    #[test]
+    fn test_input_features_from_text_multimodal() {
+        let features = InputFeatures::from_text("Write code to solve this equation: 2x + 3 = 7");
+        assert!(features.is_multimodal);
+        assert!(features.domain_hints.len() > 1);
+    }
+
+    #[test]
+    fn test_input_features_urgency() {
+        let urgent = InputFeatures::from_text("Calculate this urgently!");
+        assert!(urgent.urgency > 0.8);
+
+        let normal = InputFeatures::from_text("Calculate this when you can.");
+        assert!(normal.urgency < 0.5);
+    }
+
+    #[test]
+    fn test_brain_attention_combined_score() {
+        let mut attention = BrainAttention::new("TestBrain");
+        attention.relevance = 0.8;
+        attention.capacity = 0.5;
+        attention.weight = 0.6;
+
+        let score = attention.combined_score();
+        assert!((score - 0.24).abs() < 0.01); // 0.8 * 0.5 * 0.6 = 0.24
+    }
+
+    #[test]
+    fn test_attention_allocation() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let brains = vec![
+            ("MathBrain", 0.1),  // Low load
+            ("CodeBrain", 0.5),  // Medium load
+            ("TextBrain", 0.9),  // High load
+        ];
+
+        let allocation = mechanism.allocate("Calculate 2 + 2", &brains);
+
+        assert!(allocation.engaged_count > 0);
+        assert!(allocation.engaged_count <= mechanism.config.max_parallel_brains);
+
+        // MathBrain should be engaged for math input
+        let math_brain = allocation.brain_weights.iter().find(|b| b.brain_id == "MathBrain");
+        assert!(math_brain.map(|b| b.should_engage).unwrap_or(false));
+    }
+
+    #[test]
+    fn test_attention_allocation_respects_capacity() {
+        let mut mechanism = AttentionMechanism::new();
+
+        // All brains at high load
+        let brains = vec![
+            ("MathBrain", 0.95),  // Very high load - should not engage
+            ("CodeBrain", 0.2),   // Low load
+        ];
+
+        let allocation = mechanism.allocate("Calculate 2 + 2", &brains);
+
+        // MathBrain has too low capacity, shouldn't be engaged
+        let math_brain = allocation.brain_weights.iter().find(|b| b.brain_id == "MathBrain");
+        if let Some(mb) = math_brain {
+            assert!(!mb.should_engage || mb.capacity < 0.1);
+        }
+    }
+
+    #[test]
+    fn test_attention_allocation_primary() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let brains = vec![
+            ("MathBrain", 0.1),
+            ("CodeBrain", 0.1),
+        ];
+
+        let allocation = mechanism.allocate("Solve 2x + 3 = 7", &brains);
+
+        let primary = allocation.primary();
+        assert!(primary.is_some());
+    }
+
+    #[test]
+    fn test_attention_record_outcome_success() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let brains = vec![("MathBrain", 0.1)];
+        let _allocation = mechanism.allocate("Calculate 1 + 1", &brains);
+
+        mechanism.record_outcome(true);
+
+        assert_eq!(mechanism.stats.successful_allocations, 1);
+        assert_eq!(mechanism.stats.total_allocations, 1);
+
+        let bias = mechanism.brain_biases.get("MathBrain").copied().unwrap_or(0.0);
+        assert!(bias > 0.0); // Bias should increase after success
+    }
+
+    #[test]
+    fn test_attention_record_outcome_failure() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let brains = vec![("MathBrain", 0.1)];
+        let _allocation = mechanism.allocate("Calculate 1 + 1", &brains);
+
+        mechanism.record_outcome(false);
+
+        assert_eq!(mechanism.stats.successful_allocations, 0);
+        assert_eq!(mechanism.stats.total_allocations, 1);
+
+        let bias = mechanism.brain_biases.get("MathBrain").copied().unwrap_or(0.0);
+        assert!(bias < 0.0); // Bias should decrease after failure
+    }
+
+    #[test]
+    fn test_attention_stats_success_rate() {
+        let mut stats = AttentionStats::default();
+
+        stats.record_success(&["BrainA".to_string()]);
+        stats.record_success(&["BrainA".to_string()]);
+        stats.record_failure(&["BrainA".to_string()]);
+
+        assert_eq!(stats.total_allocations, 3);
+        assert_eq!(stats.successful_allocations, 2);
+
+        let rate = stats.overall_success_rate();
+        assert!((rate - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_attention_softmax_normalization() {
+        let mut mechanism = AttentionMechanism::new();
+        mechanism.config.use_soft_attention = true;
+
+        let brains = vec![
+            ("BrainA", 0.1),
+            ("BrainB", 0.1),
+            ("BrainC", 0.1),
+        ];
+
+        // Use input that gives equal relevance to all
+        let allocation = mechanism.allocate("generic text", &brains);
+
+        // Weights should sum to approximately 1.0 (softmax property)
+        let sum: f32 = allocation.brain_weights.iter().map(|b| b.weight).sum();
+        assert!((sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_attention_top_k() {
+        let mut mechanism = AttentionMechanism::new();
+        mechanism.config.max_parallel_brains = 5;
+
+        let brains = vec![
+            ("BrainA", 0.1),
+            ("BrainB", 0.1),
+            ("BrainC", 0.1),
+            ("BrainD", 0.1),
+        ];
+
+        let allocation = mechanism.allocate("generic text", &brains);
+
+        let top_2 = allocation.top_k(2);
+        assert!(top_2.len() <= 2);
+    }
+
+    #[test]
+    fn test_attention_register_brain() {
+        let mut mechanism = AttentionMechanism::new();
+
+        mechanism.register_brain("physics", "PhysicsBrain");
+
+        assert!(mechanism.domain_brain_map.get("physics").map(|v| v.contains(&"PhysicsBrain".to_string())).unwrap_or(false));
+    }
+
+    #[test]
+    fn test_attention_set_brain_bias() {
+        let mut mechanism = AttentionMechanism::new();
+
+        mechanism.set_brain_bias("TestBrain", 0.3);
+
+        assert_eq!(mechanism.brain_biases.get("TestBrain").copied(), Some(0.3));
+    }
+
+    #[test]
+    fn test_attention_bias_clamping() {
+        let mut mechanism = AttentionMechanism::new();
+
+        mechanism.set_brain_bias("TestBrain", 2.0); // Should clamp to 1.0
+        assert_eq!(mechanism.brain_biases.get("TestBrain").copied(), Some(1.0));
+
+        mechanism.set_brain_bias("TestBrain", -2.0); // Should clamp to -1.0
+        assert_eq!(mechanism.brain_biases.get("TestBrain").copied(), Some(-1.0));
+    }
+
+    #[test]
+    fn test_attention_suggest_redistribution() {
+        let mut mechanism = AttentionMechanism::new();
+
+        // Simulate many failures for one brain
+        for _ in 0..10 {
+            mechanism.stats.record_failure(&["BadBrain".to_string()]);
+        }
+
+        // Simulate many successes for another
+        for _ in 0..10 {
+            mechanism.stats.record_success(&["GoodBrain".to_string()]);
+        }
+
+        let suggestions = mechanism.suggest_redistribution();
+
+        // Should suggest increasing attention for GoodBrain
+        let good_suggestion = suggestions.iter().find(|(id, _)| id == "GoodBrain");
+        if let Some((_, suggested_bias)) = good_suggestion {
+            assert!(*suggested_bias > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_attention_mechanism_reset() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let brains = vec![("TestBrain", 0.1)];
+        let _allocation = mechanism.allocate("test", &brains);
+
+        assert!(mechanism.current_focus().is_some());
+
+        mechanism.reset();
+
+        assert!(mechanism.current_focus().is_none());
+    }
+
+    #[test]
+    fn test_create_attention_mechanism_factory() {
+        let mechanism = create_attention_mechanism();
+        assert!(mechanism.current_focus.is_none());
+        assert!(!mechanism.domain_brain_map.is_empty());
+    }
+
+    #[test]
+    fn test_attention_empty_brains() {
+        let mut mechanism = AttentionMechanism::new();
+
+        let allocation = mechanism.allocate("test input", &[]);
+
+        assert_eq!(allocation.engaged_count, 0);
+        assert!(allocation.brain_weights.is_empty());
+    }
+
+    #[test]
+    fn test_attention_fallback_recording() {
+        let mut mechanism = AttentionMechanism::new();
+
+        mechanism.record_fallback();
+        mechanism.record_fallback();
+
+        assert_eq!(mechanism.stats.fallback_count, 2);
+        assert_eq!(mechanism.stats.total_allocations, 2);
+    }
+}

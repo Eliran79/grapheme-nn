@@ -1,7 +1,7 @@
 ---
 id: backend-149
 title: 'Implement AttentionMechanism: Dynamic focus allocation across brains'
-status: todo
+status: done
 priority: high
 tags:
 - backend
