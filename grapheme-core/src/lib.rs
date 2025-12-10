@@ -9362,8 +9362,8 @@ mod tests {
         let dag = DagNN::from_text("hi").unwrap();
         let levels = dag.compute_node_levels();
 
-        // Should have at least 2 levels (inputs + hidden/output)
-        assert!(levels.len() >= 1);
+        // Should have at least 1 level (inputs + hidden/output)
+        assert!(!levels.is_empty());
         // Level 0 should contain input nodes
         assert!(!levels[0].is_empty());
     }
@@ -10580,7 +10580,8 @@ mod tests {
         let last_node = dag.input_nodes().last().copied().unwrap();
         output_grad.insert(last_node, Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0]));
 
-        // Run backward and update
+        // Run backward and update (using deprecated method in test to verify it still works)
+        #[allow(deprecated)]
         dag.backward_and_update(&output_grad, &mut emb, 0.01);
 
         // Edge count should remain the same
@@ -11386,7 +11387,7 @@ mod tests {
         );
 
         // Check that gradients are finite
-        for (_, &grad) in &grads.edge_grads {
+        for &grad in grads.edge_grads.values() {
             assert!(grad.is_finite(), "Edge gradient should be finite");
         }
     }
@@ -11422,6 +11423,7 @@ mod tests {
         output_grad.insert(last_node, Array1::from_vec(vec![1.0]));
 
         let mut emb = Embedding::xavier(256, 1);
+        #[allow(deprecated)]
         dag.backward_and_update(&output_grad, &mut emb, 0.1);
 
         // Verify weights changed
@@ -12094,7 +12096,7 @@ mod tests {
 
     #[test]
     fn test_edge_weight_stats_empty() {
-        let mut dag = DagNN::new();
+        let dag = DagNN::new();
         let (min, max, mean, std_dev, median) = dag.edge_weight_stats();
 
         assert_eq!(min, 0.0);
@@ -12176,7 +12178,7 @@ mod tests {
         let initial_nodes = dag.node_count();
 
         // Add a hidden node with no connections (orphan)
-        let orphan = dag.add_hidden();
+        let _orphan = dag.add_hidden();
         assert_eq!(dag.node_count(), initial_nodes + 1);
 
         // Remove orphaned nodes
@@ -12323,7 +12325,7 @@ mod tests {
         let inputs = dag.input_nodes().to_vec();
 
         // Add various disconnected nodes
-        let orphan = dag.add_hidden();  // No edges at all
+        let _orphan = dag.add_hidden();  // No edges at all
         let unreachable = dag.add_hidden();  // Not reachable from inputs
         let h2 = dag.add_hidden();
         dag.add_edge(unreachable, h2, Edge::sequential());  // Unreachable subgraph
@@ -12485,7 +12487,7 @@ mod tests {
 
     #[test]
     fn test_has_path() {
-        let mut dag = DagNN::from_text("abc").unwrap();
+        let dag = DagNN::from_text("abc").unwrap();
         let inputs = dag.input_nodes().to_vec();
         let (a, b, c) = (inputs[0], inputs[1], inputs[2]);
 
@@ -12575,7 +12577,7 @@ mod tests {
 
     #[test]
     fn test_structure_stats() {
-        let mut dag = DagNN::from_text("abc").unwrap();
+        let dag = DagNN::from_text("abc").unwrap();
 
         let (nodes, edges, avg_in, avg_out, depth) = dag.structure_stats();
 
@@ -13121,12 +13123,12 @@ mod tests {
     #[test]
     fn test_complexity_constants_defined() {
         // Verify all complexity constants are defined and reasonable
-        assert!(MAX_CLIQUE_K <= 10, "MAX_CLIQUE_K should be small to avoid NP-hard");
-        assert!(MAX_CLIQUE_GRAPH_SIZE >= 1000, "Should support reasonably large graphs");
-        assert!(MAX_SINKHORN_ITERATIONS >= 10, "Need enough iterations for convergence");
-        assert!(MAX_SINKHORN_ITERATIONS <= 1000, "Should bound iterations");
-        assert!(MAX_NODES_POLYNOMIAL >= 10000, "Should support large graphs");
-        assert!(MAX_EDGES_POLYNOMIAL >= 100000, "Should support many edges");
+        // (These tests verify compile-time constants are sensible)
+        assert_eq!(MAX_CLIQUE_K, 6, "MAX_CLIQUE_K should be 6 (small cliques only)");
+        assert_eq!(MAX_CLIQUE_GRAPH_SIZE, 10000, "Expected graph size limit");
+        assert_eq!(MAX_SINKHORN_ITERATIONS, 100, "Expected iteration count");
+        assert_eq!(MAX_NODES_POLYNOMIAL, 100_000, "Expected node limit");
+        assert_eq!(MAX_EDGES_POLYNOMIAL, 1_000_000, "Expected edge limit");
     }
 
     #[test]
@@ -13147,8 +13149,8 @@ mod tests {
             // This should complete quickly for any size
             let pruned = dag.prune_edges_by_threshold(0.001);
 
-            // Just verify it completes without timeout
-            assert!(pruned >= 0); // Always true, but ensures the operation ran
+            // Just verify it completes - use the value to prevent optimization
+            let _ = pruned;
         }
     }
 
@@ -13791,9 +13793,8 @@ mod tests {
         // Add gradient of 0.5 to first edge
         dag.accumulate_edge_grad(nodes[0], nodes[1], 0.5);
 
-        // Get initial weight
+        // Get edge index for later comparison
         let edge_idx = dag.graph.find_edge(nodes[0], nodes[1]).unwrap();
-        let initial_weight = dag.graph[edge_idx].weight;
 
         // Step with lr=0.1
         dag.step(0.1);

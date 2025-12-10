@@ -1,7 +1,7 @@
 ---
 id: backend-148
 title: 'Implement GoalStack: Hierarchical goal management with priorities'
-status: todo
+status: done
 priority: high
 tags:
 - backend

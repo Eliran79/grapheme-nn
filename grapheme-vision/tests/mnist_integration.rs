@@ -60,8 +60,8 @@ fn test_mnist_blob_extraction() {
             assert!(!blob.pixels.is_empty(), "Blob should have pixels");
             assert!(blob.intensity > 0.0, "Blob should have positive intensity");
             let (cx, cy) = blob.center;
-            assert!(cx >= 0.0 && cx < 28.0, "Center x should be in image bounds");
-            assert!(cy >= 0.0 && cy < 28.0, "Center y should be in image bounds");
+            assert!((0.0..28.0).contains(&cx), "Center x should be in image bounds");
+            assert!((0.0..28.0).contains(&cy), "Center y should be in image bounds");
         }
     }
 }
@@ -194,7 +194,7 @@ fn test_mnist_spatial_relationships() {
 #[test]
 fn test_mnist_determinism() {
     let mnist = load_mnist_subset();
-    let config = FeatureConfig::default()
+    let _config = FeatureConfig::default()
         .with_blob_threshold(0.2)
         .with_min_blob_size(3)
         .with_max_blobs(50);

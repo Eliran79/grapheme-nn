@@ -2564,15 +2564,13 @@ impl ImageClassificationModel {
         let mut predictions = Vec::with_capacity(images.len());
         let mut valid_count = 0;
 
-        for result in results {
-            if let Some((pred, is_correct, loss)) = result {
-                predictions.push(pred);
-                if is_correct {
-                    correct += 1;
-                }
-                total_loss += loss.max(0.0);
-                valid_count += 1;
+        for (pred, is_correct, loss) in results.into_iter().flatten() {
+            predictions.push(pred);
+            if is_correct {
+                correct += 1;
             }
+            total_loss += loss.max(0.0);
+            valid_count += 1;
         }
 
         if valid_count == 0 {
@@ -2737,8 +2735,8 @@ mod tests {
 
         // Create a test image with some structure
         let mut pixels = vec![0.0f32; 100]; // 10x10
-        for i in 30..70 {
-            pixels[i] = 0.8;
+        for pixel in pixels.iter_mut().take(70).skip(30) {
+            *pixel = 0.8;
         }
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
@@ -3007,8 +3005,10 @@ mod tests {
             }
         }
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
-        let mut config = FeatureConfig::default();
-        config.max_hierarchy_levels = 2;
+        let config = FeatureConfig {
+            max_hierarchy_levels: 2,
+            ..Default::default()
+        };
 
         let hierarchy = extract_hierarchical_blobs(&image, &config);
         // Should find blobs at multiple scales
@@ -3039,9 +3039,11 @@ mod tests {
         }
 
         let image = RawImage::grayscale(20, 20, pixels).unwrap();
-        let mut config = FeatureConfig::default();
-        config.max_hierarchy_levels = 3;
-        config.blob_threshold = 0.3;
+        let config = FeatureConfig {
+            max_hierarchy_levels: 3,
+            blob_threshold: 0.3,
+            ..Default::default()
+        };
 
         let hierarchy = extract_hierarchical_blobs(&image, &config);
 
@@ -3069,9 +3071,11 @@ mod tests {
         }
 
         let image = RawImage::grayscale(20, 20, pixels).unwrap();
-        let mut config = FeatureConfig::default();
-        config.max_hierarchy_levels = 2;
-        config.blob_threshold = 0.3;
+        let config = FeatureConfig {
+            max_hierarchy_levels: 2,
+            blob_threshold: 0.3,
+            ..Default::default()
+        };
 
         let hierarchy = extract_hierarchical_blobs(&image, &config);
 
@@ -3104,10 +3108,12 @@ mod tests {
         }
 
         let image = RawImage::grayscale(20, 20, pixels).unwrap();
-        let mut config = FeatureConfig::default();
-        config.build_hierarchy = true;
-        config.max_hierarchy_levels = 2;
-        config.blob_threshold = 0.3;
+        let config = FeatureConfig {
+            build_hierarchy: true,
+            max_hierarchy_levels: 2,
+            blob_threshold: 0.3,
+            ..Default::default()
+        };
 
         let graph = image_to_graph(&image, &config).unwrap();
 
@@ -3130,9 +3136,11 @@ mod tests {
         }
 
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
-        let mut config = FeatureConfig::default();
-        config.build_hierarchy = true;
-        config.max_hierarchy_levels = 1; // Single level
+        let config = FeatureConfig {
+            build_hierarchy: true,
+            max_hierarchy_levels: 1, // Single level
+            ..Default::default()
+        };
 
         let graph = image_to_graph(&image, &config).unwrap();
 
@@ -3363,8 +3371,8 @@ mod tests {
 
         // Create a test image with structure
         let mut pixels = vec![0.0f32; 100]; // 10x10
-        for i in 30..70 {
-            pixels[i] = 0.8;
+        for pixel in pixels.iter_mut().take(70).skip(30) {
+            *pixel = 0.8;
         }
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
@@ -3503,11 +3511,11 @@ mod tests {
 
         // Create distinct images for different classes
         let mut image1_pixels = vec![0.0f32; 100]; // 10x10
-        for i in 20..40 { image1_pixels[i] = 0.9; } // Horizontal bar at top
+        for pixel in image1_pixels.iter_mut().take(40).skip(20) { *pixel = 0.9; } // Horizontal bar at top
         let image1 = RawImage::grayscale(10, 10, image1_pixels).unwrap();
 
         let mut image2_pixels = vec![0.0f32; 100]; // 10x10
-        for i in 60..80 { image2_pixels[i] = 0.9; } // Horizontal bar at bottom
+        for pixel in image2_pixels.iter_mut().take(80).skip(60) { *pixel = 0.9; } // Horizontal bar at bottom
         let image2 = RawImage::grayscale(10, 10, image2_pixels).unwrap();
 
         // Get initial edge weights (snapshot)
@@ -3594,7 +3602,7 @@ mod tests {
 
         // Create an image that should look like class 0
         let mut pixels = vec![0.0f32; 100]; // 10x10
-        for i in 20..40 { pixels[i] = 0.9; }
+        for pixel in pixels.iter_mut().take(40).skip(20) { *pixel = 0.9; }
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
         // Check vision graph size
@@ -3696,7 +3704,7 @@ mod tests {
     fn test_feature_mode_comparison() {
         // Compare node counts across different modes
         let mut pixels = vec![0.0f32; 100];
-        for i in 20..40 { pixels[i] = 0.9; } // Horizontal bar
+        for pixel in pixels.iter_mut().take(40).skip(20) { *pixel = 0.9; } // Horizontal bar
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
         // Grid mode: fixed node count

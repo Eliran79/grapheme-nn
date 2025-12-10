@@ -357,7 +357,7 @@ fn bench_hybrid_backward_complexity(c: &mut Criterion) {
                 || {
                     let mut dag = create_dag_with_hidden(*size, 0.3);
                     dag.neuromorphic_forward().unwrap();
-                    let mut embedding = Embedding::new(256, 8, InitStrategy::Zero);
+                    let embedding = Embedding::new(256, 8, InitStrategy::Zero);
 
                     // Create output gradient
                     let mut output_grad = HashMap::new();

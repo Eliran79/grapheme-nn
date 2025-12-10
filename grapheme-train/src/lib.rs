@@ -7262,7 +7262,7 @@ mod tests {
             name: "y".into(),
             var_type: Some("float".into()),
         }));
-        let t2 = target.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Float(3.14))));
+        let t2 = target.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Float(3.15))));
         target.add_edge(t0, t1, CodeEdge::Child(0));
         target.add_edge(t1, t2, CodeEdge::DataFlow);
 

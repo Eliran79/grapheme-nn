@@ -138,7 +138,6 @@ mod tests {
         #[default]
         A,
         B(i32),
-        C(String),
     }
 
     #[test]
@@ -160,7 +159,6 @@ mod tests {
         let node = ActivatedNode::with_type_activation(TestNodeType::B(10), |t| match t {
             TestNodeType::A => 0.1,
             TestNodeType::B(n) => *n as f32 / 100.0,
-            TestNodeType::C(_) => 0.5,
         });
         assert_eq!(node.activation, 0.1); // 10 / 100.0
     }

@@ -935,6 +935,456 @@ pub fn create_brain_aware_agency() -> BrainAwareAgency {
 }
 
 // ============================================================================
+// GoalStack: Hierarchical Goal Management with Priorities
+// ============================================================================
+
+/// Entry in the goal stack
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalStackEntry {
+    /// Goal identifier
+    pub id: GoalId,
+    /// Human-readable name
+    pub name: String,
+    /// Priority (0.0 to 1.0, higher = more important)
+    pub priority: f32,
+    /// Parent goal ID (None for root goals)
+    pub parent_id: Option<GoalId>,
+    /// Child goal IDs
+    pub children: Vec<GoalId>,
+    /// Current status
+    pub status: GoalStackStatus,
+    /// Progress (0.0 to 1.0)
+    pub progress: f32,
+    /// Creation timestamp (epoch millis)
+    pub created_at: u64,
+    /// Description/context
+    pub description: String,
+}
+
+/// Status of a goal in the stack
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GoalStackStatus {
+    /// Waiting to be processed
+    #[default]
+    Pending,
+    /// Currently being worked on
+    InProgress,
+    /// Blocked by dependencies or children
+    Blocked,
+    /// Suspended (can be resumed)
+    Suspended,
+    /// Successfully completed
+    Completed,
+    /// Failed
+    Failed(String),
+    /// Cancelled by user or system
+    Cancelled,
+}
+
+impl GoalStackStatus {
+    /// Check if this is a terminal status
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed(_) | Self::Cancelled)
+    }
+
+    /// Check if goal can be worked on
+    pub fn is_workable(&self) -> bool {
+        matches!(self, Self::Pending | Self::InProgress)
+    }
+}
+
+/// GoalStack: Stack-based hierarchical goal management
+///
+/// Implements a priority-based goal stack where:
+/// - Goals are organized hierarchically (parent-child relationships)
+/// - Each goal has a priority that affects execution order
+/// - Goals can be pushed, popped, suspended, and resumed
+/// - Child goals must complete before parent goals
+///
+/// # Time Complexity
+/// - Push: O(1)
+/// - Pop: O(n) due to priority sorting
+/// - Get top: O(n) due to priority calculation
+/// - Update status: O(1)
+/// - Get by ID: O(1) via HashMap
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoalStack {
+    /// All goals indexed by ID
+    goals: HashMap<GoalId, GoalStackEntry>,
+    /// Root goal IDs (no parent)
+    root_goals: Vec<GoalId>,
+    /// Next available goal ID
+    next_id: GoalId,
+    /// Configuration
+    pub config: GoalStackConfig,
+}
+
+/// Configuration for the goal stack
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalStackConfig {
+    /// Maximum number of goals in the stack
+    pub max_goals: usize,
+    /// Whether to auto-complete parent when all children complete
+    pub auto_complete_parents: bool,
+    /// Whether to cascade failure to children
+    pub cascade_failure: bool,
+    /// Priority boost for older goals (per second)
+    pub age_priority_boost: f32,
+}
+
+impl Default for GoalStackConfig {
+    fn default() -> Self {
+        Self {
+            max_goals: 1000,
+            auto_complete_parents: true,
+            cascade_failure: false,
+            age_priority_boost: 0.0,
+        }
+    }
+}
+
+impl GoalStack {
+    /// Create a new empty goal stack
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: GoalStackConfig) -> Self {
+        Self {
+            config,
+            ..Default::default()
+        }
+    }
+
+    /// Push a new root goal onto the stack - O(1)
+    pub fn push(&mut self, name: impl Into<String>, priority: f32, description: impl Into<String>) -> GoalId {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let entry = GoalStackEntry {
+            id,
+            name: name.into(),
+            priority: priority.clamp(0.0, 1.0),
+            parent_id: None,
+            children: Vec::new(),
+            status: GoalStackStatus::Pending,
+            progress: 0.0,
+            created_at: 0, // Would use real timestamp
+            description: description.into(),
+        };
+
+        self.goals.insert(id, entry);
+        self.root_goals.push(id);
+        id
+    }
+
+    /// Push a child goal under a parent - O(1)
+    pub fn push_child(&mut self, parent_id: GoalId, name: impl Into<String>, priority: f32, description: impl Into<String>) -> Option<GoalId> {
+        if !self.goals.contains_key(&parent_id) {
+            return None;
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let entry = GoalStackEntry {
+            id,
+            name: name.into(),
+            priority: priority.clamp(0.0, 1.0),
+            parent_id: Some(parent_id),
+            children: Vec::new(),
+            status: GoalStackStatus::Pending,
+            progress: 0.0,
+            created_at: 0,
+            description: description.into(),
+        };
+
+        self.goals.insert(id, entry);
+
+        // Add to parent's children
+        if let Some(parent) = self.goals.get_mut(&parent_id) {
+            parent.children.push(id);
+        }
+
+        Some(id)
+    }
+
+    /// Get the highest priority workable goal - O(n)
+    pub fn top(&self) -> Option<&GoalStackEntry> {
+        self.goals
+            .values()
+            .filter(|g| g.status.is_workable() && g.children.iter().all(|c| {
+                self.goals.get(c).is_none_or(|child| child.status.is_terminal())
+            }))
+            .max_by(|a, b| a.priority.total_cmp(&b.priority))
+    }
+
+    /// Get the highest priority workable goal ID - O(n)
+    pub fn top_id(&self) -> Option<GoalId> {
+        self.top().map(|g| g.id)
+    }
+
+    /// Pop (complete) the specified goal - O(1)
+    pub fn complete(&mut self, id: GoalId) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            goal.status = GoalStackStatus::Completed;
+            goal.progress = 1.0;
+
+            // Check if parent should auto-complete
+            if self.config.auto_complete_parents {
+                if let Some(parent_id) = goal.parent_id {
+                    self.try_auto_complete_parent(parent_id);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark a goal as failed - O(n) if cascade enabled
+    pub fn fail(&mut self, id: GoalId, reason: impl Into<String>) -> bool {
+        let reason_str = reason.into();
+        if let Some(goal) = self.goals.get_mut(&id) {
+            goal.status = GoalStackStatus::Failed(reason_str.clone());
+
+            // Cascade failure to children if configured
+            if self.config.cascade_failure {
+                let children: Vec<GoalId> = goal.children.clone();
+                for child_id in children {
+                    self.fail(child_id, format!("Parent {} failed", id));
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Suspend a goal - O(1)
+    pub fn suspend(&mut self, id: GoalId) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            if !goal.status.is_terminal() {
+                goal.status = GoalStackStatus::Suspended;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Resume a suspended goal - O(1)
+    pub fn resume(&mut self, id: GoalId) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            if goal.status == GoalStackStatus::Suspended {
+                goal.status = GoalStackStatus::InProgress;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Start working on a goal - O(1)
+    pub fn start(&mut self, id: GoalId) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            if goal.status == GoalStackStatus::Pending {
+                goal.status = GoalStackStatus::InProgress;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Update goal progress - O(1)
+    pub fn set_progress(&mut self, id: GoalId, progress: f32) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            goal.progress = progress.clamp(0.0, 1.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update goal priority - O(1)
+    pub fn set_priority(&mut self, id: GoalId, priority: f32) -> bool {
+        if let Some(goal) = self.goals.get_mut(&id) {
+            goal.priority = priority.clamp(0.0, 1.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get a goal by ID - O(1)
+    pub fn get(&self, id: GoalId) -> Option<&GoalStackEntry> {
+        self.goals.get(&id)
+    }
+
+    /// Get mutable goal by ID - O(1)
+    pub fn get_mut(&mut self, id: GoalId) -> Option<&mut GoalStackEntry> {
+        self.goals.get_mut(&id)
+    }
+
+    /// Get all root goals - O(n)
+    pub fn roots(&self) -> Vec<&GoalStackEntry> {
+        self.root_goals
+            .iter()
+            .filter_map(|id| self.goals.get(id))
+            .collect()
+    }
+
+    /// Get all goals with a given status - O(n)
+    pub fn by_status(&self, status: &GoalStackStatus) -> Vec<&GoalStackEntry> {
+        self.goals
+            .values()
+            .filter(|g| &g.status == status)
+            .collect()
+    }
+
+    /// Get pending goals - O(n)
+    pub fn pending(&self) -> Vec<&GoalStackEntry> {
+        self.by_status(&GoalStackStatus::Pending)
+    }
+
+    /// Get in-progress goals - O(n)
+    pub fn in_progress(&self) -> Vec<&GoalStackEntry> {
+        self.by_status(&GoalStackStatus::InProgress)
+    }
+
+    /// Get completed goals - O(n)
+    pub fn completed(&self) -> Vec<&GoalStackEntry> {
+        self.by_status(&GoalStackStatus::Completed)
+    }
+
+    /// Get children of a goal - O(m) where m = number of children
+    pub fn children(&self, id: GoalId) -> Vec<&GoalStackEntry> {
+        self.goals.get(&id)
+            .map(|g| g.children.iter()
+                .filter_map(|child_id| self.goals.get(child_id))
+                .collect())
+            .unwrap_or_default()
+    }
+
+    /// Get total number of goals - O(1)
+    pub fn len(&self) -> usize {
+        self.goals.len()
+    }
+
+    /// Check if stack is empty - O(1)
+    pub fn is_empty(&self) -> bool {
+        self.goals.is_empty()
+    }
+
+    /// Clear all completed goals - O(n)
+    pub fn clear_completed(&mut self) {
+        let completed_ids: Vec<GoalId> = self.goals
+            .iter()
+            .filter(|(_, g)| g.status == GoalStackStatus::Completed)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in completed_ids {
+            self.remove_goal(id);
+        }
+    }
+
+    /// Remove a goal and clean up references - O(n)
+    fn remove_goal(&mut self, id: GoalId) {
+        if let Some(goal) = self.goals.remove(&id) {
+            // Remove from root_goals if applicable
+            self.root_goals.retain(|&rid| rid != id);
+
+            // Remove from parent's children
+            if let Some(parent_id) = goal.parent_id {
+                if let Some(parent) = self.goals.get_mut(&parent_id) {
+                    parent.children.retain(|&cid| cid != id);
+                }
+            }
+        }
+    }
+
+    /// Try to auto-complete a parent if all children are done - O(m)
+    fn try_auto_complete_parent(&mut self, parent_id: GoalId) {
+        if let Some(parent) = self.goals.get(&parent_id) {
+            let all_children_done = parent.children.iter().all(|child_id| {
+                self.goals.get(child_id)
+                    .is_none_or(|c| c.status.is_terminal())
+            });
+
+            if all_children_done && !parent.children.is_empty() {
+                // All children done, complete parent
+                if let Some(parent) = self.goals.get_mut(&parent_id) {
+                    parent.status = GoalStackStatus::Completed;
+                    parent.progress = 1.0;
+                }
+
+                // Recursively check grandparent
+                if let Some(grandparent_id) = self.goals.get(&parent_id).and_then(|p| p.parent_id) {
+                    self.try_auto_complete_parent(grandparent_id);
+                }
+            }
+        }
+    }
+
+    /// Get summary statistics - O(n)
+    pub fn stats(&self) -> GoalStackStats {
+        let mut stats = GoalStackStats::default();
+        for goal in self.goals.values() {
+            stats.total += 1;
+            match &goal.status {
+                GoalStackStatus::Pending => stats.pending += 1,
+                GoalStackStatus::InProgress => stats.in_progress += 1,
+                GoalStackStatus::Blocked => stats.blocked += 1,
+                GoalStackStatus::Suspended => stats.suspended += 1,
+                GoalStackStatus::Completed => stats.completed += 1,
+                GoalStackStatus::Failed(_) => stats.failed += 1,
+                GoalStackStatus::Cancelled => stats.cancelled += 1,
+            }
+        }
+        stats
+    }
+}
+
+/// Statistics about the goal stack
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoalStackStats {
+    pub total: usize,
+    pub pending: usize,
+    pub in_progress: usize,
+    pub blocked: usize,
+    pub suspended: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+}
+
+impl GoalStackStats {
+    /// Completion rate (completed / total)
+    pub fn completion_rate(&self) -> f32 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.completed as f32 / self.total as f32
+        }
+    }
+
+    /// Success rate (completed / terminal)
+    pub fn success_rate(&self) -> f32 {
+        let terminal = self.completed + self.failed + self.cancelled;
+        if terminal == 0 {
+            0.0
+        } else {
+            self.completed as f32 / terminal as f32
+        }
+    }
+}
+
+/// Factory function to create a goal stack
+pub fn create_goal_stack() -> GoalStack {
+    GoalStack::new()
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1078,5 +1528,201 @@ mod tests {
         let config = PlanningConfig::default();
         assert_eq!(config.max_depth, 20);
         assert!(config.use_heuristics);
+    }
+
+    // ========================================================================
+    // GoalStack Tests
+    // ========================================================================
+
+    #[test]
+    fn test_goal_stack_creation() {
+        let stack = GoalStack::new();
+        assert!(stack.is_empty());
+        assert_eq!(stack.len(), 0);
+    }
+
+    #[test]
+    fn test_goal_stack_push() {
+        let mut stack = GoalStack::new();
+        let id = stack.push("Test Goal", 0.8, "A test goal");
+
+        assert_eq!(stack.len(), 1);
+        assert!(!stack.is_empty());
+
+        let goal = stack.get(id).unwrap();
+        assert_eq!(goal.name, "Test Goal");
+        assert!((goal.priority - 0.8).abs() < 0.001);
+        assert_eq!(goal.status, GoalStackStatus::Pending);
+    }
+
+    #[test]
+    fn test_goal_stack_push_child() {
+        let mut stack = GoalStack::new();
+        let parent_id = stack.push("Parent", 0.9, "Parent goal");
+        let child_id = stack.push_child(parent_id, "Child", 0.7, "Child goal").unwrap();
+
+        assert_eq!(stack.len(), 2);
+
+        let parent = stack.get(parent_id).unwrap();
+        assert!(parent.children.contains(&child_id));
+
+        let child = stack.get(child_id).unwrap();
+        assert_eq!(child.parent_id, Some(parent_id));
+    }
+
+    #[test]
+    fn test_goal_stack_top_priority() {
+        let mut stack = GoalStack::new();
+        stack.push("Low Priority", 0.3, "desc");
+        let high_id = stack.push("High Priority", 0.9, "desc");
+        stack.push("Medium Priority", 0.5, "desc");
+
+        let top = stack.top().unwrap();
+        assert_eq!(top.id, high_id);
+    }
+
+    #[test]
+    fn test_goal_stack_top_respects_children() {
+        // Disable auto-complete for this test
+        let config = GoalStackConfig {
+            auto_complete_parents: false,
+            ..Default::default()
+        };
+        let mut stack = GoalStack::with_config(config);
+
+        let parent_id = stack.push("Parent", 0.9, "High priority parent");
+        let child_id = stack.push_child(parent_id, "Child", 0.5, "Child").unwrap();
+        let standalone_id = stack.push("Standalone", 0.7, "Lower priority standalone");
+
+        // Parent has higher priority but has incomplete child
+        // So standalone should be top
+        let top = stack.top().unwrap();
+        assert_eq!(top.id, standalone_id);
+
+        // Complete the child
+        stack.complete(child_id);
+
+        // Now parent should be top (child is done, parent can be worked on)
+        let top = stack.top().unwrap();
+        assert_eq!(top.id, parent_id);
+    }
+
+    #[test]
+    fn test_goal_stack_complete() {
+        let mut stack = GoalStack::new();
+        let id = stack.push("Goal", 0.5, "desc");
+
+        assert!(stack.complete(id));
+
+        let goal = stack.get(id).unwrap();
+        assert_eq!(goal.status, GoalStackStatus::Completed);
+        assert!((goal.progress - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_goal_stack_auto_complete_parent() {
+        let mut stack = GoalStack::new();
+        let parent_id = stack.push("Parent", 0.9, "Parent");
+        let child1_id = stack.push_child(parent_id, "Child 1", 0.5, "Child").unwrap();
+        let child2_id = stack.push_child(parent_id, "Child 2", 0.5, "Child").unwrap();
+
+        // Complete both children
+        stack.complete(child1_id);
+        stack.complete(child2_id);
+
+        // Parent should be auto-completed
+        let parent = stack.get(parent_id).unwrap();
+        assert_eq!(parent.status, GoalStackStatus::Completed);
+    }
+
+    #[test]
+    fn test_goal_stack_fail() {
+        let mut stack = GoalStack::new();
+        let id = stack.push("Goal", 0.5, "desc");
+
+        assert!(stack.fail(id, "Test failure"));
+
+        let goal = stack.get(id).unwrap();
+        assert!(matches!(goal.status, GoalStackStatus::Failed(_)));
+    }
+
+    #[test]
+    fn test_goal_stack_suspend_resume() {
+        let mut stack = GoalStack::new();
+        let id = stack.push("Goal", 0.5, "desc");
+        stack.start(id);
+
+        assert!(stack.suspend(id));
+        assert_eq!(stack.get(id).unwrap().status, GoalStackStatus::Suspended);
+
+        assert!(stack.resume(id));
+        assert_eq!(stack.get(id).unwrap().status, GoalStackStatus::InProgress);
+    }
+
+    #[test]
+    fn test_goal_stack_progress() {
+        let mut stack = GoalStack::new();
+        let id = stack.push("Goal", 0.5, "desc");
+
+        assert!(stack.set_progress(id, 0.75));
+        assert!((stack.get(id).unwrap().progress - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_goal_stack_stats() {
+        let mut stack = GoalStack::new();
+        stack.push("Pending 1", 0.5, "desc");
+        stack.push("Pending 2", 0.5, "desc");
+
+        let id3 = stack.push("Will Complete", 0.5, "desc");
+        stack.complete(id3);
+
+        let id4 = stack.push("Will Fail", 0.5, "desc");
+        stack.fail(id4, "error");
+
+        let stats = stack.stats();
+        assert_eq!(stats.total, 4);
+        assert_eq!(stats.pending, 2);
+        assert_eq!(stats.completed, 1);
+        assert_eq!(stats.failed, 1);
+        assert!((stats.completion_rate() - 0.25).abs() < 0.001);
+        assert!((stats.success_rate() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_goal_stack_clear_completed() {
+        let mut stack = GoalStack::new();
+        stack.push("Pending", 0.5, "desc");
+
+        let id2 = stack.push("Completed", 0.5, "desc");
+        stack.complete(id2);
+
+        assert_eq!(stack.len(), 2);
+        stack.clear_completed();
+        assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn test_goal_stack_status_is_terminal() {
+        assert!(!GoalStackStatus::Pending.is_terminal());
+        assert!(!GoalStackStatus::InProgress.is_terminal());
+        assert!(!GoalStackStatus::Suspended.is_terminal());
+        assert!(GoalStackStatus::Completed.is_terminal());
+        assert!(GoalStackStatus::Failed("error".to_string()).is_terminal());
+        assert!(GoalStackStatus::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn test_goal_stack_status_is_workable() {
+        assert!(GoalStackStatus::Pending.is_workable());
+        assert!(GoalStackStatus::InProgress.is_workable());
+        assert!(!GoalStackStatus::Suspended.is_workable());
+        assert!(!GoalStackStatus::Completed.is_workable());
+    }
+
+    #[test]
+    fn test_create_goal_stack_factory() {
+        let stack = create_goal_stack();
+        assert!(stack.is_empty());
     }
 }

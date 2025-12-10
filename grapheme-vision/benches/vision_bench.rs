@@ -12,7 +12,7 @@ fn bench_blob_extraction(c: &mut Criterion) {
             }
         }
     }
-    let image = RawImage::grayscale(28, 28, &pixels).unwrap();
+    let image = RawImage::grayscale(28, 28, pixels).unwrap();
     let config = FeatureConfig::default();
 
     c.bench_function("extract_blobs_28x28", |b| {
@@ -23,10 +23,10 @@ fn bench_blob_extraction(c: &mut Criterion) {
 fn bench_image_to_graph(c: &mut Criterion) {
     // Create a 28x28 grayscale test image
     let mut pixels = vec![0.0f32; 784];
-    for i in 100..300 {
-        pixels[i] = 0.7;
+    for pixel in pixels.iter_mut().take(300).skip(100) {
+        *pixel = 0.7;
     }
-    let image = RawImage::grayscale(28, 28, &pixels).unwrap();
+    let image = RawImage::grayscale(28, 28, pixels).unwrap();
     let config = FeatureConfig::default();
 
     c.bench_function("image_to_graph_28x28", |b| {
@@ -38,10 +38,10 @@ fn bench_vision_brain(c: &mut Criterion) {
     let brain = VisionBrain::new();
     // Create a 28x28 grayscale test image
     let mut pixels = vec![0.0f32; 784];
-    for i in 100..300 {
-        pixels[i] = 0.7;
+    for pixel in pixels.iter_mut().take(300).skip(100) {
+        *pixel = 0.7;
     }
-    let image = RawImage::grayscale(28, 28, &pixels).unwrap();
+    let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
     c.bench_function("vision_brain_to_graph", |b| {
         b.iter(|| brain.to_graph(black_box(&image)))
