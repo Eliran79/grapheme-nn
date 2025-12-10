@@ -1859,8 +1859,16 @@ pub struct ImageClassificationConfig {
     pub classification: ClassificationConfig,
     /// Hidden layer size for DAG construction
     pub hidden_size: usize,
-    /// Learning rate for Hebbian updates
+    /// Learning rate (Adam default: 0.001)
     pub learning_rate: f32,
+    /// Adam beta1: exponential decay rate for first moment (default: 0.9)
+    pub beta1: f32,
+    /// Adam beta2: exponential decay rate for second moment (default: 0.999)
+    pub beta2: f32,
+    /// Adam epsilon: numerical stability constant (default: 1e-8)
+    pub epsilon: f32,
+    /// Weight decay / L2 regularization (default: 0.0)
+    pub weight_decay: f32,
     /// Weight for gradient descent contribution (0.0 to 1.0)
     pub gradient_weight: f32,
     /// Weight for Hebbian contribution (0.0 to 1.0)
@@ -1876,6 +1884,7 @@ impl Default for ImageClassificationConfig {
         // MNIST-specific defaults: 10 digit classes, grid-based features
         // Grid 10x10 = 100 nodes + 1 root = 101 nodes
         // max_vision_nodes = 101 to include root node
+        // Adam optimizer defaults from "Adam: A Method for Stochastic Optimization"
         Self {
             vision: FeatureConfig::default()
                 .grid_sampling(10) // 10x10 grid = 100 feature nodes + 1 root
@@ -1884,7 +1893,12 @@ impl Default for ImageClassificationConfig {
                 .with_max_blobs(50),
             classification: ClassificationConfig::new(10), // 10 digit classes
             hidden_size: 64,
-            learning_rate: 0.01,
+            // Adam hyperparameters (Kingma & Ba, 2014)
+            learning_rate: 0.001, // Adam default (was 0.01)
+            beta1: 0.9,           // First moment decay
+            beta2: 0.999,         // Second moment decay
+            epsilon: 1e-8,        // Numerical stability
+            weight_decay: 0.0,    // L2 regularization (AdamW style)
             gradient_weight: 0.7,
             hebbian_weight: 0.3,
             use_hybrid_learning: true,
@@ -1923,6 +1937,40 @@ impl ImageClassificationConfig {
     /// Use pure Hebbian learning (no gradients)
     pub fn with_pure_hebbian(mut self) -> Self {
         self.use_hybrid_learning = false;
+        self
+    }
+
+    /// Set Adam beta1 (first moment decay rate, default: 0.9)
+    pub fn with_beta1(mut self, beta1: f32) -> Self {
+        self.beta1 = beta1;
+        self
+    }
+
+    /// Set Adam beta2 (second moment decay rate, default: 0.999)
+    pub fn with_beta2(mut self, beta2: f32) -> Self {
+        self.beta2 = beta2;
+        self
+    }
+
+    /// Set Adam epsilon (numerical stability, default: 1e-8)
+    pub fn with_epsilon(mut self, epsilon: f32) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+
+    /// Set weight decay / L2 regularization (default: 0.0)
+    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    /// Configure all Adam optimizer hyperparameters at once
+    pub fn with_adam(mut self, lr: f32, beta1: f32, beta2: f32, epsilon: f32, weight_decay: f32) -> Self {
+        self.learning_rate = lr;
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self.epsilon = epsilon;
+        self.weight_decay = weight_decay;
         self
     }
 }

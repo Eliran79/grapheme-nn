@@ -1,7 +1,7 @@
 ---
 id: backend-140
 title: Implement joint training for VisionBrain + ClassificationBrain + GRAPHEME Core
-status: doing
+status: done
 priority: critical
 tags:
 - backend
