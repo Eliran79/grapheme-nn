@@ -2350,9 +2350,12 @@ impl ImageClassificationModel {
         // Stage 5: Adam update for DagNN edge weights
         self.apply_adam_edge_updates(&struct_result.gradient)?;
 
-        // Stage 6: Adam update for ClassificationBrain templates
-        let activations = self.dag.get_classification_logits();
-        self.apply_adam_template_update(target, &activations);
+        // Stage 6: Adam update for ClassificationBrain templates (only when correct)
+        // Only update templates in the right direction - when we correctly classify
+        if struct_result.correct {
+            let activations = self.dag.get_classification_logits();
+            self.apply_adam_template_update(target, &activations);
+        }
 
         self.samples_seen += 1;
 
@@ -3375,7 +3378,8 @@ mod tests {
         // Adam state should have accumulated
         assert_eq!(model.adam().timestep(), 5);
         assert!(model.adam().num_edge_params() > 0, "Adam should track edge momentum");
-        assert!(model.adam().num_template_params() > 0, "Adam should track template momentum");
+        // Template momentum only accumulates when classification is correct,
+        // so we can't guarantee it will be non-zero after just 5 random samples
     }
 
     #[test]
