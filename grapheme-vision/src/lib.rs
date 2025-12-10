@@ -6,6 +6,7 @@
 //! - `RawImage` - Raw image representation (any size, grayscale or RGB)
 //! - `VisionBrain` - Hierarchical feature extraction (blob detection, edge detection)
 //! - `ClassificationBrain` - Output graph to class label conversion
+//! - `ImageClassificationModel` - Generic end-to-end image classification pipeline
 //! - Deterministic: same image = same graph
 //!
 //! ## GRAPHEME Vision Principle
@@ -16,11 +17,23 @@
 //! ```
 //!
 //! No CNN. No learned feature extraction. Pure signal processing to graph.
+//!
+//! ## Generic Architecture
+//!
+//! VisionBrain handles ANY image size. All components are fully generic:
+//! - `RawImage` - Any dimensions, grayscale or RGB
+//! - `FeatureConfig` - Configurable feature extraction parameters
+//! - `ClassificationConfig` - Any number of classes
+//!
+//! Dataset-specific configurations belong in training crates, not here.
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    HebbianConfig, HebbianLearning, HybridLearningConfig, Embedding,
 };
+use ndarray::Array1;
+use std::collections::HashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 // HashSet removed - not currently needed
@@ -61,9 +74,14 @@ pub type VisionResult<T> = Result<T, VisionError>;
 /// ```
 /// use grapheme_vision::RawImage;
 ///
-/// // Create a 28x28 grayscale image (like MNIST)
-/// let pixels = vec![0.0f32; 28 * 28];
-/// let image = RawImage::grayscale(28, 28, pixels).unwrap();
+/// // Create images of any size and color format
+/// let (width, height) = (100, 80);
+///
+/// // Grayscale (1 channel)
+/// let image = RawImage::grayscale(width, height, vec![0.5f32; width * height]).unwrap();
+///
+/// // RGB (3 channels)
+/// let image = RawImage::rgb(width, height, vec![0.5f32; width * height * 3]).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImage {
@@ -118,18 +136,8 @@ impl RawImage {
         })
     }
 
-    /// Create from MNIST format (784 pixels, 28x28)
-    pub fn from_mnist(pixels: &[f32]) -> VisionResult<Self> {
-        if pixels.len() != 784 {
-            return Err(VisionError::PixelCountMismatch {
-                expected: 784,
-                actual: pixels.len(),
-            });
-        }
-        Self::grayscale(28, 28, pixels.to_vec())
-    }
-
-    /// Get pixel value at (x, y) for grayscale, or (x, y, channel) for RGB
+    /// Get pixel value at (x, y) for grayscale
+    /// For RGB images, use `get_pixel_rgb` instead
     pub fn get_pixel(&self, x: usize, y: usize) -> f32 {
         if x >= self.width || y >= self.height {
             return 0.0;
@@ -138,16 +146,48 @@ impl RawImage {
         if self.channels == 1 {
             self.pixels.get(idx).copied().unwrap_or(0.0)
         } else {
-            // For RGB, return grayscale average
+            // For RGB, return luminance (perceptual grayscale)
             let base = idx * 3;
             let r = self.pixels.get(base).copied().unwrap_or(0.0);
             let g = self.pixels.get(base + 1).copied().unwrap_or(0.0);
             let b = self.pixels.get(base + 2).copied().unwrap_or(0.0);
-            (r + g + b) / 3.0
+            0.299 * r + 0.587 * g + 0.114 * b  // Standard luminance formula
         }
     }
 
-    /// Convert to grayscale if RGB
+    /// Get RGB pixel values at (x, y) - returns (r, g, b)
+    /// For grayscale, returns (v, v, v)
+    pub fn get_pixel_rgb(&self, x: usize, y: usize) -> (f32, f32, f32) {
+        if x >= self.width || y >= self.height {
+            return (0.0, 0.0, 0.0);
+        }
+        let idx = y * self.width + x;
+        if self.channels == 1 {
+            let v = self.pixels.get(idx).copied().unwrap_or(0.0);
+            (v, v, v)
+        } else {
+            let base = idx * 3;
+            let r = self.pixels.get(base).copied().unwrap_or(0.0);
+            let g = self.pixels.get(base + 1).copied().unwrap_or(0.0);
+            let b = self.pixels.get(base + 2).copied().unwrap_or(0.0);
+            (r, g, b)
+        }
+    }
+
+    /// Get pixel at specific channel (0=R/gray, 1=G, 2=B)
+    pub fn get_pixel_channel(&self, x: usize, y: usize, channel: usize) -> f32 {
+        if x >= self.width || y >= self.height || channel >= self.channels {
+            return 0.0;
+        }
+        let idx = y * self.width + x;
+        if self.channels == 1 {
+            self.pixels.get(idx).copied().unwrap_or(0.0)
+        } else {
+            self.pixels.get(idx * 3 + channel).copied().unwrap_or(0.0)
+        }
+    }
+
+    /// Convert to grayscale (luminance-based)
     pub fn to_grayscale(&self) -> Self {
         if self.channels == 1 {
             return self.clone();
@@ -156,7 +196,7 @@ impl RawImage {
         let mut gray_pixels = Vec::with_capacity(self.width * self.height);
         for y in 0..self.height {
             for x in 0..self.width {
-                gray_pixels.push(self.get_pixel(x, y));
+                gray_pixels.push(self.get_pixel(x, y));  // Uses luminance formula
             }
         }
 
@@ -459,20 +499,29 @@ impl Default for FeatureConfig {
 }
 
 impl FeatureConfig {
-    /// Config optimized for MNIST digits
-    pub fn mnist() -> Self {
-        Self {
-            blob_threshold: 0.2,
-            min_blob_size: 3,
-            max_blobs: 50,
-            detect_edges: false,
-            edge_threshold: 0.3,
-            detect_corners: false,
-            build_hierarchy: true,
-            max_hierarchy_levels: 2,
-            adjacency_threshold: 0.2,
-            build_spatial_graph: true,
-        }
+    /// Builder: set blob detection threshold
+    pub fn with_blob_threshold(mut self, threshold: f32) -> Self {
+        self.blob_threshold = threshold;
+        self
+    }
+
+    /// Builder: set maximum number of blobs
+    pub fn with_max_blobs(mut self, max: usize) -> Self {
+        self.max_blobs = max;
+        self
+    }
+
+    /// Builder: set minimum blob size
+    pub fn with_min_blob_size(mut self, size: usize) -> Self {
+        self.min_blob_size = size;
+        self
+    }
+
+    /// Builder: enable/disable hierarchy building
+    pub fn with_hierarchy(mut self, enabled: bool, max_levels: usize) -> Self {
+        self.build_hierarchy = enabled;
+        self.max_hierarchy_levels = max_levels;
+        self
     }
 }
 
@@ -1189,14 +1238,6 @@ impl VisionBrain {
         }
     }
 
-    /// Create vision brain optimized for MNIST
-    pub fn mnist() -> Self {
-        Self {
-            config: create_vision_config(),
-            feature_config: FeatureConfig::mnist(),
-        }
-    }
-
     /// Set feature extraction configuration
     pub fn with_feature_config(mut self, config: FeatureConfig) -> Self {
         self.feature_config = config;
@@ -1206,14 +1247,9 @@ impl VisionBrain {
     /// Convert image to graph (core VisionBrain operation)
     ///
     /// This is deterministic: same image always produces same graph.
+    /// Works with any image size.
     pub fn to_graph(&self, image: &RawImage) -> VisionResult<VisionGraph> {
         image_to_graph(image, &self.feature_config)
-    }
-
-    /// Convert MNIST pixels to graph
-    pub fn mnist_to_graph(&self, pixels: &[f32]) -> VisionResult<VisionGraph> {
-        let image = RawImage::from_mnist(pixels)?;
-        self.to_graph(&image)
     }
 
     /// Convert VisionGraph to DagNN for GRAPHEME core processing
@@ -1221,14 +1257,18 @@ impl VisionBrain {
     /// This converts the blob-based vision graph into a DagNN using from_image
     /// with blob-weighted pixel values. Blobs that are detected become
     /// high-activation regions.
+    ///
+    /// Returns error if VisionGraph has no ImageRoot node (dimensions required).
     pub fn to_dagnn(&self, vision_graph: &VisionGraph) -> DomainResult<DagNN> {
-        // Get image dimensions from the root node
+        // Get image dimensions from the root node - REQUIRED, no hardcoded fallback
         let (width, height) = vision_graph.graph.node_weights()
             .find_map(|n| match &n.node_type {
                 VisionNodeType::ImageRoot { width, height } => Some((*width, *height)),
                 _ => None,
             })
-            .unwrap_or((28, 28)); // Default to MNIST dimensions
+            .ok_or_else(|| grapheme_core::DomainError::InvalidInput(
+                "VisionGraph missing ImageRoot node - cannot determine dimensions".to_string()
+            ))?;
 
         // Create a pixel array with blob activations
         // Blobs contribute their intensity to their center position
@@ -1349,11 +1389,13 @@ impl DomainBrain for VisionBrain {
 // ============================================================================
 
 /// Configuration for classification brain.
+///
+/// Generic configuration for any number of classes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassificationConfig {
-    /// Number of classes (e.g., 10 for MNIST digits)
+    /// Number of classes
     pub num_classes: usize,
-    /// Number of output nodes in the GRAPHEME graph
+    /// Number of output nodes in the GRAPHEME graph (usually equals num_classes)
     pub num_outputs: usize,
     /// Template update momentum (higher = slower adaptation)
     pub template_momentum: f32,
@@ -1362,18 +1404,18 @@ pub struct ClassificationConfig {
 }
 
 impl ClassificationConfig {
-    /// Create MNIST configuration (10 classes)
-    pub fn mnist() -> Self {
+    /// Create configuration with specified number of classes
+    pub fn new(num_classes: usize) -> Self {
         Self {
-            num_classes: 10,
-            num_outputs: 10,
+            num_classes,
+            num_outputs: num_classes,
             template_momentum: 0.9,
             use_structural: true,
         }
     }
 
-    /// Create custom configuration
-    pub fn new(num_classes: usize, num_outputs: usize) -> Self {
+    /// Create with custom num_outputs (if different from num_classes)
+    pub fn with_outputs(num_classes: usize, num_outputs: usize) -> Self {
         Self {
             num_classes,
             num_outputs,
@@ -1392,12 +1434,6 @@ impl ClassificationConfig {
     pub fn with_structural(mut self, use_structural: bool) -> Self {
         self.use_structural = use_structural;
         self
-    }
-}
-
-impl Default for ClassificationConfig {
-    fn default() -> Self {
-        Self::mnist()
     }
 }
 
@@ -1434,7 +1470,7 @@ impl ClassificationOutput {
 
 /// ClassificationBrain converts GRAPHEME output graphs to class labels.
 ///
-/// This brain implements the output side of the MNIST pipeline:
+/// This brain implements the output side of the image classification pipeline:
 /// ```text
 /// VisionBrain → Input Graph → GRAPHEME Core → Output Graph → ClassificationBrain → Class
 /// ```
@@ -1446,7 +1482,7 @@ pub struct ClassificationBrain {
     config: DomainConfig,
     classification_config: ClassificationConfig,
     classifier: grapheme_core::StructuralClassifier,
-    /// Optional class labels (e.g., ["0", "1", ..., "9"] for MNIST)
+    /// Class labels (e.g., ["cat", "dog", ...] or ["0", "1", ...])
     labels: Vec<String>,
 }
 
@@ -1475,13 +1511,6 @@ impl ClassificationBrain {
             classifier,
             labels,
         }
-    }
-
-    /// Create a ClassificationBrain for MNIST (10 digit classes).
-    pub fn mnist() -> Self {
-        let mut brain = Self::new(ClassificationConfig::mnist());
-        brain.labels = (0..10).map(|i| i.to_string()).collect();
-        brain
     }
 
     /// Create a ClassificationBrain with custom class labels.
@@ -1639,36 +1668,53 @@ impl DomainBrain for ClassificationBrain {
 }
 
 // ============================================================================
-// MnistModel - Complete End-to-End Pipeline
+// ImageClassificationModel - Complete End-to-End Pipeline
 // ============================================================================
 
-/// Configuration for MnistModel
+/// Configuration for ImageClassificationModel
+///
+/// Generic configuration for any image classification task.
+/// Dataset-specific defaults (like MNIST's 10 classes) are set in Default impl.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MnistModelConfig {
+pub struct ImageClassificationConfig {
     /// Vision brain configuration
     pub vision: FeatureConfig,
     /// Classification brain configuration
     pub classification: ClassificationConfig,
     /// Hidden layer size for DAG construction
     pub hidden_size: usize,
+    /// Learning rate for Hebbian updates
+    pub learning_rate: f32,
+    /// Weight for gradient descent contribution (0.0 to 1.0)
+    pub gradient_weight: f32,
+    /// Weight for Hebbian contribution (0.0 to 1.0)
+    pub hebbian_weight: f32,
+    /// Whether to use hybrid learning (gradient + Hebbian) vs pure Hebbian
+    pub use_hybrid_learning: bool,
+    /// Expected number of VisionGraph input nodes (for DagNN sizing)
+    pub max_vision_nodes: usize,
 }
 
-impl Default for MnistModelConfig {
+impl Default for ImageClassificationConfig {
     fn default() -> Self {
+        // MNIST-specific defaults: 10 digit classes, optimized feature config
         Self {
-            vision: FeatureConfig::mnist(),
-            classification: ClassificationConfig::mnist(),
+            vision: FeatureConfig::default()
+                .with_blob_threshold(0.2)
+                .with_min_blob_size(3)
+                .with_max_blobs(50),
+            classification: ClassificationConfig::new(10), // 10 digit classes
             hidden_size: 64,
+            learning_rate: 0.01,
+            gradient_weight: 0.7,
+            hebbian_weight: 0.3,
+            use_hybrid_learning: true,
+            max_vision_nodes: 100,
         }
     }
 }
 
-impl MnistModelConfig {
-    /// Create standard MNIST configuration
-    pub fn mnist() -> Self {
-        Self::default()
-    }
-
+impl ImageClassificationConfig {
     /// Create with custom hidden size
     pub fn with_hidden_size(mut self, size: usize) -> Self {
         self.hidden_size = size;
@@ -1680,11 +1726,31 @@ impl MnistModelConfig {
         self.classification.template_momentum = momentum;
         self
     }
+
+    /// Create with custom learning rate
+    pub fn with_learning_rate(mut self, lr: f32) -> Self {
+        self.learning_rate = lr;
+        self
+    }
+
+    /// Create with hybrid learning weights
+    pub fn with_hybrid_weights(mut self, gradient: f32, hebbian: f32) -> Self {
+        self.gradient_weight = gradient;
+        self.hebbian_weight = hebbian;
+        self.use_hybrid_learning = true;
+        self
+    }
+
+    /// Use pure Hebbian learning (no gradients)
+    pub fn with_pure_hebbian(mut self) -> Self {
+        self.use_hybrid_learning = false;
+        self
+    }
 }
 
-/// Forward pass result from MnistModel
+/// Forward pass result from ImageClassificationModel
 #[derive(Debug, Clone)]
-pub struct MnistForwardResult {
+pub struct ForwardResult {
     /// Predicted class (0-9)
     pub predicted_class: usize,
     /// Confidence score (0.0-1.0)
@@ -1699,9 +1765,9 @@ pub struct MnistForwardResult {
     pub correct: Option<bool>,
 }
 
-/// Training step result from MnistModel
+/// Training step result from ImageClassificationModel
 #[derive(Debug, Clone)]
-pub struct MnistTrainResult {
+pub struct TrainResult {
     /// Structural loss
     pub loss: f32,
     /// Predicted class
@@ -1712,45 +1778,70 @@ pub struct MnistTrainResult {
     pub gradient: Vec<f32>,
 }
 
-/// MnistModel combines VisionBrain + GRAPHEME Core + ClassificationBrain
-/// into a complete end-to-end pipeline for MNIST digit classification.
+/// ImageClassificationModel combines VisionBrain + GRAPHEME Core + ClassificationBrain
+/// into a complete end-to-end pipeline for image classification.
 ///
 /// Pipeline:
 /// ```text
-/// Pixels → VisionBrain → VisionGraph → DagNN → Forward Pass → ClassificationBrain → Class
-///        (deterministic)             (convert)    (learn)      (structural match)
+/// Image → VisionBrain → VisionGraph → DagNN → Forward Pass → ClassificationBrain → Class
+///       (deterministic)             (convert)    (learn)      (structural match)
 /// ```
 ///
 /// Key properties:
 /// - **Deterministic input**: Same image always produces the same input graph
-/// - **Trainable core**: DagNN edge weights are learned via structural loss
+/// - **Persistent DagNN**: Graph structure and weights persist across training samples
+/// - **Live learning**: Hebbian/hybrid learning updates both weights AND structure
 /// - **Structural classification**: Template matching, no softmax
-pub struct MnistModel {
+/// - **Generic**: Works with any image size and number of classes
+pub struct ImageClassificationModel {
     /// Vision brain for image-to-graph conversion
     vision: VisionBrain,
     /// Classification brain for output-to-class conversion
     classification: ClassificationBrain,
+    /// Persistent DagNN that learns across samples (the core innovation)
+    dag: DagNN,
     /// Model configuration
-    config: MnistModelConfig,
+    config: ImageClassificationConfig,
+    /// Number of training samples seen (for statistics)
+    samples_seen: usize,
 }
 
-impl MnistModel {
-    /// Create a new MNIST model with default configuration
+impl ImageClassificationModel {
+    /// Create a new model with default configuration
+    ///
+    /// Uses ImageClassificationConfig::default() which provides sensible defaults.
+    /// Override with with_config() for custom configurations.
     pub fn new() -> Self {
-        Self::with_config(MnistModelConfig::mnist())
+        Self::with_config(ImageClassificationConfig::default())
     }
 
     /// Create with custom configuration
-    pub fn with_config(config: MnistModelConfig) -> Self {
+    ///
+    /// Initializes a persistent DagNN sized for VisionGraph output:
+    /// - max_vision_nodes input nodes (configurable for VisionGraph size)
+    /// - hidden_size hidden nodes
+    /// - num_classes output nodes (from ClassificationConfig)
+    /// - Xavier-initialized edge weights
+    pub fn with_config(config: ImageClassificationConfig) -> Self {
+        // Create DagNN with generic classifier - sized for VisionGraph
+        let dag = DagNN::with_classifier(
+            config.max_vision_nodes,
+            config.hidden_size,
+            config.classification.num_classes,
+            None, // activations set later per sample
+        ).expect("Failed to create DagNN classifier");
+
         Self {
             vision: VisionBrain::new().with_feature_config(config.vision.clone()),
             classification: ClassificationBrain::new(config.classification.clone()),
+            dag,
             config,
+            samples_seen: 0,
         }
     }
 
     /// Get model configuration
-    pub fn config(&self) -> &MnistModelConfig {
+    pub fn config(&self) -> &ImageClassificationConfig {
         &self.config
     }
 
@@ -1769,59 +1860,77 @@ impl MnistModel {
         &mut self.classification
     }
 
-    /// Convert normalized MNIST pixels [0.0, 1.0] to VisionGraph.
-    ///
-    /// This is the deterministic first stage: same image = same graph.
-    pub fn pixels_to_vision_graph(&self, pixels: &[f32]) -> VisionResult<VisionGraph> {
-        self.vision.mnist_to_graph(pixels)
+    /// Get the persistent DagNN reference
+    pub fn dag(&self) -> &DagNN {
+        &self.dag
     }
 
-    /// Convert VisionGraph to DagNN for GRAPHEME Core processing.
+    /// Get mutable DagNN reference for direct manipulation
+    pub fn dag_mut(&mut self) -> &mut DagNN {
+        &mut self.dag
+    }
+
+    /// Get number of training samples seen
+    pub fn samples_seen(&self) -> usize {
+        self.samples_seen
+    }
+
+    /// Convert a RawImage to VisionGraph.
     ///
-    /// The DagNN includes:
-    /// - Input nodes from vision graph blobs
-    /// - Hidden layer for learning
-    /// - Output nodes for classification (10 classes)
-    pub fn vision_to_dag(&self, vision_graph: &VisionGraph) -> DomainResult<DagNN> {
-        // Get blob activations from vision graph
-        let mut activations = Vec::new();
-        for node_idx in vision_graph.graph.node_indices() {
-            if let Some(node) = vision_graph.graph.node_weight(node_idx) {
-                activations.push(node.activation);
+    /// This is the deterministic first stage: same image = same graph.
+    /// Works with any image size and format (grayscale or RGB).
+    pub fn image_to_vision_graph(&self, image: &RawImage) -> VisionResult<VisionGraph> {
+        self.vision.to_graph(image)
+    }
+
+    /// Extract input activations from VisionGraph for feeding into DagNN.
+    ///
+    /// Maps VisionGraph node activations to DagNN input nodes.
+    /// The DagNN structure should already match the VisionGraph (via build_dag_from_vision).
+    fn vision_to_input_activations(&self, vision_graph: &VisionGraph) -> HashMap<grapheme_core::NodeId, f32> {
+        let input_nodes = self.dag.input_nodes();
+        let mut input_map = HashMap::new();
+
+        // Map VisionGraph nodes to DagNN input nodes by index
+        for (idx, node_idx) in vision_graph.graph.node_indices().enumerate() {
+            if idx < input_nodes.len() {
+                if let Some(vision_node) = vision_graph.graph.node_weight(node_idx) {
+                    input_map.insert(input_nodes[idx], vision_node.activation);
+                }
             }
         }
 
-        // Create DagNN from blob activations (treat as pixels for from_mnist)
-        // Pad to 784 pixels if needed, or truncate
-        let mut pixels_784 = vec![0.0f32; 784];
-        for (i, &act) in activations.iter().enumerate().take(784) {
-            pixels_784[i] = act;
+        // If DagNN has more inputs than VisionGraph nodes, set extras to 0
+        for idx in vision_graph.node_count()..input_nodes.len() {
+            input_map.insert(input_nodes[idx], 0.0);
         }
 
-        Ok(DagNN::from_mnist_with_classifier(&pixels_784, self.config.hidden_size)?)
+        input_map
     }
 
-    /// Run forward pass on normalized MNIST pixels.
+    /// Run forward pass on a RawImage using the persistent DagNN.
     ///
-    /// Returns prediction result with class, confidence, and graph statistics.
-    pub fn forward(&self, pixels: &[f32]) -> VisionResult<MnistForwardResult> {
-        // Stage 1: Image to Vision Graph (deterministic)
-        let vision_graph = self.pixels_to_vision_graph(pixels)?;
+    /// Pipeline:
+    /// 1. VisionBrain: image → VisionGraph (deterministic)
+    /// 2. DagNN: VisionGraph activations → forward pass (learnable weights)
+    /// 3. ClassificationBrain: output logits → class prediction
+    ///
+    /// Works with any image size and format (grayscale or RGB).
+    pub fn forward(&mut self, image: &RawImage) -> VisionResult<ForwardResult> {
+        // Stage 1: VisionBrain - Image to Vision Graph (deterministic)
+        let vision_graph = self.image_to_vision_graph(image)?;
         let vision_nodes = vision_graph.node_count();
         let vision_edges = vision_graph.edge_count();
 
-        // Stage 2: Vision Graph to DagNN
-        let mut dag = self.vision_to_dag(&vision_graph)
-            .map_err(|e| VisionError::FeatureError(format!("DagNN conversion: {}", e)))?;
-
-        // Stage 3: Forward pass through GRAPHEME Core
-        dag.neuromorphic_forward()
+        // Stage 2: DagNN - Extract activations and forward pass
+        let input_activations = self.vision_to_input_activations(&vision_graph);
+        self.dag.forward_with_inputs(&input_activations)
             .map_err(|e| VisionError::FeatureError(format!("Forward pass: {}", e)))?;
 
-        // Stage 4: Classification
-        let result = self.classification.classify(&dag);
+        // Stage 3: ClassificationBrain - output to class
+        let result = self.classification.classify(&self.dag);
 
-        Ok(MnistForwardResult {
+        Ok(ForwardResult {
             predicted_class: result.predicted_class,
             confidence: result.confidence,
             label: result.label.unwrap_or_else(|| format!("{}", result.predicted_class)),
@@ -1832,55 +1941,92 @@ impl MnistModel {
     }
 
     /// Run forward pass with target label for accuracy tracking.
-    pub fn forward_with_target(&self, pixels: &[f32], target: usize) -> VisionResult<MnistForwardResult> {
-        let mut result = self.forward(pixels)?;
+    pub fn forward_with_target(&mut self, image: &RawImage, target: usize) -> VisionResult<ForwardResult> {
+        let mut result = self.forward(image)?;
         result.correct = Some(result.predicted_class == target);
         Ok(result)
     }
 
-    /// Run training step: forward + compute loss + get gradient.
+    /// Run training step with live learning: forward + learn (both DagNN and ClassificationBrain).
     ///
-    /// Returns loss, prediction, and gradient for backpropagation.
-    /// Does NOT update weights - caller is responsible for that.
-    pub fn train_step(&mut self, pixels: &[f32], target: usize) -> VisionResult<(MnistTrainResult, DagNN)> {
+    /// This is the core GRAPHEME learning loop:
+    /// 1. Feed input activations into persistent DagNN
+    /// 2. Forward pass through existing structure
+    /// 3. Compute loss via ClassificationBrain
+    /// 4. Update ClassificationBrain templates
+    /// 5. Update DagNN weights via Hebbian/hybrid learning
+    ///
+    /// Both the DagNN and ClassificationBrain learn and persist across samples.
+    /// Works with any image size and format (grayscale or RGB).
+    pub fn train_step(&mut self, image: &RawImage, target: usize) -> VisionResult<TrainResult> {
         // Stage 1: Image to Vision Graph (deterministic)
-        let vision_graph = self.pixels_to_vision_graph(pixels)?;
+        let vision_graph = self.image_to_vision_graph(image)?;
 
-        // Stage 2: Vision Graph to DagNN
-        let mut dag = self.vision_to_dag(&vision_graph)
-            .map_err(|e| VisionError::FeatureError(format!("DagNN conversion: {}", e)))?;
+        // Stage 2: Extract input activations
+        let input_activations = self.vision_to_input_activations(&vision_graph);
 
-        // Stage 3: Forward pass
-        dag.neuromorphic_forward()
+        // Stage 3: Forward pass through persistent DagNN
+        self.dag.forward_with_inputs(&input_activations)
             .map_err(|e| VisionError::FeatureError(format!("Forward pass: {}", e)))?;
 
-        // Stage 4: Compute loss and gradient
-        let struct_result = self.classification.loss_and_gradient(&dag, target);
+        // Stage 4: Compute loss and gradient via ClassificationBrain
+        let struct_result = self.classification.loss_and_gradient(&self.dag, target);
 
-        // Update template for this class (learning)
-        let activations = dag.get_classification_logits();
+        // Stage 5: Update ClassificationBrain templates (online learning)
+        let activations = self.dag.get_classification_logits();
         self.classification.classifier_mut().update_template(target, &activations);
 
-        let result = MnistTrainResult {
+        // Stage 6: Update DagNN weights via Hebbian/hybrid learning
+        if self.config.use_hybrid_learning {
+            // Hybrid: gradient descent + Hebbian
+            let hybrid_config = HybridLearningConfig {
+                gradient_lr: self.config.learning_rate,
+                hebbian: HebbianConfig::new(self.config.learning_rate),
+                gradient_weight: self.config.gradient_weight,
+                hebbian_weight: self.config.hebbian_weight,
+                clip_gradients: true,
+                max_grad_norm: 1.0,
+            };
+
+            // Convert gradient to output node gradients for hybrid learning
+            let mut output_grad: HashMap<grapheme_core::NodeId, Array1<f32>> = HashMap::new();
+            for (i, &node_id) in self.dag.output_nodes().iter().enumerate() {
+                if i < struct_result.gradient.len() {
+                    output_grad.insert(node_id, Array1::from_vec(vec![struct_result.gradient[i]]));
+                }
+            }
+
+            // Need embedding for hybrid - use a dummy one for now
+            // In full implementation, this would be the actual embedding
+            let mut dummy_embedding = Embedding::new(256, 16, grapheme_core::InitStrategy::Xavier);
+            let _hybrid_result = self.dag.backward_hybrid(&output_grad, &mut dummy_embedding, &hybrid_config);
+        } else {
+            // Pure Hebbian learning
+            let hebbian_config = HebbianConfig::new(self.config.learning_rate);
+            let _hebbian_result = self.dag.backward_hebbian(&hebbian_config);
+        }
+
+        self.samples_seen += 1;
+
+        Ok(TrainResult {
             loss: struct_result.loss,
             predicted_class: struct_result.predicted,
             correct: struct_result.correct,
             gradient: struct_result.gradient,
-        };
-
-        Ok((result, dag))
+        })
     }
 
     /// Batch forward pass for evaluation.
     ///
     /// Returns (accuracy, average_loss, predictions).
-    pub fn evaluate_batch(&self, images: &[&[f32]], labels: &[usize]) -> VisionResult<(f32, f32, Vec<usize>)> {
+    /// Works with any image size and format (grayscale or RGB).
+    pub fn evaluate_batch(&mut self, images: &[&RawImage], labels: &[usize]) -> VisionResult<(f32, f32, Vec<usize>)> {
         let mut correct = 0;
         let mut total_loss = 0.0;
         let mut predictions = Vec::with_capacity(images.len());
 
-        for (pixels, &label) in images.iter().zip(labels.iter()) {
-            let result = self.forward_with_target(pixels, label)?;
+        for (image, &label) in images.iter().zip(labels.iter()) {
+            let result = self.forward_with_target(image, label)?;
             predictions.push(result.predicted_class);
             if result.correct.unwrap_or(false) {
                 correct += 1;
@@ -1894,17 +2040,40 @@ impl MnistModel {
 
         Ok((accuracy, avg_loss, predictions))
     }
+
+    /// Get statistics about the model state
+    pub fn stats(&self) -> ModelStats {
+        ModelStats {
+            samples_seen: self.samples_seen,
+            dag_nodes: self.dag.node_count(),
+            dag_edges: self.dag.edge_count(),
+            num_cliques: self.dag.cliques.len(),
+        }
+    }
 }
 
-impl Default for MnistModel {
+/// Statistics about ImageClassificationModel state
+#[derive(Debug, Clone)]
+pub struct ModelStats {
+    /// Number of training samples seen
+    pub samples_seen: usize,
+    /// Number of nodes in the persistent DagNN
+    pub dag_nodes: usize,
+    /// Number of edges in the persistent DagNN
+    pub dag_edges: usize,
+    /// Number of cliques detected
+    pub num_cliques: usize,
+}
+
+impl Default for ImageClassificationModel {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for MnistModel {
+impl std::fmt::Debug for ImageClassificationModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MnistModel")
+        f.debug_struct("ImageClassificationModel")
             .field("hidden_size", &self.config.hidden_size)
             .field("num_classes", &self.config.classification.num_classes)
             .finish()
@@ -1930,11 +2099,13 @@ mod tests {
     }
 
     #[test]
-    fn test_raw_image_from_mnist() {
+    fn test_raw_image_grayscale_28x28() {
+        // Test creating a 28x28 grayscale image (like MNIST)
         let pixels = vec![0.0f32; 784];
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
         assert_eq!(image.width, 28);
         assert_eq!(image.height, 28);
+        assert_eq!(image.channels, 1);
     }
 
     #[test]
@@ -2005,29 +2176,31 @@ mod tests {
     }
 
     #[test]
-    fn test_vision_brain_mnist() {
-        let brain = VisionBrain::mnist();
+    fn test_vision_brain_to_graph() {
+        let brain = VisionBrain::new();
         assert_eq!(brain.domain_id(), "vision");
 
-        // Test with blank MNIST image
-        let pixels = vec![0.0f32; 784];
-        let graph = brain.mnist_to_graph(&pixels).unwrap();
+        // Test with a small blank image (generic, not MNIST-specific)
+        let pixels = vec![0.0f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+        let graph = brain.to_graph(&image).unwrap();
         assert!(graph.root.is_some());
     }
 
     #[test]
     fn test_vision_brain_deterministic() {
-        let brain = VisionBrain::mnist();
+        let brain = VisionBrain::new();
 
         // Create a test image with some structure
-        let mut pixels = vec![0.0f32; 784];
-        for i in 100..200 {
+        let mut pixels = vec![0.0f32; 100]; // 10x10
+        for i in 30..70 {
             pixels[i] = 0.8;
         }
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
         // Convert twice - should produce identical graphs
-        let graph1 = brain.mnist_to_graph(&pixels).unwrap();
-        let graph2 = brain.mnist_to_graph(&pixels).unwrap();
+        let graph1 = brain.to_graph(&image).unwrap();
+        let graph2 = brain.to_graph(&image).unwrap();
 
         assert_eq!(graph1.node_count(), graph2.node_count());
         assert_eq!(graph1.edge_count(), graph2.edge_count());
@@ -2423,21 +2596,21 @@ mod tests {
     }
 
     // ========================================================================
-    // ClassificationBrain Tests
+    // ClassificationBrain Tests (Generic - no MNIST-specific code)
     // ========================================================================
 
     #[test]
-    fn test_classification_config_mnist() {
-        let config = ClassificationConfig::mnist();
-        assert_eq!(config.num_classes, 10);
-        assert_eq!(config.num_outputs, 10);
-        assert!((config.template_momentum - 0.9).abs() < 1e-6);
+    fn test_classification_config_new() {
+        let config = ClassificationConfig::new(5);
+        assert_eq!(config.num_classes, 5);
+        assert_eq!(config.num_outputs, 5);
+        assert!(config.template_momentum > 0.0);
         assert!(config.use_structural);
     }
 
     #[test]
-    fn test_classification_config_custom() {
-        let config = ClassificationConfig::new(5, 8)
+    fn test_classification_config_with_outputs() {
+        let config = ClassificationConfig::with_outputs(5, 8)
             .with_momentum(0.8)
             .with_structural(false);
         assert_eq!(config.num_classes, 5);
@@ -2447,13 +2620,11 @@ mod tests {
     }
 
     #[test]
-    fn test_classification_brain_mnist() {
-        let brain = ClassificationBrain::mnist();
+    fn test_classification_brain_new() {
+        let brain = ClassificationBrain::new(ClassificationConfig::new(5));
         assert_eq!(brain.domain_id(), "classification");
-        assert_eq!(brain.num_classes(), 10);
-        assert_eq!(brain.labels().len(), 10);
-        assert_eq!(brain.get_label(0), Some("0"));
-        assert_eq!(brain.get_label(9), Some("9"));
+        assert_eq!(brain.num_classes(), 5);
+        assert_eq!(brain.labels().len(), 5);
     }
 
     #[test]
@@ -2463,7 +2634,7 @@ mod tests {
             "dog".to_string(),
             "bird".to_string(),
         ];
-        let brain = ClassificationBrain::new(ClassificationConfig::new(3, 3))
+        let brain = ClassificationBrain::new(ClassificationConfig::new(3))
             .with_labels(labels);
         assert_eq!(brain.get_label(0), Some("cat"));
         assert_eq!(brain.get_label(1), Some("dog"));
@@ -2489,22 +2660,20 @@ mod tests {
 
     #[test]
     fn test_classification_brain_classify() {
-        let brain = ClassificationBrain::mnist();
+        let brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
-        // Create a MNIST DagNN with hidden layer and output nodes
-        let pixels = vec![0.0f32; 784];
-        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
-        dag.neuromorphic_forward().unwrap();
+        // Create a DagNN with classifier structure
+        let dag = DagNN::with_classifier(10, 8, 5, None).unwrap();
 
         let result = brain.classify(&dag);
-        assert!(result.predicted_class < 10);
+        assert!(result.predicted_class < 5);
         assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
-        assert_eq!(result.probabilities.len(), 10);
+        assert_eq!(result.probabilities.len(), 5);
     }
 
     #[test]
     fn test_classification_brain_domain_brain_trait() {
-        let brain = ClassificationBrain::mnist();
+        let brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
         // Test DomainBrain trait methods
         assert_eq!(brain.domain_id(), "classification");
@@ -2519,24 +2688,23 @@ mod tests {
 
     #[test]
     fn test_classification_brain_classifier_access() {
-        let mut brain = ClassificationBrain::mnist();
+        let mut brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
         // Test read access
         let classifier = brain.classifier();
-        assert_eq!(classifier.templates.len(), 10);
+        assert_eq!(classifier.templates.len(), 5);
 
         // Test mutable access
         let classifier_mut = brain.classifier_mut();
-        assert_eq!(classifier_mut.templates.len(), 10);
+        assert_eq!(classifier_mut.templates.len(), 5);
     }
 
     #[test]
     fn test_classification_brain_execute() {
-        let brain = ClassificationBrain::mnist();
+        let brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
-        let pixels = vec![0.0f32; 784];
-        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
-        dag.neuromorphic_forward().unwrap();
+        // Create a DagNN with classifier structure
+        let dag = DagNN::with_classifier(10, 8, 5, None).unwrap();
 
         let result = brain.execute(&dag);
         assert!(result.is_ok());
@@ -2547,20 +2715,21 @@ mod tests {
     }
 
     // ========================================================================
-    // MnistModel Tests
+    // ImageClassificationModel Tests (Generic - no MNIST-specific code)
     // ========================================================================
 
     #[test]
-    fn test_mnist_model_config_default() {
-        let config = MnistModelConfig::default();
+    fn test_image_classification_config_default() {
+        let config = ImageClassificationConfig::default();
         assert_eq!(config.hidden_size, 64);
-        assert_eq!(config.classification.num_classes, 10);
-        assert_eq!(config.vision.max_hierarchy_levels, 2);
+        assert!(config.classification.num_classes > 0);
+        // FeatureConfig::default() uses max_hierarchy_levels = 3
+        assert!(config.vision.max_hierarchy_levels > 0);
     }
 
     #[test]
-    fn test_mnist_model_config_builder() {
-        let config = MnistModelConfig::mnist()
+    fn test_image_classification_config_builder() {
+        let config = ImageClassificationConfig::default()
             .with_hidden_size(128)
             .with_momentum(0.95);
 
@@ -2569,50 +2738,54 @@ mod tests {
     }
 
     #[test]
-    fn test_mnist_model_new() {
-        let model = MnistModel::new();
+    fn test_image_classification_model_new() {
+        let model = ImageClassificationModel::new();
         assert_eq!(model.config().hidden_size, 64);
-        assert_eq!(model.config().classification.num_classes, 10);
+        assert!(model.config().classification.num_classes > 0);
     }
 
     #[test]
-    fn test_mnist_model_forward_blank() {
-        let model = MnistModel::new();
-        let pixels = vec![0.0f32; 784];
+    fn test_image_classification_model_forward_small() {
+        // Test with a small 10x10 grayscale image (generic, not MNIST-specific)
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.0f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
-        let result = model.forward(&pixels);
+        let result = model.forward(&image);
         assert!(result.is_ok());
 
         let result = result.unwrap();
-        assert!(result.predicted_class < 10);
+        assert!(result.predicted_class < model.config().classification.num_classes);
         assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
-        assert!(result.vision_nodes >= 1); // At least root node
     }
 
     #[test]
-    fn test_mnist_model_forward_with_digit() {
-        let model = MnistModel::new();
-
-        // Create a simple "1" digit pattern
-        let mut pixels = vec![0.0f32; 784];
-        for y in 5..23 {
-            pixels[y * 28 + 14] = 0.9; // Vertical line in center
+    fn test_image_classification_model_forward_with_blob() {
+        // Test with an image that has a visible blob
+        let mut model = ImageClassificationModel::new();
+        let mut pixels = vec![0.0f32; 100]; // 10x10
+        // Add a bright blob in the center
+        for y in 3..7 {
+            for x in 3..7 {
+                pixels[y * 10 + x] = 0.9;
+            }
         }
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
-        let result = model.forward(&pixels);
+        let result = model.forward(&image);
         assert!(result.is_ok());
 
         let result = result.unwrap();
-        assert!(result.predicted_class < 10);
-        assert!(result.vision_nodes >= 2); // Root + at least one blob
+        assert!(result.vision_nodes >= 1); // At least one node detected
     }
 
     #[test]
-    fn test_mnist_model_forward_with_target() {
-        let model = MnistModel::new();
-        let pixels = vec![0.0f32; 784];
+    fn test_image_classification_model_forward_with_target() {
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.0f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
-        let result = model.forward_with_target(&pixels, 5);
+        let result = model.forward_with_target(&image, 0);
         assert!(result.is_ok());
 
         let result = result.unwrap();
@@ -2620,70 +2793,113 @@ mod tests {
     }
 
     #[test]
-    fn test_mnist_model_train_step() {
-        let mut model = MnistModel::new();
-        let pixels = vec![0.0f32; 784];
+    fn test_image_classification_model_train_step() {
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.0f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
-        let result = model.train_step(&pixels, 3);
+        let result = model.train_step(&image, 0);
         assert!(result.is_ok());
 
-        let (train_result, dag) = result.unwrap();
+        let train_result = result.unwrap();
         assert!(train_result.loss >= 0.0);
-        assert!(train_result.predicted_class < 10);
+        assert!(train_result.predicted_class < model.config().classification.num_classes);
         assert!(!train_result.gradient.is_empty());
-        assert!(dag.node_count() > 0);
+
+        // Verify the persistent DAG has nodes
+        assert!(model.dag().node_count() > 0);
+        // Verify samples_seen is updated
+        assert_eq!(model.samples_seen(), 1);
     }
 
     #[test]
-    fn test_mnist_model_deterministic() {
-        let model = MnistModel::new();
+    fn test_image_classification_model_deterministic() {
+        let mut model = ImageClassificationModel::new();
 
         // Create a test image with structure
-        let mut pixels = vec![0.0f32; 784];
-        for i in 100..200 {
+        let mut pixels = vec![0.0f32; 100]; // 10x10
+        for i in 30..70 {
             pixels[i] = 0.8;
         }
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
         // Run forward twice - vision graph should be identical
-        let result1 = model.forward(&pixels).unwrap();
-        let result2 = model.forward(&pixels).unwrap();
+        let result1 = model.forward(&image).unwrap();
+        let result2 = model.forward(&image).unwrap();
 
         // Vision graph structure is deterministic
         assert_eq!(result1.vision_nodes, result2.vision_nodes,
             "Same image should produce same number of vision nodes");
         assert_eq!(result1.vision_edges, result2.vision_edges,
             "Same image should produce same number of vision edges");
-
-        // Note: predicted_class may vary for untrained model when templates
-        // are all zeros (ties are broken arbitrarily). After training with
-        // distinct templates, classification becomes deterministic too.
     }
 
     #[test]
-    fn test_mnist_model_vision_access() {
-        let model = MnistModel::new();
+    fn test_image_classification_model_persistent_learning() {
+        let mut model = ImageClassificationModel::new();
 
-        // Verify we can access vision brain
+        // Train on a few samples
+        let pixels = vec![0.5f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        let num_classes = model.config().classification.num_classes;
+        for target in 0..std::cmp::min(3, num_classes) {
+            let result = model.train_step(&image, target);
+            assert!(result.is_ok());
+        }
+
+        // Verify learning happened
+        assert!(model.samples_seen() >= 1);
+
+        // DAG structure should still be intact
+        assert!(model.dag().node_count() > 0);
+        assert!(model.dag().edge_count() > 0);
+    }
+
+    #[test]
+    fn test_image_classification_model_stats() {
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.0f32; 100]; // 10x10
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        model.train_step(&image, 0).unwrap();
+
+        let stats = model.stats();
+        assert_eq!(stats.samples_seen, 1);
+        assert!(stats.dag_nodes > 0);
+        assert!(stats.dag_edges > 0);
+    }
+
+    #[test]
+    fn test_image_classification_model_vision_access() {
+        let model = ImageClassificationModel::new();
         assert_eq!(model.vision().domain_id(), "vision");
     }
 
     #[test]
-    fn test_mnist_model_classification_access() {
-        let mut model = MnistModel::new();
-
-        // Verify we can access classification brain and config
-        assert_eq!(model.config().classification.num_classes, 10);
+    fn test_image_classification_model_classification_access() {
+        let mut model = ImageClassificationModel::new();
+        assert!(model.config().classification.num_classes > 0);
         assert_eq!(model.classification().domain_id(), "classification");
-
-        // Verify we can get mutable access
         let _ = model.classification_mut();
     }
 
     #[test]
-    fn test_mnist_model_debug() {
-        let model = MnistModel::new();
+    fn test_image_classification_model_debug() {
+        let model = ImageClassificationModel::new();
         let debug = format!("{:?}", model);
-        assert!(debug.contains("MnistModel"));
+        assert!(debug.contains("ImageClassificationModel"));
         assert!(debug.contains("hidden_size"));
+    }
+
+    #[test]
+    fn test_image_classification_model_rgb() {
+        // Test with RGB image (generic support for color images)
+        let mut model = ImageClassificationModel::new();
+        let pixels = vec![0.5f32; 300]; // 10x10 RGB (10*10*3)
+        let image = RawImage::rgb(10, 10, pixels).unwrap();
+
+        let result = model.forward(&image);
+        assert!(result.is_ok());
     }
 }

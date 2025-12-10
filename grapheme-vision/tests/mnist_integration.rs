@@ -1,4 +1,4 @@
-//! Integration tests for VisionBrain and MnistModel on real MNIST data
+//! Integration tests for VisionBrain and ImageClassificationModel on real MNIST data
 //!
 //! These tests verify that the vision pipeline works correctly on actual
 //! MNIST images, testing:
@@ -6,11 +6,11 @@
 //! - Hierarchical blob detection
 //! - Spatial relationship graph construction
 //! - Determinism (same image = same graph)
-//! - End-to-end MnistModel pipeline
+//! - End-to-end ImageClassificationModel pipeline
 
 use grapheme_vision::{
     extract_blobs, extract_hierarchical_blobs, image_to_graph,
-    FeatureConfig, MnistModel, MnistModelConfig, RawImage, VisionBrain, VisionEdge,
+    FeatureConfig, ImageClassificationModel, ImageClassificationConfig, RawImage, VisionBrain, VisionEdge,
 };
 use mnist::{Mnist, MnistBuilder};
 use std::collections::HashMap;
@@ -33,14 +33,17 @@ fn normalize_image(pixels: &[u8]) -> Vec<f32> {
 #[test]
 fn test_mnist_blob_extraction() {
     let mnist = load_mnist_subset();
-    let config = FeatureConfig::mnist();
+    let config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
 
     // Test on first 10 training images
     for i in 0..10 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
         let blobs = extract_blobs(&image, &config);
 
@@ -66,7 +69,10 @@ fn test_mnist_blob_extraction() {
 #[test]
 fn test_mnist_hierarchical_blobs() {
     let mnist = load_mnist_subset();
-    let mut config = FeatureConfig::mnist();
+    let mut config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
     config.max_hierarchy_levels = 3;
 
     // Test on first 10 training images
@@ -74,7 +80,7 @@ fn test_mnist_hierarchical_blobs() {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
         let hierarchy = extract_hierarchical_blobs(&image, &config);
 
@@ -103,14 +109,17 @@ fn test_mnist_hierarchical_blobs() {
 #[test]
 fn test_mnist_image_to_graph() {
     let mnist = load_mnist_subset();
-    let config = FeatureConfig::mnist();
+    let config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
 
     // Test on first 10 training images
     for i in 0..10 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
         let graph = image_to_graph(&image, &config).unwrap();
 
@@ -137,7 +146,10 @@ fn test_mnist_image_to_graph() {
 #[test]
 fn test_mnist_spatial_relationships() {
     let mnist = load_mnist_subset();
-    let mut config = FeatureConfig::mnist();
+    let mut config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
     config.build_spatial_graph = true;
     config.adjacency_threshold = 0.3;
 
@@ -152,7 +164,7 @@ fn test_mnist_spatial_relationships() {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
         let graph = image_to_graph(&image, &config).unwrap();
 
@@ -182,18 +194,26 @@ fn test_mnist_spatial_relationships() {
 #[test]
 fn test_mnist_determinism() {
     let mnist = load_mnist_subset();
-    let config = FeatureConfig::mnist();
-    let brain = VisionBrain::mnist();
+    let config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
+    let brain = VisionBrain::new()
+        .with_feature_config(FeatureConfig::default()
+            .with_blob_threshold(0.2)
+            .with_min_blob_size(3)
+            .with_max_blobs(50));
 
     // Test determinism: same image should produce identical graphs
     for i in 0..5 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
         // Convert twice
-        let graph1 = brain.mnist_to_graph(&pixels).unwrap();
-        let graph2 = brain.mnist_to_graph(&pixels).unwrap();
+        let graph1 = brain.to_graph(&image).unwrap();
+        let graph2 = brain.to_graph(&image).unwrap();
 
         // Should have same structure
         assert_eq!(
@@ -212,7 +232,10 @@ fn test_mnist_determinism() {
 #[test]
 fn test_mnist_different_digits() {
     let mnist = load_mnist_subset();
-    let _config = FeatureConfig::mnist();
+    let _config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
 
     // Group images by label
     let mut by_label: HashMap<u8, Vec<usize>> = HashMap::new();
@@ -227,7 +250,7 @@ fn test_mnist_different_digits() {
                 let start = idx * 784;
                 let end = start + 784;
                 let pixels = normalize_image(&mnist.trn_img[start..end]);
-                let image = RawImage::from_mnist(&pixels).unwrap();
+                let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
                 let graph = image_to_graph(&image, &_config).unwrap();
 
@@ -251,7 +274,10 @@ fn test_mnist_different_digits() {
 #[test]
 fn test_mnist_detailed_graph_analysis() {
     let mnist = load_mnist_subset();
-    let mut config = FeatureConfig::mnist();
+    let mut config = FeatureConfig::default()
+        .with_blob_threshold(0.2)
+        .with_min_blob_size(3)
+        .with_max_blobs(50);
     config.build_spatial_graph = true;
     config.adjacency_threshold = 0.3;
     // Lower blob threshold to detect more structure within digits
@@ -266,7 +292,7 @@ fn test_mnist_detailed_graph_analysis() {
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
         let label = mnist.trn_lbl[i];
-        let image = RawImage::from_mnist(&pixels).unwrap();
+        let image = RawImage::grayscale(28, 28, pixels.clone()).unwrap();
 
         // Extract blobs
         let blobs = extract_blobs(&image, &config);
@@ -308,15 +334,20 @@ fn test_mnist_detailed_graph_analysis() {
 #[test]
 fn test_mnist_vision_brain_to_dagnn() {
     let mnist = load_mnist_subset();
-    let brain = VisionBrain::mnist();
+    let brain = VisionBrain::new()
+        .with_feature_config(FeatureConfig::default()
+            .with_blob_threshold(0.2)
+            .with_min_blob_size(3)
+            .with_max_blobs(50));
 
     // Test that VisionBrain can convert to DagNN for GRAPHEME processing
     for i in 0..5 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
-        let vision_graph = brain.mnist_to_graph(&pixels).unwrap();
+        let vision_graph = brain.to_graph(&image).unwrap();
         let dagnn = brain.to_dagnn(&vision_graph).unwrap();
 
         // DagNN should have nodes
@@ -341,16 +372,17 @@ fn test_mnist_vision_brain_to_dagnn() {
 #[test]
 fn test_mnist_model_forward_on_real_data() {
     let mnist = load_mnist_subset();
-    let model = MnistModel::new();
+    let mut model = ImageClassificationModel::new();
 
     // Test forward pass on first 10 training images
     for i in 0..10 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
         let label = mnist.trn_lbl[i] as usize;
 
-        let result = model.forward_with_target(&pixels, label);
+        let result = model.forward_with_target(&image, label);
         assert!(
             result.is_ok(),
             "Forward pass failed for image {} (label {})",
@@ -379,16 +411,17 @@ fn test_mnist_model_forward_on_real_data() {
 #[test]
 fn test_mnist_model_train_step_on_real_data() {
     let mnist = load_mnist_subset();
-    let mut model = MnistModel::new();
+    let mut model = ImageClassificationModel::new();
 
     // Test training step on first 5 training images
     for i in 0..5 {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
         let label = mnist.trn_lbl[i] as usize;
 
-        let result = model.train_step(&pixels, label);
+        let result = model.train_step(&image, label);
         assert!(
             result.is_ok(),
             "Train step failed for image {} (label {})",
@@ -396,7 +429,7 @@ fn test_mnist_model_train_step_on_real_data() {
             label
         );
 
-        let (train_result, dag) = result.unwrap();
+        let train_result = result.unwrap();
         assert!(
             train_result.loss >= 0.0,
             "Loss should be non-negative, got {}",
@@ -410,17 +443,17 @@ fn test_mnist_model_train_step_on_real_data() {
             !train_result.gradient.is_empty(),
             "Gradient should not be empty"
         );
-        assert!(
-            dag.node_count() > 0,
-            "DAG should have nodes"
-        );
     }
+
+    // Verify persistent learning across samples
+    assert_eq!(model.samples_seen(), 5, "Should have seen 5 samples");
+    assert!(model.dag().node_count() > 0, "DAG should have nodes");
 }
 
 #[test]
 fn test_mnist_model_determinism_on_real_data() {
     let mnist = load_mnist_subset();
-    let model = MnistModel::new();
+    let mut model = ImageClassificationModel::new();
 
     // Test that same image always produces same vision graph structure
     // Note: For untrained models, classification may vary due to equal-distance
@@ -431,9 +464,10 @@ fn test_mnist_model_determinism_on_real_data() {
         let start = i * 784;
         let end = start + 784;
         let pixels = normalize_image(&mnist.trn_img[start..end]);
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
-        let result1 = model.forward(&pixels).unwrap();
-        let result2 = model.forward(&pixels).unwrap();
+        let result1 = model.forward(&image).unwrap();
+        let result2 = model.forward(&image).unwrap();
 
         // Vision graph structure is always deterministic
         assert_eq!(
@@ -450,7 +484,7 @@ fn test_mnist_model_determinism_on_real_data() {
 #[test]
 fn test_mnist_model_all_digit_classes() {
     let mnist = load_mnist_subset();
-    let model = MnistModel::new();
+    let mut model = ImageClassificationModel::new();
 
     // Group images by label
     let mut by_label: HashMap<u8, Vec<usize>> = HashMap::new();
@@ -465,11 +499,12 @@ fn test_mnist_model_all_digit_classes() {
                 let start = idx * 784;
                 let end = start + 784;
                 let pixels = normalize_image(&mnist.trn_img[start..end]);
+                let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
-                let result = model.forward(&pixels);
+                let result = model.forward(&image);
                 assert!(
                     result.is_ok(),
-                    "MnistModel should process digit {} successfully",
+                    "ImageClassificationModel should process digit {} successfully",
                     label
                 );
 
@@ -492,10 +527,10 @@ fn test_mnist_model_custom_config() {
     let mnist = load_mnist_subset();
 
     // Create model with custom configuration
-    let config = MnistModelConfig::mnist()
+    let config = ImageClassificationConfig::default()
         .with_hidden_size(32)
         .with_momentum(0.8);
-    let model = MnistModel::with_config(config);
+    let mut model = ImageClassificationModel::with_config(config);
 
     // Verify config was applied
     assert_eq!(model.config().hidden_size, 32);
@@ -505,7 +540,8 @@ fn test_mnist_model_custom_config() {
     let start = 0;
     let end = 784;
     let pixels = normalize_image(&mnist.trn_img[start..end]);
+    let image = RawImage::grayscale(28, 28, pixels).unwrap();
 
-    let result = model.forward(&pixels);
+    let result = model.forward(&image);
     assert!(result.is_ok(), "Forward pass should work with custom config");
 }

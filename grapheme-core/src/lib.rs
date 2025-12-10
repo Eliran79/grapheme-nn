@@ -247,6 +247,9 @@ pub enum NodeType {
     Pixel { row: usize, col: usize },
     /// Classification output node (class index) - backend-113
     ClassOutput(usize),
+    /// Generic feature input node (index in feature vector) - backend-140
+    /// Used for AGI-ready modular inputs that don't have spatial coordinates
+    Feature(usize),
 }
 
 /// A node in the GRAPHEME graph (matching GRAPHEME_Vision.md)
@@ -388,6 +391,21 @@ impl Node {
             node_type: NodeType::ClassOutput(class_idx),
             position: None,
             activation_fn: ActivationFn::Linear, // Logits are linear
+        }
+    }
+
+    /// Create a generic feature input node (backend-140)
+    /// Used for AGI-ready modular inputs without spatial coordinates.
+    /// Works with any feature vector size (vision graphs, embeddings, etc.)
+    pub fn feature(index: usize, activation: f32) -> Self {
+        let normalized = activation.clamp(0.0, 1.0);
+        Self {
+            value: Some((normalized * 255.0) as u8),
+            activation: normalized,
+            pre_activation: normalized,
+            node_type: NodeType::Feature(index),
+            position: Some(index),
+            activation_fn: ActivationFn::Linear, // Input nodes pass through unchanged
         }
     }
 
@@ -901,6 +919,87 @@ impl DagNN {
         // Add 10 output nodes (one per digit class)
         let mut class_outputs = Vec::with_capacity(10);
         for class_idx in 0..10 {
+            let output = dag.graph.add_node(Node::class_output(class_idx));
+            dag.output_nodes.push(output);
+            class_outputs.push(output);
+        }
+
+        // Connect hidden nodes to output nodes
+        for &hidden in &hidden_nodes {
+            for &output in &class_outputs {
+                let fan_in = hidden_size as f32;
+                let fan_out = 1.0;
+                let limit = (6.0 / (fan_in + fan_out)).sqrt();
+                let weight = rand::random::<f32>() * 2.0 * limit - limit;
+                dag.add_edge(hidden, output, Edge::new(weight, EdgeType::Sequential));
+            }
+        }
+
+        // Update topology
+        dag.update_topology()?;
+
+        Ok(dag)
+    }
+
+    /// Build a DagNN classifier with configurable input/hidden/output sizes.
+    ///
+    /// This is the generic AGI-ready classifier builder that works with any
+    /// input dimension (not just 784 for MNIST). Use this for VisionGraph inputs
+    /// or any other variable-size input.
+    ///
+    /// # Arguments
+    /// * `num_inputs` - Number of input nodes
+    /// * `hidden_size` - Number of hidden nodes
+    /// * `num_classes` - Number of output classes
+    /// * `input_activations` - Optional initial activations for input nodes
+    ///
+    /// # Returns
+    /// A DagNN ready for classification with the specified architecture
+    pub fn with_classifier(
+        num_inputs: usize,
+        hidden_size: usize,
+        num_classes: usize,
+        input_activations: Option<&[f32]>,
+    ) -> GraphemeResult<Self> {
+        let mut dag = Self::new();
+
+        // Create input nodes using generic Feature type (AGI-ready, no hardcoded dimensions)
+        for i in 0..num_inputs {
+            let activation = input_activations.map(|a| a.get(i).copied().unwrap_or(0.0)).unwrap_or(1.0);
+            let node = dag.graph.add_node(Node::feature(i, activation));
+            dag.input_nodes.push(node);
+            dag.input_nodes_set.insert(node);
+        }
+
+        // Add hidden layer with ReLU activation
+        let mut hidden_nodes = Vec::with_capacity(hidden_size);
+        for _ in 0..hidden_size {
+            let hidden = dag.add_hidden_with_activation(ActivationFn::ReLU);
+            hidden_nodes.push(hidden);
+        }
+
+        // Connect input nodes to hidden nodes with Xavier-initialized edges
+        let inputs_per_hidden = (num_inputs / hidden_size).max(1);
+        for (h_idx, &hidden) in hidden_nodes.iter().enumerate() {
+            let start = (h_idx * inputs_per_hidden) % num_inputs;
+            let end = ((h_idx + 1) * inputs_per_hidden).min(num_inputs);
+
+            for input_idx in start..end {
+                let fan_in = inputs_per_hidden.max(1) as f32;
+                let fan_out = num_classes as f32;
+                let limit = (6.0 / (fan_in + fan_out)).sqrt();
+                let weight = rand::random::<f32>() * 2.0 * limit - limit;
+                dag.add_edge(
+                    dag.input_nodes[input_idx],
+                    hidden,
+                    Edge::new(weight, EdgeType::Sequential),
+                );
+            }
+        }
+
+        // Add output nodes (one per class)
+        let mut class_outputs = Vec::with_capacity(num_classes);
+        for class_idx in 0..num_classes {
             let output = dag.graph.add_node(Node::class_output(class_idx));
             dag.output_nodes.push(output);
             class_outputs.push(output);
@@ -5125,49 +5224,24 @@ impl Embedding {
         }
     }
 
-    /// Get the embedding for a node based on its type
+    /// Get the embedding for a node - DOMAIN-AGNOSTIC (scikit-learn pipeline style)
+    ///
+    /// GRAPHEME Core sees ONLY graphs. It does NOT know what domain it's processing.
+    /// The embedding is computed uniformly from node properties (value/activation),
+    /// NOT from domain-specific node types. Cognitive Brains handle domain translation.
+    ///
+    /// Embedding strategy:
+    /// - If node has a value (0-255): use that as index into embedding table
+    /// - Otherwise: scale activation (0.0-1.0) to embedding space (0-255)
     pub fn embed_node(&self, node: &Node) -> Array1<f32> {
-        match &node.node_type {
-            NodeType::Input(ch) => self.forward(*ch),
-            NodeType::Hidden => {
-                // Hidden nodes get a special embedding (index 0 by convention)
-                self.forward_index(0)
-            }
-            NodeType::Output => {
-                // Output nodes get another special embedding (index 1)
-                self.forward_index(1)
-            }
-            NodeType::Clique(_) => {
-                // Clique nodes - could aggregate member embeddings
-                self.forward_index(2)
-            }
-            NodeType::Pattern(bytes) => {
-                // Pattern nodes - average of byte embeddings
-                if bytes.is_empty() {
-                    return self.forward_index(3);
-                }
-                let mut sum = Array1::zeros(self.embed_dim);
-                for &b in bytes {
-                    sum = sum + self.forward_index(b as usize);
-                }
-                sum / bytes.len() as f32
-            }
-            NodeType::Compressed(_) => self.forward_index(4),
-            NodeType::Pixel { row: _, col: _ } => {
-                // Pixel nodes - use pixel value as embedding index (0-255)
-                if let Some(v) = node.value {
-                    self.forward_index(v as usize)
-                } else {
-                    // Use activation level scaled to embedding space
-                    let idx = (node.activation * 255.0).clamp(0.0, 255.0) as usize;
-                    self.forward_index(idx)
-                }
-            }
-            NodeType::ClassOutput(class_idx) => {
-                // Class output nodes - use class index
-                self.forward_index(*class_idx)
-            }
-        }
+        // Domain-agnostic: use node's value or activation, NOT its type
+        let idx = if let Some(v) = node.value {
+            v as usize
+        } else {
+            // Scale activation [0.0, 1.0] to embedding index [0, 255]
+            (node.activation * 255.0).clamp(0.0, 255.0) as usize
+        };
+        self.forward_index(idx)
     }
 
     /// Get number of parameters in this layer

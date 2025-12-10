@@ -1311,6 +1311,10 @@ impl WeisfeilerLehmanKernel {
                 "ClassOutput".hash(&mut hasher);
                 class_idx.hash(&mut hasher);
             }
+            NodeType::Feature(idx) => {
+                "Feature".hash(&mut hasher);
+                idx.hash(&mut hasher);
+            }
         }
         hasher.finish()
     }

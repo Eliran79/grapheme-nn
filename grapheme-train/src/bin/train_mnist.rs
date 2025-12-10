@@ -23,7 +23,7 @@ use grapheme_core::{
     cross_entropy_loss_with_grad, ClassificationConfig, DagNN,
     HebbianConfig, HebbianLearning, StructuralClassifier,
 };
-use grapheme_vision::{MnistModel, MnistModelConfig};
+use grapheme_vision::{ImageClassificationModel, ImageClassificationConfig, RawImage};
 use indicatif::{ProgressBar, ProgressStyle};
 use mnist::{Mnist, MnistBuilder};
 use ndarray::Array1;
@@ -512,7 +512,7 @@ fn evaluate(mnist: &Mnist, config: &ClassificationConfig) -> (f32, f32) {
 /// - Structural classification (template matching)
 fn train_epoch_vision(
     mnist: &Mnist,
-    model: &mut MnistModel,
+    model: &mut ImageClassificationModel,
     config: &ClassificationConfig,
     epoch: usize,
 ) -> (f32, f32) {
@@ -552,27 +552,26 @@ fn train_epoch_vision(
             let pixels = normalize_image(&mnist.trn_img[img_start..img_end]);
             let label = mnist.trn_lbl[sample_idx] as usize;
 
-            // Use MnistModel train_step (includes VisionBrain pipeline)
-            match model.train_step(&pixels, label) {
-                Ok((train_result, mut dag)) => {
+            // Convert to RawImage (MNIST is 28x28 grayscale)
+            let image = match RawImage::grayscale(28, 28, pixels) {
+                Ok(img) => img,
+                Err(e) => {
+                    eprintln!("Image creation error: {}", e);
+                    continue;
+                }
+            };
+
+            // Use MnistModel train_step (includes VisionBrain pipeline + Hebbian/hybrid learning)
+            // The new train_step handles all learning internally:
+            // - Forward pass through persistent DagNN
+            // - Loss computation via ClassificationBrain
+            // - Template updates in ClassificationBrain
+            // - Hebbian/hybrid weight updates in DagNN
+            match model.train_step(&image, label) {
+                Ok(train_result) => {
                     batch_loss += train_result.loss;
                     if train_result.correct {
                         batch_correct += 1;
-                    }
-
-                    // Apply gradient updates to DAG edges
-                    let mut output_grad: HashMap<petgraph::graph::NodeIndex, Array1<f32>> = HashMap::new();
-                    for (i, &node_id) in dag.output_nodes().iter().enumerate() {
-                        if i < train_result.gradient.len() {
-                            output_grad.insert(node_id, Array1::from_vec(vec![train_result.gradient[i]]));
-                        }
-                    }
-                    apply_gradient_update(&mut dag, &output_grad, config.learning_rate);
-
-                    // Optional: Hebbian learning
-                    if config.use_hebbian {
-                        let hebbian_config = HebbianConfig::new(config.learning_rate * config.hebbian_weight);
-                        dag.backward_hebbian(&hebbian_config);
                     }
                 }
                 Err(e) => {
@@ -607,7 +606,7 @@ fn train_epoch_vision(
 }
 
 /// Evaluate using VisionBrain pipeline
-fn evaluate_vision(mnist: &Mnist, model: &MnistModel) -> (f32, f32) {
+fn evaluate_vision(mnist: &Mnist, model: &mut ImageClassificationModel) -> (f32, f32) {
     let num_samples = mnist.tst_lbl.len();
 
     println!("Evaluating on {} test samples (vision pipeline)...", num_samples);
@@ -629,8 +628,17 @@ fn evaluate_vision(mnist: &Mnist, model: &MnistModel) -> (f32, f32) {
         let pixels = normalize_image(&mnist.tst_img[img_start..img_end]);
         let label = mnist.tst_lbl[sample_idx] as usize;
 
+        // Convert to RawImage (MNIST is 28x28 grayscale)
+        let image = match RawImage::grayscale(28, 28, pixels) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("Image creation error: {}", e);
+                continue;
+            }
+        };
+
         // Use MnistModel forward pass
-        match model.forward_with_target(&pixels, label) {
+        match model.forward_with_target(&image, label) {
             Ok(result) => {
                 total_loss += 1.0 - result.confidence;
                 if result.correct.unwrap_or(false) {
@@ -708,11 +716,19 @@ fn main() -> Result<()> {
     let mut best_accuracy = 0.0;
 
     if args.vision {
-        // Backend-139: Full VisionBrain pipeline
-        let model_config = MnistModelConfig::mnist()
+        // Backend-140: Full VisionBrain pipeline with persistent DagNN learning
+        // ImageClassificationConfig::default() is already configured for MNIST (28x28, 10 classes)
+        let model_config = ImageClassificationConfig::default()
             .with_hidden_size(args.hidden_size)
-            .with_momentum(args.template_momentum);
-        let mut model = MnistModel::with_config(model_config);
+            .with_momentum(args.template_momentum)
+            .with_learning_rate(config.learning_rate)
+            .with_hybrid_weights(1.0 - config.hebbian_weight, config.hebbian_weight);
+        let mut model = ImageClassificationModel::with_config(model_config);
+
+        println!("Model initialized with {} samples_seen, {} DAG nodes, {} DAG edges",
+            model.samples_seen(),
+            model.dag().node_count(),
+            model.dag().edge_count());
 
         for epoch in 0..config.epochs {
             println!("Epoch {}/{}", epoch + 1, config.epochs);
@@ -720,7 +736,7 @@ fn main() -> Result<()> {
             let (_train_loss, _train_acc) = train_epoch_vision(&mnist, &mut model, &config, epoch);
 
             // Evaluate every epoch
-            let (_test_loss, test_acc) = evaluate_vision(&mnist, &model);
+            let (_test_loss, test_acc) = evaluate_vision(&mnist, &mut model);
 
             if test_acc > best_accuracy {
                 best_accuracy = test_acc;

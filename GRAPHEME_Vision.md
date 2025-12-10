@@ -188,6 +188,117 @@ VisionBrain.to_graph(image):
 
 **Key Point**: The input graph embedding is **deterministic**. GRAPHEME's job is to **learn** the transformation from input graphs to output graphs.
 
+### Adaptive Feature Extraction: DagNN ↔ VisionBrain Feedback
+
+While VisionBrain's output is deterministic for fixed parameters, the **parameters themselves can be tuned** by DagNN during training. This creates a feedback loop for optimal feature extraction:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        ADAPTIVE FEATURE EXTRACTION                              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│   VisionBrain                    DagNN                                          │
+│   ───────────                    ─────                                          │
+│                                                                                 │
+│   Parameters:                    During training:                               │
+│   - blob_threshold    ◄────────  "Need more blobs" (poor discrimination)        │
+│   - min_blob_size     ◄────────  "Blobs too small" (noise)                      │
+│   - max_blobs         ◄────────  "Need more detail" (underfitting)              │
+│   - edge_threshold    ◄────────  "Need edge info" (shape matters)               │
+│   - hierarchy_levels  ◄────────  "Need structure" (complex patterns)            │
+│                                                                                 │
+│   VisionBrain adapts its feature extraction based on DagNN learning signals     │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Feedback Signals from DagNN:**
+- **Poor class discrimination** → Request more/different features
+- **Overfitting on noise** → Request coarser features (larger blobs, fewer edges)
+- **Underfitting** → Request finer features (smaller blobs, more hierarchy levels)
+
+This is NOT the same as learned feature extraction (CNN). The feature extraction remains deterministic signal processing, but the parameters are tunable hyperparameters that DagNN can adjust.
+
+### ClassificationBrain: Learnable Output Interpretation
+
+The ClassificationBrain converts DagNN's output graph to class labels. Unlike simple argmax classification, it has **learnable parameters**:
+
+```rust
+pub struct ClassificationBrain {
+    /// Learnable template graphs for each class
+    templates: Vec<Graph>,
+    /// Template matching weights (learned)
+    template_weights: Vec<f32>,
+    /// Output interpretation weights
+    output_weights: Vec<f32>,
+}
+
+impl ClassificationBrain {
+    /// Match output graph against class templates (structural similarity)
+    fn classify(&self, output_graph: &Graph) -> (usize, f32);
+
+    /// Update templates based on training signal
+    fn update_templates(&mut self, output_graph: &Graph, target_class: usize, learning_rate: f32);
+}
+```
+
+**Key Properties:**
+- **Structural matching**: Uses graph similarity, not just activation values
+- **Learnable templates**: Class templates evolve during training
+- **Generic**: Works with any number of classes
+
+### ImageClassificationModel: Generic Pipeline Assembly
+
+The complete pipeline is assembled as `ImageClassificationModel`, which is generic for any image classification task:
+
+```rust
+pub struct ImageClassificationModel {
+    /// Vision brain for image → graph
+    vision: VisionBrain,
+    /// Core GRAPHEME for graph → graph transformation
+    dag: DagNN,
+    /// Classification brain for graph → class
+    classification: ClassificationBrain,
+    /// Configuration
+    config: ImageClassificationConfig,
+}
+
+pub struct ImageClassificationConfig {
+    /// Image dimensions (any size)
+    pub image_width: usize,
+    pub image_height: usize,
+    pub channels: usize,  // 1=grayscale, 3=RGB
+
+    /// Number of classes (any count)
+    pub num_classes: usize,
+
+    /// Feature extraction parameters
+    pub vision: FeatureConfig,
+
+    /// Learning hyperparameters
+    pub learning_rate: f32,
+    pub gradient_weight: f32,
+    pub hebbian_weight: f32,
+}
+```
+
+**Dataset-Specific Configurations** belong in training crates:
+```rust
+// In grapheme-train, not grapheme-vision:
+fn mnist_config() -> ImageClassificationConfig {
+    ImageClassificationConfig {
+        image_width: 28,
+        image_height: 28,
+        channels: 1,
+        num_classes: 10,
+        vision: FeatureConfig::default()
+            .with_blob_threshold(0.2)
+            .with_min_blob_size(3),
+        ..Default::default()
+    }
+}
+```
+
 ## Key Innovations
 
 ### 0. **Completely Unprecedented**
