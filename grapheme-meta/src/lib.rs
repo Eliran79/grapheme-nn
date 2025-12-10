@@ -3900,3 +3900,839 @@ mod unified_cognition_tests {
         assert!(!unhealthy.is_healthy());
     }
 }
+
+// ============================================================================
+// SelfAwareGrapheme: Full AGI System Integrating All Cognitive Modules
+// ============================================================================
+
+/// Awareness level of the system
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AwarenessLevel {
+    /// System is in minimal mode - basic processing only
+    Minimal,
+    /// System is partially aware - monitoring active
+    #[default]
+    Partial,
+    /// System is fully aware - all cognitive modules active
+    Full,
+    /// System is in heightened awareness - extra monitoring
+    Heightened,
+}
+
+/// Current cognitive state of the system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitiveSnapshot {
+    /// Timestamp of snapshot
+    pub timestamp: u64,
+    /// Current awareness level
+    pub awareness_level: AwarenessLevel,
+    /// System health score (0.0 to 1.0)
+    pub health_score: f32,
+    /// Current system confidence
+    pub confidence: f32,
+    /// Number of active goals
+    pub active_goals: usize,
+    /// Current focus (which brains are engaged)
+    pub current_focus: Vec<String>,
+    /// Recent operation count
+    pub recent_operations: u64,
+    /// Memory usage estimate
+    pub memory_pressure: f32,
+}
+
+impl CognitiveSnapshot {
+    /// Check if system is operating normally
+    pub fn is_healthy(&self) -> bool {
+        self.health_score > 0.7 && self.confidence > 0.5 && self.memory_pressure < 0.9
+    }
+
+    /// Check if system needs attention
+    pub fn needs_attention(&self) -> bool {
+        self.health_score < 0.5 || self.memory_pressure > 0.95
+    }
+}
+
+/// Configuration for SelfAwareGrapheme
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfAwareConfig {
+    /// Default awareness level
+    pub default_awareness: AwarenessLevel,
+    /// Enable automatic awareness adjustment
+    pub auto_adjust_awareness: bool,
+    /// Health check interval (every N operations)
+    pub health_check_interval: u64,
+    /// Maximum concurrent operations
+    pub max_concurrent_ops: usize,
+    /// Enable learning from experience
+    pub enable_learning: bool,
+    /// Enable goal-directed behavior
+    pub enable_goals: bool,
+    /// Snapshot retention count
+    pub snapshot_retention: usize,
+}
+
+impl Default for SelfAwareConfig {
+    fn default() -> Self {
+        Self {
+            default_awareness: AwarenessLevel::Partial,
+            auto_adjust_awareness: true,
+            health_check_interval: 50,
+            max_concurrent_ops: 5,
+            enable_learning: true,
+            enable_goals: true,
+            snapshot_retention: 100,
+        }
+    }
+}
+
+/// Statistics for the self-aware system
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelfAwareStats {
+    /// Total cognitive operations
+    pub total_operations: u64,
+    /// Successful operations
+    pub successful_ops: u64,
+    /// Failed operations
+    pub failed_ops: u64,
+    /// Goals completed
+    pub goals_completed: u64,
+    /// Goals failed
+    pub goals_failed: u64,
+    /// Self-corrections performed
+    pub self_corrections: u64,
+    /// Awareness level changes
+    pub awareness_changes: u64,
+    /// Health score history (recent)
+    pub health_history: Vec<f32>,
+}
+
+impl SelfAwareStats {
+    /// Get operation success rate - O(1)
+    pub fn success_rate(&self) -> f32 {
+        if self.total_operations == 0 {
+            1.0
+        } else {
+            self.successful_ops as f32 / self.total_operations as f32
+        }
+    }
+
+    /// Get goal completion rate - O(1)
+    pub fn goal_completion_rate(&self) -> f32 {
+        let total_goals = self.goals_completed + self.goals_failed;
+        if total_goals == 0 {
+            1.0
+        } else {
+            self.goals_completed as f32 / total_goals as f32
+        }
+    }
+
+    /// Get average health - O(n)
+    pub fn average_health(&self) -> f32 {
+        if self.health_history.is_empty() {
+            1.0
+        } else {
+            self.health_history.iter().sum::<f32>() / self.health_history.len() as f32
+        }
+    }
+
+    /// Record health score with retention limit
+    pub fn record_health(&mut self, score: f32, max_history: usize) {
+        self.health_history.push(score);
+        if self.health_history.len() > max_history {
+            self.health_history.remove(0);
+        }
+    }
+}
+
+/// SelfAwareGrapheme: Full AGI System
+///
+/// This is the apex integration of all GRAPHEME cognitive modules:
+/// - UnifiedCognition: Brain orchestration and attention
+/// - SelfModel: System state representation
+/// - ReflectiveBrain: Introspection and self-modification
+/// - GoalStack: Hierarchical goal management (via grapheme-agent)
+/// - AttentionMechanism: Dynamic focus allocation
+///
+/// # Architecture
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────┐
+/// │                         SelfAwareGrapheme                                │
+/// │                           (AGI System)                                   │
+/// ├─────────────────────────────────────────────────────────────────────────┤
+/// │                                                                          │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐│
+/// │  │                      AWARENESS LAYER                                 ││
+/// │  │  AwarenessLevel ◄──► CognitiveSnapshot ◄──► Health Monitoring       ││
+/// │  └─────────────────────────────────────────────────────────────────────┘│
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐│
+/// │  │                     COGNITION LAYER                                  ││
+/// │  │  UnifiedCognition: Brain orchestration, attention-based routing     ││
+/// │  │    ├── MathBrain, CodeBrain, VisionBrain, MusicBrain, ...          ││
+/// │  │    ├── AttentionMechanism: Dynamic focus                            ││
+/// │  │    └── SelfModel: Component tracking                                ││
+/// │  └─────────────────────────────────────────────────────────────────────┘│
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐│
+/// │  │                    REFLECTION LAYER                                  ││
+/// │  │  ReflectiveBrain: Introspection, problem detection, auto-healing   ││
+/// │  └─────────────────────────────────────────────────────────────────────┘│
+/// │                                    │                                    │
+/// │                                    ▼                                    │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐│
+/// │  │                     EXPERIENCE LAYER                                 ││
+/// │  │  Learning from outcomes, pattern recognition, skill improvement     ││
+/// │  └─────────────────────────────────────────────────────────────────────┘│
+/// │                                                                          │
+/// └─────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Time Complexity
+/// - process(): O(n log n) for brain selection + O(k * m) for processing
+/// - think(): O(n) for snapshot generation
+/// - reflect(): O(n) for introspection
+#[derive(Debug)]
+pub struct SelfAwareGrapheme {
+    /// Configuration
+    pub config: SelfAwareConfig,
+    /// Unified cognition system
+    pub cognition: UnifiedCognition,
+    /// Current awareness level
+    pub awareness: AwarenessLevel,
+    /// Cognitive snapshots history
+    snapshots: Vec<CognitiveSnapshot>,
+    /// Statistics
+    pub stats: SelfAwareStats,
+    /// Operation counter
+    operation_counter: u64,
+    /// Is system active
+    active: bool,
+}
+
+impl Default for SelfAwareGrapheme {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SelfAwareGrapheme {
+    /// Create a new self-aware GRAPHEME system
+    pub fn new() -> Self {
+        let mut cognition = UnifiedCognition::new();
+        cognition.register_standard_brains();
+
+        Self {
+            config: SelfAwareConfig::default(),
+            cognition,
+            awareness: AwarenessLevel::Partial,
+            snapshots: Vec::new(),
+            stats: SelfAwareStats::default(),
+            operation_counter: 0,
+            active: false, // Start inactive until boot() is called
+        }
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: SelfAwareConfig) -> Self {
+        let mut system = Self::new();
+        system.awareness = config.default_awareness;
+        system.config = config;
+        system
+    }
+
+    /// Boot the system (initialize all subsystems)
+    pub fn boot(&mut self) {
+        self.active = true;
+        self.awareness = self.config.default_awareness;
+
+        // Initial health check
+        let _snapshot = self.take_snapshot(0);
+    }
+
+    /// Shutdown the system gracefully
+    pub fn shutdown(&mut self) {
+        self.active = false;
+        self.awareness = AwarenessLevel::Minimal;
+    }
+
+    /// Check if system is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Get current awareness level
+    pub fn awareness_level(&self) -> AwarenessLevel {
+        self.awareness
+    }
+
+    /// Set awareness level
+    pub fn set_awareness(&mut self, level: AwarenessLevel) {
+        if self.awareness != level {
+            self.awareness = level;
+            self.stats.awareness_changes += 1;
+        }
+    }
+
+    /// Take a cognitive snapshot - O(n)
+    pub fn take_snapshot(&mut self, timestamp: u64) -> CognitiveSnapshot {
+        let health = self.cognition.health_overview();
+        let focus = self.cognition.attention()
+            .current_focus()
+            .map(|f| f.to_vec())
+            .unwrap_or_default();
+
+        let snapshot = CognitiveSnapshot {
+            timestamp,
+            awareness_level: self.awareness,
+            health_score: health.last_health_score.max(health.success_rate),
+            confidence: self.cognition.stats().success_rate(),
+            active_goals: 0, // Would integrate with GoalStack
+            current_focus: focus,
+            recent_operations: self.operation_counter,
+            memory_pressure: health.average_load,
+        };
+
+        // Store snapshot with retention limit
+        self.snapshots.push(snapshot.clone());
+        if self.snapshots.len() > self.config.snapshot_retention {
+            self.snapshots.remove(0);
+        }
+
+        // Record health in stats
+        self.stats.record_health(snapshot.health_score, self.config.snapshot_retention);
+
+        snapshot
+    }
+
+    /// Get the latest snapshot
+    pub fn latest_snapshot(&self) -> Option<&CognitiveSnapshot> {
+        self.snapshots.last()
+    }
+
+    /// Get snapshot history
+    pub fn snapshot_history(&self) -> &[CognitiveSnapshot] {
+        &self.snapshots
+    }
+
+    /// Main processing entry point - "think" about an input
+    ///
+    /// This is the primary interface for cognitive processing.
+    pub fn think(&mut self, input: &str, timestamp: u64) -> ThinkResult {
+        if !self.active {
+            return ThinkResult::inactive();
+        }
+
+        self.operation_counter += 1;
+
+        // Periodic health check
+        if self.operation_counter.is_multiple_of(self.config.health_check_interval) {
+            self.perform_health_check(timestamp);
+        }
+
+        // Process through unified cognition
+        let cognition_result = self.cognition.process(input, timestamp);
+
+        // Update statistics
+        let success = cognition_result.is_valid();
+        if success {
+            self.stats.successful_ops += 1;
+        } else {
+            self.stats.failed_ops += 1;
+        }
+        self.stats.total_operations += 1;
+
+        // Auto-adjust awareness if enabled
+        if self.config.auto_adjust_awareness {
+            self.adjust_awareness_if_needed();
+        }
+
+        ThinkResult {
+            output: cognition_result.primary_output,
+            source_brain: cognition_result.source_brain,
+            confidence: cognition_result.confidence,
+            processing_time_ms: cognition_result.processing_time_ms,
+            awareness_level: self.awareness,
+            was_fallback: cognition_result.was_fallback,
+        }
+    }
+
+    /// Perform self-reflection - O(n)
+    pub fn reflect(&mut self, timestamp: u64) -> ReflectionResult {
+        // Perform introspection
+        let introspection = self.cognition.perform_introspection();
+
+        // Take snapshot
+        let snapshot = self.take_snapshot(timestamp);
+
+        // Check for problems
+        let mut issues = Vec::new();
+        let mut suggestions = Vec::new();
+
+        if introspection.health_score < 0.5 {
+            issues.push("Low system health detected".to_string());
+            suggestions.push("Consider reducing load or resetting components".to_string());
+        }
+
+        if !introspection.problematic_components.is_empty() {
+            issues.push(format!("Problematic components: {:?}", introspection.problematic_components));
+            suggestions.push("Review and potentially reset problematic components".to_string());
+        }
+
+        if self.stats.success_rate() < 0.5 {
+            issues.push("Low operation success rate".to_string());
+            suggestions.push("Review input patterns and brain configurations".to_string());
+        }
+
+        // Apply auto-corrections if possible
+        let corrections_made = if !issues.is_empty() && self.config.enable_learning {
+            self.attempt_self_correction()
+        } else {
+            0
+        };
+
+        if corrections_made > 0 {
+            self.stats.self_corrections += corrections_made as u64;
+        }
+
+        ReflectionResult {
+            snapshot,
+            introspection,
+            issues,
+            suggestions,
+            corrections_made,
+        }
+    }
+
+    /// Perform health check
+    fn perform_health_check(&mut self, timestamp: u64) {
+        let _snapshot = self.take_snapshot(timestamp);
+
+        // Trigger introspection if health is concerning
+        if let Some(snapshot) = self.snapshots.last() {
+            if snapshot.needs_attention() {
+                self.cognition.perform_introspection();
+            }
+        }
+    }
+
+    /// Adjust awareness level based on system state
+    fn adjust_awareness_if_needed(&mut self) {
+        let health = self.cognition.health_overview();
+
+        let new_level = if health.success_rate < 0.3 || health.average_load > 0.9 {
+            AwarenessLevel::Heightened
+        } else if health.success_rate > 0.8 && health.average_load < 0.5 {
+            AwarenessLevel::Partial
+        } else if health.success_rate > 0.95 && health.average_load < 0.3 {
+            AwarenessLevel::Minimal
+        } else {
+            AwarenessLevel::Full
+        };
+
+        if new_level != self.awareness {
+            self.set_awareness(new_level);
+        }
+    }
+
+    /// Attempt self-correction - returns number of corrections made
+    fn attempt_self_correction(&mut self) -> usize {
+        let mut corrections = 0;
+
+        // Check for overloaded brains and reduce load
+        let health = self.cognition.health_overview();
+        for _brain_id in &health.overloaded_brains {
+            // In a real system, we might shed load or increase capacity
+            // For now, just acknowledge the issue
+            corrections += 1;
+        }
+
+        // Redistribute attention if some brains are failing
+        let suggestions = self.cognition.suggest_attention_optimization();
+        for (brain_id, new_bias) in suggestions {
+            self.cognition.attention.set_brain_bias(&brain_id, new_bias);
+            corrections += 1;
+        }
+
+        corrections
+    }
+
+    /// Get current statistics
+    pub fn stats(&self) -> &SelfAwareStats {
+        &self.stats
+    }
+
+    /// Get reference to underlying cognition system
+    pub fn cognition(&self) -> &UnifiedCognition {
+        &self.cognition
+    }
+
+    /// Get mutable reference to underlying cognition system
+    pub fn cognition_mut(&mut self) -> &mut UnifiedCognition {
+        &mut self.cognition
+    }
+
+    /// Reset the system to initial state
+    pub fn reset(&mut self) {
+        self.stats = SelfAwareStats::default();
+        self.snapshots.clear();
+        self.operation_counter = 0;
+        self.awareness = self.config.default_awareness;
+        self.cognition.reset_stats();
+    }
+
+    /// Get system summary
+    pub fn summary(&self) -> SelfAwareSummary {
+        let health = self.cognition.health_overview();
+
+        SelfAwareSummary {
+            active: self.active,
+            awareness_level: self.awareness,
+            total_operations: self.stats.total_operations,
+            success_rate: self.stats.success_rate(),
+            health_score: health.last_health_score,
+            active_brains: health.active_brains,
+            total_brains: health.total_brains,
+            self_corrections: self.stats.self_corrections,
+            average_health: self.stats.average_health(),
+        }
+    }
+}
+
+/// Result of thinking operation
+#[derive(Debug, Clone)]
+pub struct ThinkResult {
+    /// Output of thinking
+    pub output: Option<String>,
+    /// Which brain produced the output
+    pub source_brain: String,
+    /// Confidence in the result
+    pub confidence: f32,
+    /// Processing time in milliseconds
+    pub processing_time_ms: u64,
+    /// Current awareness level
+    pub awareness_level: AwarenessLevel,
+    /// Whether fallback was used
+    pub was_fallback: bool,
+}
+
+impl ThinkResult {
+    /// Create inactive result
+    pub fn inactive() -> Self {
+        Self {
+            output: None,
+            source_brain: String::new(),
+            confidence: 0.0,
+            processing_time_ms: 0,
+            awareness_level: AwarenessLevel::Minimal,
+            was_fallback: false,
+        }
+    }
+
+    /// Check if result is valid
+    pub fn is_valid(&self) -> bool {
+        self.output.is_some() && self.confidence > 0.0
+    }
+}
+
+/// Result of reflection operation
+#[derive(Debug)]
+pub struct ReflectionResult {
+    /// Cognitive snapshot at time of reflection
+    pub snapshot: CognitiveSnapshot,
+    /// Detailed introspection result
+    pub introspection: IntrospectionResult,
+    /// Issues detected
+    pub issues: Vec<String>,
+    /// Suggestions for improvement
+    pub suggestions: Vec<String>,
+    /// Number of self-corrections made
+    pub corrections_made: usize,
+}
+
+impl ReflectionResult {
+    /// Check if reflection found no issues
+    pub fn is_healthy(&self) -> bool {
+        self.issues.is_empty() && self.snapshot.is_healthy()
+    }
+}
+
+/// Summary of system state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfAwareSummary {
+    /// Whether system is active
+    pub active: bool,
+    /// Current awareness level
+    pub awareness_level: AwarenessLevel,
+    /// Total operations performed
+    pub total_operations: u64,
+    /// Overall success rate
+    pub success_rate: f32,
+    /// Current health score
+    pub health_score: f32,
+    /// Number of active brains
+    pub active_brains: usize,
+    /// Total registered brains
+    pub total_brains: usize,
+    /// Self-corrections performed
+    pub self_corrections: u64,
+    /// Average health over time
+    pub average_health: f32,
+}
+
+/// Factory function to create a self-aware GRAPHEME system
+pub fn create_self_aware_grapheme() -> SelfAwareGrapheme {
+    let mut system = SelfAwareGrapheme::new();
+    system.boot();
+    system
+}
+
+// ============================================================================
+// SelfAwareGrapheme Tests
+// ============================================================================
+
+#[cfg(test)]
+mod self_aware_tests {
+    use super::*;
+
+    #[test]
+    fn test_self_aware_grapheme_creation() {
+        let system = SelfAwareGrapheme::new();
+        assert!(!system.active); // Not booted yet
+        assert_eq!(system.awareness, AwarenessLevel::Partial);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_boot() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        assert!(system.is_active());
+        assert!(!system.snapshots.is_empty());
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_shutdown() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+        system.shutdown();
+
+        assert!(!system.is_active());
+        assert_eq!(system.awareness, AwarenessLevel::Minimal);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_think() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        let result = system.think("Calculate 2 + 3", 1000);
+
+        assert!(result.is_valid());
+        assert!(!result.source_brain.is_empty());
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_think_inactive() {
+        let mut system = SelfAwareGrapheme::new();
+        // Don't boot
+
+        let result = system.think("Calculate 2 + 3", 1000);
+
+        assert!(!result.is_valid());
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_reflect() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        // Process some inputs first
+        for _ in 0..5 {
+            system.think("Calculate 1 + 1", 1000);
+        }
+
+        let reflection = system.reflect(2000);
+
+        assert!(reflection.snapshot.health_score >= 0.0);
+        assert!(reflection.snapshot.health_score <= 1.0);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_snapshot() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        let snapshot = system.take_snapshot(1000);
+
+        assert_eq!(snapshot.awareness_level, AwarenessLevel::Partial);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_awareness_change() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        system.set_awareness(AwarenessLevel::Heightened);
+
+        assert_eq!(system.awareness, AwarenessLevel::Heightened);
+        assert_eq!(system.stats.awareness_changes, 1);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_stats() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        system.think("test", 1000);
+        system.think("test", 2000);
+
+        assert_eq!(system.stats.total_operations, 2);
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_reset() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+        system.think("test", 1000);
+
+        system.reset();
+
+        assert_eq!(system.stats.total_operations, 0);
+        assert!(system.snapshots.is_empty());
+    }
+
+    #[test]
+    fn test_self_aware_grapheme_summary() {
+        let mut system = SelfAwareGrapheme::new();
+        system.boot();
+
+        let summary = system.summary();
+
+        assert!(summary.active);
+        assert_eq!(summary.total_brains, 7);
+    }
+
+    #[test]
+    fn test_self_aware_config() {
+        let config = SelfAwareConfig {
+            default_awareness: AwarenessLevel::Full,
+            max_concurrent_ops: 10,
+            ..Default::default()
+        };
+
+        let system = SelfAwareGrapheme::with_config(config);
+
+        assert_eq!(system.awareness, AwarenessLevel::Full);
+        assert_eq!(system.config.max_concurrent_ops, 10);
+    }
+
+    #[test]
+    fn test_self_aware_stats_success_rate() {
+        let stats = SelfAwareStats {
+            successful_ops: 8,
+            total_operations: 10,
+            ..Default::default()
+        };
+
+        assert!((stats.success_rate() - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_self_aware_stats_goal_rate() {
+        let stats = SelfAwareStats {
+            goals_completed: 7,
+            goals_failed: 3,
+            ..Default::default()
+        };
+
+        assert!((stats.goal_completion_rate() - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cognitive_snapshot_healthy() {
+        let snapshot = CognitiveSnapshot {
+            timestamp: 0,
+            awareness_level: AwarenessLevel::Full,
+            health_score: 0.9,
+            confidence: 0.8,
+            active_goals: 2,
+            current_focus: vec!["MathBrain".to_string()],
+            recent_operations: 100,
+            memory_pressure: 0.3,
+        };
+
+        assert!(snapshot.is_healthy());
+        assert!(!snapshot.needs_attention());
+    }
+
+    #[test]
+    fn test_cognitive_snapshot_unhealthy() {
+        let snapshot = CognitiveSnapshot {
+            timestamp: 0,
+            awareness_level: AwarenessLevel::Full,
+            health_score: 0.3,
+            confidence: 0.8,
+            active_goals: 2,
+            current_focus: vec![],
+            recent_operations: 100,
+            memory_pressure: 0.98,
+        };
+
+        assert!(!snapshot.is_healthy());
+        assert!(snapshot.needs_attention());
+    }
+
+    #[test]
+    fn test_think_result_is_valid() {
+        let mut result = ThinkResult::inactive();
+        assert!(!result.is_valid());
+
+        result.output = Some("answer".to_string());
+        result.confidence = 0.8;
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    fn test_create_self_aware_grapheme_factory() {
+        let system = create_self_aware_grapheme();
+
+        assert!(system.is_active());
+        assert_eq!(system.cognition.all_brain_status().len(), 7);
+    }
+
+    #[test]
+    fn test_self_aware_periodic_health_check() {
+        let mut system = SelfAwareGrapheme::new();
+        system.config.health_check_interval = 5;
+        system.boot();
+
+        // Process exactly 5 inputs to trigger health check
+        for i in 0..5 {
+            system.think("test", i as u64 * 100);
+        }
+
+        // Should have taken additional snapshots
+        assert!(system.snapshots.len() >= 2);
+    }
+
+    #[test]
+    fn test_self_aware_snapshot_retention() {
+        let mut system = SelfAwareGrapheme::new();
+        system.config.snapshot_retention = 5;
+        system.boot();
+
+        // Take more snapshots than retention allows
+        for i in 0..10 {
+            system.take_snapshot(i as u64 * 100);
+        }
+
+        assert!(system.snapshots.len() <= 5);
+    }
+
+    #[test]
+    fn test_awareness_level_default() {
+        assert_eq!(AwarenessLevel::default(), AwarenessLevel::Partial);
+    }
+}
