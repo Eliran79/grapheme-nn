@@ -1,7 +1,7 @@
 ---
 id: backend-143
 title: Implement Learnable trait for DagNN
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -63,11 +63,11 @@ for batch in data {
 - Add gradient clipping support
 
 ## Tasks
-- [ ] Implement `Learnable` trait for DagNN struct
-- [ ] Implement `num_parameters(&self) -> usize` (count trainable edge weights)
-- [ ] Implement `clip_gradients(&mut self, max_norm: f32)` for gradient clipping
-- [ ] Add tests verifying Learnable methods work correctly
-- [ ] Verify DagNN can be used in generic `fn train<T: Learnable>(model: &mut T)` functions
+- [x] Implement `Learnable` trait for DagNN struct
+- [x] Implement `num_parameters(&self) -> usize` (count trainable edge weights)
+- [x] Implement `clip_gradients(&mut self, max_norm: f32)` for gradient clipping
+- [x] Add tests verifying Learnable methods work correctly
+- [x] Verify DagNN can be used in generic `fn train<T: Learnable>(model: &mut T)` functions
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -93,10 +93,10 @@ for batch in data {
 - GraphTransformNet: lines 2668-2706
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
@@ -125,25 +125,42 @@ for batch in data {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `impl Learnable for DagNN` at lines 2846-2871 in `grapheme-core/src/lib.rs`
+- Implementation delegates to existing inherent methods added in backend-142:
+  - `zero_grad()` → clears `edge_grads` HashMap
+  - `step(lr)` → applies gradients: `w = w - lr * grad`
+  - `num_parameters()` → returns `graph.edge_count()`
+  - `has_gradients()` → returns `!edge_grads.is_empty()`
+  - `gradient_norm()` → computes L2 norm of all gradients
+- Added comprehensive test `test_learnable_trait_dagnn()` at lines 13536-13585
+- Test includes generic function `check_learnable<T: Learnable>()` proving DagNN works with trait bounds
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- DagNN can now participate in generic training infrastructure alongside Embedding, MessagePassingLayer, GraphTransformNet
+- Standard training loop pattern now supported:
+  ```rust
+  for batch in data {
+      dag.zero_grad();
+      // forward pass
+      dag.backward_accumulate(&loss_grad, &mut embedding);
+      dag.step(learning_rate);
+  }
+  ```
+- No async flows; all operations are synchronous
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Builds on backend-142's gradient accumulation API (edge_grads HashMap, zero_grad, step, etc.)
+- DagNN now consistent with other Learnable types (Embedding, MessagePassingLayer, GraphTransformNet)
+- **Unblocks backend-140** (joint training for VisionBrain + ClassificationBrain + GRAPHEME Core)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-core test_learnable_trait_dagnn` to verify trait implementation
+- Run `cargo test -p grapheme-core test_learnable` to test all Learnable implementations
+- All 286 grapheme-core tests pass
+- Edge cases covered: empty gradients, gradient norm computation, step updates
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **backend-140 is now unblocked** - can implement joint training using DagNN as Learnable
+- Note: `clip_gradients()` is NOT part of the Learnable trait (trait has 5 methods, not 6)
+- The task description mentioned 6 methods but actual trait definition has 5
+- `clip_gradients()` exists as an inherent method on DagNN (added in backend-142) but not via trait

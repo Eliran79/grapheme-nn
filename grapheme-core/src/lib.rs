@@ -2843,6 +2843,33 @@ impl Learnable for GraphTransformNet {
     }
 }
 
+impl Learnable for DagNN {
+    fn zero_grad(&mut self) {
+        self.edge_grads.clear();
+    }
+
+    fn step(&mut self, lr: f32) {
+        for ((from, to), grad) in &self.edge_grads {
+            if let Some(edge_idx) = self.graph.find_edge(*from, *to) {
+                self.graph[edge_idx].weight -= lr * grad;
+            }
+        }
+    }
+
+    fn num_parameters(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    fn has_gradients(&self) -> bool {
+        !self.edge_grads.is_empty()
+    }
+
+    fn gradient_norm(&self) -> f32 {
+        let sum_sq: f32 = self.edge_grads.values().map(|g| g * g).sum();
+        sum_sq.sqrt()
+    }
+}
+
 // ============================================================================
 // GraphTransformer Trait (matching GRAPHEME_Vision.md)
 // ============================================================================
@@ -13504,6 +13531,57 @@ mod tests {
         dag.train(false);
         dag.backward_accumulate(&output_grad, &mut embedding);
         assert!(!dag.has_gradients(), "Should NOT accumulate gradients in eval mode");
+    }
+
+    #[test]
+    fn test_learnable_trait_dagnn() {
+        use crate::Learnable;
+
+        // Helper function that works with any Learnable type
+        fn check_learnable<T: Learnable>(model: &mut T) -> (usize, bool, f32) {
+            let params = model.num_parameters();
+            let has_grad = model.has_gradients();
+            let norm = model.gradient_norm();
+            (params, has_grad, norm)
+        }
+
+        let mut dag = DagNN::from_text("abc").unwrap();
+
+        // Test num_parameters via trait
+        assert_eq!(dag.num_parameters(), 2); // 3 nodes, 2 edges
+
+        // Initially no gradients
+        assert!(!dag.has_gradients());
+        assert_eq!(dag.gradient_norm(), 0.0);
+
+        // Accumulate some gradients
+        let nodes: Vec<_> = dag.input_nodes().to_vec();
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 3.0);
+        dag.accumulate_edge_grad(nodes[1], nodes[2], 4.0);
+
+        // Now has gradients
+        assert!(dag.has_gradients());
+        assert!((dag.gradient_norm() - 5.0).abs() < 1e-6);
+
+        // Test via generic function (proves DagNN implements Learnable)
+        let (params, has_grad, norm) = check_learnable(&mut dag);
+        assert_eq!(params, 2);
+        assert!(has_grad);
+        assert!((norm - 5.0).abs() < 1e-6);
+
+        // Zero grad should clear via trait
+        dag.zero_grad();
+        assert!(!dag.has_gradients());
+        assert_eq!(dag.gradient_norm(), 0.0);
+
+        // Step should work via trait (add gradient and apply)
+        dag.accumulate_edge_grad(nodes[0], nodes[1], 0.5);
+        for edge_idx in dag.graph.edge_indices() {
+            dag.graph[edge_idx].weight = 1.0;
+        }
+        dag.step(0.1);
+        let edge_idx = dag.graph.find_edge(nodes[0], nodes[1]).unwrap();
+        assert!((dag.graph[edge_idx].weight - 0.95).abs() < 1e-6);
     }
 
     #[test]
