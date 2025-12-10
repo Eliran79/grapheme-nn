@@ -1,23 +1,22 @@
 ---
-id: testing-007
-title: Validate image classification accuracy with GRAPHEME-native architecture (target >90%)
-status: doing
+id: docs-001
+title: 'Update GRAPHEME_Vision.md: DagNN One Graph In/Out with Multi-Modal Brain Slicing'
+status: done
 priority: high
 tags:
-- testing
-- image-classification
-- validation
-- benchmark
-dependencies:
-- backend-140
+- docs
+- vision
+- architecture
+- multimodal
+dependencies: []
 assignee: developer
-created: 2025-12-09T19:29:43.011165695Z
-estimate: 4h
+created: 2025-12-10T22:57:29.484563289Z
+estimate: ~
 complexity: 5
-area: testing
+area: docs
 ---
 
-# Validate image classification accuracy with GRAPHEME-native architecture (target >90%)
+# Update GRAPHEME_Vision.md: DagNN One Graph In/Out with Multi-Modal Brain Slicing
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -31,50 +30,29 @@ area: testing
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Validate that the GRAPHEME-native image classification pipeline (using `ImageClassificationModel`
-from grapheme-vision) achieves competitive accuracy on standard benchmarks. This validates
-the vision that graph-based learning can match or exceed traditional CNNs.
-
-**Pipeline being validated:**
-```
-RawImage → VisionBrain.to_graph() → DagNN → ClassificationBrain → class label
-```
-
-**Generic API (2025-12-10):**
-- Uses `ImageClassificationModel`, `ImageClassificationConfig` from grapheme-vision
-- Works with any image size via `RawImage::grayscale(w, h, &pixels)`
-- Works with any number of classes via `ClassificationConfig`
+Brief description of what needs to be done and why.
 
 ## Objectives
-- [ ] Achieve >90% accuracy on MNIST test set
-- [ ] Document training configuration that achieves target accuracy
-- [ ] Benchmark training time vs accuracy tradeoff
-- [ ] Compare with baseline CNN accuracy (~98-99%)
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
 ## Tasks
-- [ ] Train ImageClassificationModel on full MNIST training set (60K samples)
-- [ ] Evaluate on full MNIST test set (10K samples)
-- [ ] Record accuracy, loss, and training time
-- [ ] Tune hyperparameters (hidden_size, learning_rate, epochs) if needed
-- [ ] Document best configuration
-- [ ] Add benchmark script for reproducible validation
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- ImageClassificationModel achieves >90% accuracy on MNIST test set
+- Specific, testable criteria
 
 ✅ **Criteria 2:**
-- Training configuration is documented and reproducible
-
-✅ **Criteria 3:**
-- Validation script can be run to verify results
+- Additional criteria as needed
 
 ## Technical Notes
-- Depends on backend-140 for weight persistence (without it, ~10-20% accuracy)
-- Use `--vision` flag with train_mnist binary
-- MNIST data must be downloaded to data/mnist/ directory
-- Consider using structural loss (`--structural`) vs cross-entropy
-- Graph structure matching should enable learning without softmax/cross-entropy
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
 - [ ] Write unit tests for new functionality
@@ -103,7 +81,7 @@ RawImage → VisionBrain.to_graph() → DagNN → ClassificationBrain → class 
 - Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
-- 2025-12-09: Task created
+- 2025-12-10: Task created
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**

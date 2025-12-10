@@ -161,6 +161,108 @@ pub trait DomainBrain {
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Core Principle: One Graph In, One Graph Out
+
+**DagNN operates on exactly ONE graph.** This is fundamental to GRAPHEME's design:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     DagNN: ONE GRAPH IN, ONE GRAPH OUT                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   The DagNN does NOT know about brains, modalities, or domains.              │
+│   It sees only: nodes, edges, activations, weights.                          │
+│                                                                              │
+│   Input Nodes ──► Hidden Layers ──► Output Nodes                             │
+│       │               │                  │                                   │
+│       │          (learnable)             │                                   │
+│       │                                  │                                   │
+│   Activations flow forward. Gradients flow backward. That's it.              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Multi-Modal Training: Brain Slicing
+
+When training with multiple input/output modalities (e.g., Image + Text → Text, or Math + Code → Math), each brain "owns" a slice of the DagNN's input/output nodes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     MULTI-MODAL BRAIN SLICING                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   INPUT BRAINS              SHARED DagNN              OUTPUT BRAINS          │
+│   ────────────              ──────────               ─────────────           │
+│                                                                              │
+│   VisionBrain ──► [Nodes 0-99]────┐                                          │
+│      (image)      Vision Slice    │                                          │
+│                                   ├──► Hidden ──► [Nodes 0-9]  ──► TextBrain │
+│   TextBrain   ──► [Nodes 100-199]─┤     Layers    Text Slice       (caption) │
+│      (prompt)     Text Slice      │                                          │
+│                                   │              [Nodes 10-19] ──► MathBrain │
+│   MathBrain   ──► [Nodes 200-249]─┘               Math Slice       (formula) │
+│      (formula)    Math Slice                                                 │
+│                                                                              │
+│   RULES:                                                                     │
+│   1. Each brain requests N input nodes and M output nodes                    │
+│   2. DagNN allocates contiguous slices to each brain                         │
+│   3. Brains write activations to their input slice                           │
+│   4. Brains read activations from their output slice                         │
+│   5. DagNN handles all cross-modal connections internally                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### BrainSlice: Node Ownership
+
+```rust
+/// A brain's slice of the shared DagNN
+pub struct BrainSlice {
+    /// Range of input node indices owned by this brain
+    pub input_range: Range<usize>,
+    /// Range of output node indices owned by this brain
+    pub output_range: Range<usize>,
+    /// Brain identifier
+    pub brain_id: String,
+}
+
+/// Extended DomainBrain trait for multi-modal
+pub trait DomainBrain {
+    /// How many input nodes does this brain need?
+    fn input_node_count(&self) -> usize;
+
+    /// How many output nodes does this brain need?
+    fn output_node_count(&self) -> usize;
+
+    /// Write domain input to DagNN input nodes (deterministic)
+    fn write_inputs(&self, input: &DomainInput, dag: &mut DagNN, slice: &BrainSlice);
+
+    /// Read domain output from DagNN output nodes
+    fn read_outputs(&self, dag: &DagNN, slice: &BrainSlice) -> DomainOutput;
+}
+```
+
+### Example: Image Captioning (Vision + Text)
+
+```rust
+// Configure multi-modal pipeline
+let vision_brain = VisionBrain::new();  // Needs 100 input nodes, 0 output
+let text_brain = TextBrain::new();      // Needs 0 input nodes, 50 output
+
+// DagNN allocates slices
+let dag = DagNN::new_multimodal(vec![
+    (&vision_brain, BrainRole::Input),
+    (&text_brain, BrainRole::Output),
+]);
+// vision_brain gets input nodes 0-99
+// text_brain gets output nodes 0-49
+
+// Training step
+vision_brain.write_inputs(&image, &mut dag, &vision_slice);
+dag.forward();
+let caption = text_brain.read_outputs(&dag, &text_slice);
+```
+
 ### VisionBrain: Image-to-Graph Embedding (To Be Implemented)
 
 The VisionBrain converts images to graphs using **hierarchical feature extraction** (no CNN):
