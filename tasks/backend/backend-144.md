@@ -1,7 +1,7 @@
 ---
 id: backend-144
 title: 'Implement BrainSlice: input/output node range per brain in shared DagNN'
-status: todo
+status: done
 priority: high
 tags:
 - backend

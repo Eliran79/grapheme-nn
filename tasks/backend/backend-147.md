@@ -1,7 +1,7 @@
 ---
 id: backend-147
 title: 'Implement ReflectiveBrain: Introspection and self-modification'
-status: todo
+status: done
 priority: high
 tags:
 - backend

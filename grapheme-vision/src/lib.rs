@@ -1511,6 +1511,7 @@ fn create_vision_config() -> DomainConfig {
 /// - Same image → Same graph (deterministic)
 /// - No CNN, no learned features
 /// - Hierarchical structure from signal processing
+#[derive(Clone)]
 pub struct VisionBrain {
     /// Domain configuration
     config: DomainConfig,
@@ -1780,7 +1781,7 @@ impl ClassificationOutput {
 ///
 /// Uses StructuralClassifier from grapheme-core for template-based classification
 /// instead of softmax/cross-entropy (GRAPHEME-native approach).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClassificationBrain {
     config: DomainConfig,
     classification_config: ClassificationConfig,
@@ -2147,6 +2148,7 @@ pub struct TrainResult {
 /// - **Live learning**: Hebbian/hybrid learning updates both weights AND structure
 /// - **Structural classification**: Template matching, no softmax
 /// - **Generic**: Works with any image size and number of classes
+#[derive(Clone)]
 pub struct ImageClassificationModel {
     /// Vision brain for image-to-graph conversion
     vision: VisionBrain,
@@ -2525,6 +2527,60 @@ impl ImageClassificationModel {
 
         let accuracy = correct as f32 / images.len() as f32;
         let avg_loss = total_loss / images.len() as f32;
+
+        Ok((accuracy, avg_loss, predictions))
+    }
+
+    /// Parallel batch evaluation using Rayon.
+    ///
+    /// Processes multiple images in parallel for faster inference.
+    /// Returns (accuracy, average_loss, predictions).
+    ///
+    /// Note: This creates clones of the DagNN for parallel processing,
+    /// so it's best suited for evaluation rather than training.
+    pub fn evaluate_batch_parallel(&self, images: &[&RawImage], labels: &[usize]) -> VisionResult<(f32, f32, Vec<usize>)> {
+        use rayon::prelude::*;
+
+        // Clone model once upfront for thread-safe parallel access
+        let base_model = self.clone();
+
+        // Process all images in parallel
+        let results: Vec<_> = images
+            .par_iter()
+            .zip(labels.par_iter())
+            .map(|(image, &label)| {
+                // Each thread gets its own copy of the model for inference
+                let mut model_clone = base_model.clone();
+                match model_clone.forward_with_target(image, label) {
+                    Ok(result) => Some((result.predicted_class, result.correct.unwrap_or(false), 1.0 - result.confidence)),
+                    Err(_) => None,
+                }
+            })
+            .collect();
+
+        // Aggregate results
+        let mut correct = 0;
+        let mut total_loss = 0.0;
+        let mut predictions = Vec::with_capacity(images.len());
+        let mut valid_count = 0;
+
+        for result in results {
+            if let Some((pred, is_correct, loss)) = result {
+                predictions.push(pred);
+                if is_correct {
+                    correct += 1;
+                }
+                total_loss += loss.max(0.0);
+                valid_count += 1;
+            }
+        }
+
+        if valid_count == 0 {
+            return Err(VisionError::FeatureError("No valid results".into()));
+        }
+
+        let accuracy = correct as f32 / valid_count as f32;
+        let avg_loss = total_loss / valid_count as f32;
 
         Ok((accuracy, avg_loss, predictions))
     }

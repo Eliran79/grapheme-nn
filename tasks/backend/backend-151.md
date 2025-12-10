@@ -1,7 +1,7 @@
 ---
 id: backend-151
 title: Parallelize batch processing across training samples
-status: todo
+status: done
 priority: critical
 tags:
 - backend

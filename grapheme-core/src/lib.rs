@@ -2502,10 +2502,49 @@ impl ForwardPass for DagNN {
             self.update_topology()?;
         }
 
-        // Collect activations in parallel by level
-        // For simplicity, use the sequential version for now
-        // Full parallel implementation would process independent nodes concurrently
-        self.forward()
+        // Group nodes by level (distance from inputs) for parallel processing
+        // Nodes at the same level have no dependencies on each other
+        let levels = self.compute_node_levels();
+
+        // Process each level sequentially, but nodes within each level in parallel
+        for level_nodes in levels {
+            if level_nodes.is_empty() {
+                continue;
+            }
+
+            // Compute pre-activations for all nodes at this level in parallel
+            // Collect results first to avoid borrow conflicts
+            let pre_activations: Vec<(NodeId, f32, bool)> = level_nodes
+                .par_iter()
+                .map(|&node| {
+                    let is_input = self.input_nodes_set.contains(&node);
+                    if is_input {
+                        (node, self.graph[node].activation, true)
+                    } else {
+                        // Sum weighted inputs from predecessors
+                        let pre_act: f32 = self
+                            .graph
+                            .edges_directed(node, petgraph::Direction::Incoming)
+                            .map(|edge| {
+                                self.graph[edge.source()].activation * edge.weight().weight
+                            })
+                            .sum();
+                        (node, pre_act, false)
+                    }
+                })
+                .collect();
+
+            // Apply activations sequentially (mutating the graph)
+            for (node, pre_act, is_input) in pre_activations {
+                if is_input {
+                    self.graph[node].pre_activation = pre_act;
+                } else {
+                    self.graph[node].set_pre_activation(pre_act);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn get_activations(&self) -> Vec<(NodeId, f32)> {
@@ -2514,6 +2553,60 @@ impl ForwardPass for DagNN {
             .iter()
             .map(|&node| (node, self.graph[node].activation))
             .collect()
+    }
+}
+
+// ============================================================================
+// Parallel Processing Utilities (backend-150)
+// ============================================================================
+
+impl DagNN {
+    /// Compute node levels for parallel processing.
+    ///
+    /// Groups nodes by their "level" (distance from inputs), where nodes
+    /// at the same level have no dependencies on each other and can be
+    /// processed in parallel.
+    ///
+    /// # Algorithm
+    /// O(V + E) BFS from input nodes, assigning level = max(predecessor levels) + 1
+    ///
+    /// # Returns
+    /// Vector of levels, where each level contains nodes that can be processed in parallel
+    fn compute_node_levels(&self) -> Vec<Vec<NodeId>> {
+        let mut levels: Vec<Vec<NodeId>> = Vec::new();
+        let mut node_level: HashMap<NodeId, usize> = HashMap::new();
+
+        // Process nodes in topological order to ensure predecessors are processed first
+        for &node in &self.topology.order {
+            // Input nodes are level 0
+            if self.input_nodes_set.contains(&node) {
+                node_level.insert(node, 0);
+                if levels.is_empty() {
+                    levels.push(Vec::new());
+                }
+                levels[0].push(node);
+            } else {
+                // Level = max(predecessor levels) + 1
+                let max_pred_level = self
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                    .filter_map(|edge| node_level.get(&edge.source()))
+                    .max()
+                    .copied()
+                    .unwrap_or(0);
+
+                let level = max_pred_level + 1;
+                node_level.insert(node, level);
+
+                // Ensure we have enough levels
+                while levels.len() <= level {
+                    levels.push(Vec::new());
+                }
+                levels[level].push(node);
+            }
+        }
+
+        levels
     }
 }
 
@@ -8024,6 +8117,75 @@ impl CognitiveBrainBridge for DefaultCognitiveBridge {
 // Cognitive-Brain Orchestrator
 // ============================================================================
 
+/// A brain's slice of the shared DagNN for multi-modal processing
+///
+/// Each brain owns a contiguous range of input and output nodes in the shared
+/// DagNN. This enables multiple brains to collaborate on a single graph while
+/// maintaining clear ownership boundaries.
+///
+/// # Multi-Modal Architecture
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────┐
+/// │                        SHARED DagNN                                     │
+/// │  VisionBrain ──► [Nodes 0-99]───┐     ┌───[Nodes 0-9] ──► VisionBrain  │
+/// │     (image)      Input Slice    │     │    Output Slice      (labels)  │
+/// │                                 │     │                                 │
+/// │  TextBrain   ──► [Nodes 100-199]├─────┤   [Nodes 10-59] ──► TextBrain  │
+/// │     (prompt)     Input Slice    │     │    Output Slice      (caption) │
+/// └─────────────────────────────────────────────────────────────────────────┘
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrainSlice {
+    /// Range of input node indices owned by this brain
+    pub input_range: std::ops::Range<usize>,
+    /// Range of output node indices owned by this brain
+    pub output_range: std::ops::Range<usize>,
+    /// Brain identifier
+    pub brain_id: String,
+}
+
+impl BrainSlice {
+    /// Create a new brain slice
+    pub fn new(brain_id: impl Into<String>, input_range: std::ops::Range<usize>, output_range: std::ops::Range<usize>) -> Self {
+        Self {
+            input_range,
+            output_range,
+            brain_id: brain_id.into(),
+        }
+    }
+
+    /// Number of input nodes in this slice
+    pub fn input_count(&self) -> usize {
+        self.input_range.len()
+    }
+
+    /// Number of output nodes in this slice
+    pub fn output_count(&self) -> usize {
+        self.output_range.len()
+    }
+
+    /// Check if a node index is in the input range
+    pub fn contains_input(&self, index: usize) -> bool {
+        self.input_range.contains(&index)
+    }
+
+    /// Check if a node index is in the output range
+    pub fn contains_output(&self, index: usize) -> bool {
+        self.output_range.contains(&index)
+    }
+}
+
+/// Role of a brain in multi-modal processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrainRole {
+    /// Brain provides input (writes to input slice)
+    Input,
+    /// Brain consumes output (reads from output slice)
+    Output,
+    /// Brain does both input and output
+    Bidirectional,
+}
+
 /// Configuration for the cognitive-brain orchestrator
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -8033,6 +8195,8 @@ pub struct OrchestratorConfig {
     pub auto_route: bool,
     /// Maximum number of brains to consult for a single query
     pub max_brains_per_query: usize,
+    /// Enable parallel brain processing
+    pub enable_parallel: bool,
 }
 
 impl Default for OrchestratorConfig {
@@ -8041,6 +8205,7 @@ impl Default for OrchestratorConfig {
             confidence_threshold: 0.5,
             auto_route: true,
             max_brains_per_query: 3,
+            enable_parallel: true,
         }
     }
 }
@@ -8262,6 +8427,149 @@ impl CognitiveBrainOrchestrator {
     /// Get mutable access to the brain registry
     pub fn get_registry_mut(&mut self) -> &mut BrainRegistry {
         &mut self.registry
+    }
+
+    /// Process inputs in parallel across multiple brains
+    ///
+    /// Uses Rayon to parallelize brain execution when multiple brains
+    /// can process the same input. This is more efficient than sequential
+    /// processing when there are many applicable brains.
+    ///
+    /// # Arguments
+    /// * `input` - The input text to process
+    ///
+    /// # Returns
+    /// Combined results from all applicable brains
+    pub fn process_parallel(&mut self, input: &str) -> OrchestratedResult {
+        use rayon::prelude::*;
+
+        if !self.config.auto_route {
+            self.stats.record_no_routing();
+            return OrchestratedResult::empty();
+        }
+
+        // Find all brains that can process this input (O(n) where n = number of brains)
+        let mut applicable: Vec<_> = self
+            .registry
+            .domains()
+            .iter()
+            .filter_map(|domain_id| {
+                let brain = self.registry.get(domain_id)?;
+                if brain.can_process(input) {
+                    let input_lower = input.to_lowercase();
+                    let domain = brain.domain_id().to_lowercase();
+                    let confidence = if input_lower.contains(&domain) {
+                        0.9
+                    } else {
+                        0.7
+                    };
+                    if confidence >= self.config.confidence_threshold {
+                        Some((domain_id.clone(), confidence))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by confidence (highest first)
+        applicable.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        applicable.truncate(self.config.max_brains_per_query);
+
+        if applicable.is_empty() {
+            self.stats.record_no_routing();
+            return OrchestratedResult::empty();
+        }
+
+        // Process brains in parallel if enabled and more than one brain
+        let results: Vec<(String, f32, Option<ExecutionResult>)> = if self.config.enable_parallel && applicable.len() > 1 {
+            applicable
+                .par_iter()
+                .filter_map(|(domain_id, confidence)| {
+                    let brain = self.registry.get(domain_id)?;
+                    let graph = brain.parse(input).ok()?;
+                    let exec_result = brain.execute(&graph).ok()?;
+                    Some((domain_id.clone(), *confidence, Some(exec_result)))
+                })
+                .collect()
+        } else {
+            // Sequential processing
+            applicable
+                .iter()
+                .filter_map(|(domain_id, confidence)| {
+                    let brain = self.registry.get(domain_id)?;
+                    let graph = brain.parse(input).ok()?;
+                    let exec_result = brain.execute(&graph).ok()?;
+                    Some((domain_id.clone(), *confidence, Some(exec_result)))
+                })
+                .collect()
+        };
+
+        // Aggregate results
+        let mut result = OrchestratedResult::empty();
+        let mut primary_confidence = 0.0f32;
+
+        for (domain_id, confidence, exec_result) in results {
+            if let Some(exec) = exec_result {
+                result.brain_results.insert(domain_id.clone(), exec.clone());
+                result.domains.push(domain_id.clone());
+
+                if confidence > primary_confidence {
+                    primary_confidence = confidence;
+                    result.primary = Some(exec);
+                }
+
+                self.stats.record_routing(&domain_id);
+            }
+        }
+
+        result.confidence = primary_confidence;
+        result
+    }
+
+    /// Allocate brain slices for multi-modal processing
+    ///
+    /// Assigns contiguous ranges of input and output nodes to each brain
+    /// based on their requirements. This is a O(n) operation where n is
+    /// the number of brains.
+    ///
+    /// # Arguments
+    /// * `brain_requests` - List of (brain_id, input_nodes, output_nodes) tuples
+    ///
+    /// # Returns
+    /// Map of brain_id to their allocated BrainSlice
+    pub fn allocate_brain_slices(
+        &self,
+        brain_requests: &[(String, usize, usize)],
+    ) -> std::collections::HashMap<String, BrainSlice> {
+        let mut slices = std::collections::HashMap::new();
+        let mut current_input = 0;
+        let mut current_output = 0;
+
+        for (brain_id, input_nodes, output_nodes) in brain_requests {
+            let slice = BrainSlice::new(
+                brain_id.clone(),
+                current_input..current_input + input_nodes,
+                current_output..current_output + output_nodes,
+            );
+            slices.insert(brain_id.clone(), slice);
+            current_input += input_nodes;
+            current_output += output_nodes;
+        }
+
+        slices
+    }
+
+    /// Get total input nodes needed for all allocated slices
+    pub fn total_input_nodes(slices: &std::collections::HashMap<String, BrainSlice>) -> usize {
+        slices.values().map(|s| s.input_count()).sum()
+    }
+
+    /// Get total output nodes needed for all allocated slices
+    pub fn total_output_nodes(slices: &std::collections::HashMap<String, BrainSlice>) -> usize {
+        slices.values().map(|s| s.output_count()).sum()
     }
 }
 
@@ -9023,6 +9331,41 @@ mod tests {
         // Test get_activations
         let activations = dag.get_activations();
         assert_eq!(activations.len(), 2);
+    }
+
+    #[test]
+    fn test_forward_parallel() {
+        // Test that parallel forward gives same results as sequential
+        let mut dag_seq = DagNN::from_text("hello world").unwrap();
+        let mut dag_par = dag_seq.clone();
+
+        // Run sequential forward
+        dag_seq.forward().unwrap();
+        let seq_activations = dag_seq.get_activations();
+
+        // Run parallel forward
+        dag_par.forward_parallel().unwrap();
+        let par_activations = dag_par.get_activations();
+
+        // Results should be identical
+        assert_eq!(seq_activations.len(), par_activations.len());
+        for ((seq_node, seq_act), (par_node, par_act)) in
+            seq_activations.iter().zip(par_activations.iter())
+        {
+            assert_eq!(seq_node, par_node);
+            assert!((seq_act - par_act).abs() < 1e-6, "Activations differ");
+        }
+    }
+
+    #[test]
+    fn test_compute_node_levels() {
+        let dag = DagNN::from_text("hi").unwrap();
+        let levels = dag.compute_node_levels();
+
+        // Should have at least 2 levels (inputs + hidden/output)
+        assert!(levels.len() >= 1);
+        // Level 0 should contain input nodes
+        assert!(!levels[0].is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: backend-150
 title: Parallelize DagNN forward pass with Rayon (P-time, no NP-hard)
-status: todo
+status: done
 priority: critical
 tags:
 - backend

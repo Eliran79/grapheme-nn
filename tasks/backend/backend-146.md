@@ -1,7 +1,7 @@
 ---
 id: backend-146
 title: 'Implement SelfModel: Graph representation of system''s own state'
-status: todo
+status: done
 priority: critical
 tags:
 - backend

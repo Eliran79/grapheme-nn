@@ -521,6 +521,7 @@ fn test_orchestrator_config() {
         confidence_threshold: 0.7,
         auto_route: false,
         max_brains_per_query: 5,
+        enable_parallel: true,
     };
 
     let orchestrator = CognitiveBrainOrchestrator::with_config(config.clone());
@@ -685,4 +686,86 @@ fn test_all_brain_aware_modules_implement_bridge() {
     accepts_bridge(&world);
     accepts_bridge(&grounding);
     accepts_bridge(&multimodal);
+}
+
+#[test]
+fn test_brain_slice_creation() {
+    use grapheme_core::BrainSlice;
+
+    let slice = BrainSlice::new("vision", 0..100, 0..10);
+    assert_eq!(slice.brain_id, "vision");
+    assert_eq!(slice.input_count(), 100);
+    assert_eq!(slice.output_count(), 10);
+    assert!(slice.contains_input(50));
+    assert!(!slice.contains_input(100));
+    assert!(slice.contains_output(5));
+    assert!(!slice.contains_output(10));
+}
+
+#[test]
+fn test_brain_slice_allocation() {
+    use grapheme_core::CognitiveBrainOrchestrator;
+
+    let orchestrator = CognitiveBrainOrchestrator::new();
+
+    // Allocate slices for multi-modal processing
+    let requests = vec![
+        ("vision".to_string(), 100, 10),  // Vision: 100 input, 10 output
+        ("text".to_string(), 50, 50),     // Text: 50 input, 50 output
+        ("math".to_string(), 30, 20),     // Math: 30 input, 20 output
+    ];
+
+    let slices = orchestrator.allocate_brain_slices(&requests);
+
+    // Verify allocation
+    assert_eq!(slices.len(), 3);
+
+    let vision = slices.get("vision").unwrap();
+    assert_eq!(vision.input_range, 0..100);
+    assert_eq!(vision.output_range, 0..10);
+
+    let text = slices.get("text").unwrap();
+    assert_eq!(text.input_range, 100..150);  // Continues from vision
+    assert_eq!(text.output_range, 10..60);
+
+    let math = slices.get("math").unwrap();
+    assert_eq!(math.input_range, 150..180);  // Continues from text
+    assert_eq!(math.output_range, 60..80);
+
+    // Verify totals
+    assert_eq!(CognitiveBrainOrchestrator::total_input_nodes(&slices), 180);
+    assert_eq!(CognitiveBrainOrchestrator::total_output_nodes(&slices), 80);
+}
+
+#[test]
+fn test_orchestrator_parallel_config() {
+    use grapheme_core::{CognitiveBrainOrchestrator, OrchestratorConfig};
+
+    // Default config enables parallel processing
+    let default_config = OrchestratorConfig::default();
+    assert!(default_config.enable_parallel);
+
+    // Custom config can disable parallel
+    let config = OrchestratorConfig {
+        confidence_threshold: 0.5,
+        auto_route: true,
+        max_brains_per_query: 3,
+        enable_parallel: false,
+    };
+    let orchestrator = CognitiveBrainOrchestrator::with_config(config);
+    assert!(!orchestrator.config.enable_parallel);
+}
+
+#[test]
+fn test_brain_role_enum() {
+    use grapheme_core::BrainRole;
+
+    // Verify enum variants exist and can be compared
+    let input = BrainRole::Input;
+    let output = BrainRole::Output;
+    let bidirectional = BrainRole::Bidirectional;
+
+    assert_eq!(input, BrainRole::Input);
+    assert_ne!(input, output);
+    assert_ne!(output, bidirectional);
 }
