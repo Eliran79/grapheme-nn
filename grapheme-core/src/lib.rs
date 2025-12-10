@@ -773,21 +773,21 @@ impl DagNN {
     }
 
     // ========================================================================
-    // Image Encoding (Backend-113: MNIST Cognitive Module)
+    // Image Encoding (Generic)
     // ========================================================================
 
     /// Build a DagNN from a grayscale image (pixel grid to graph)
     ///
     /// Encodes a 2D image as a directed acyclic graph with:
-    /// - 784 pixel nodes (28×28 for MNIST)
+    /// - width×height pixel nodes
     /// - Grid topology with 4-neighbor connections (up, down, left, right)
     /// - DAG ordering: row-major (top to bottom, left to right)
     /// - Edge weights initialized with Xavier initialization
     ///
     /// # Arguments
     /// * `pixels` - Row-major pixel values (0.0 to 1.0 normalized)
-    /// * `width` - Image width (28 for MNIST)
-    /// * `height` - Image height (28 for MNIST)
+    /// * `width` - Image width
+    /// * `height` - Image height
     ///
     /// # Returns
     /// A DagNN representing the image with grid topology
@@ -850,102 +850,11 @@ impl DagNN {
         Ok(dag)
     }
 
-    /// Build a DagNN for MNIST (28×28 grayscale image)
-    ///
-    /// Convenience method that calls from_image with MNIST dimensions.
-    ///
-    /// # Arguments
-    /// * `pixels` - 784 pixel values (0.0 to 1.0 normalized), row-major order
-    ///
-    /// # Returns
-    /// A DagNN representing the MNIST image
-    pub fn from_mnist(pixels: &[f32]) -> GraphemeResult<Self> {
-        if pixels.len() != 784 {
-            return Err(GraphemeError::DimensionMismatch(format!(
-                "MNIST requires exactly 784 pixels, got {}",
-                pixels.len()
-            )));
-        }
-        Self::from_image(pixels, 28, 28)
-    }
-
-    /// Build a DagNN from MNIST with classification output nodes
-    ///
-    /// Creates:
-    /// - 784 pixel input nodes (28×28)
-    /// - Hidden layer with configurable size
-    /// - 10 output nodes (one per digit class 0-9)
-    ///
-    /// # Arguments
-    /// * `pixels` - 784 pixel values (0.0 to 1.0 normalized)
-    /// * `hidden_size` - Number of hidden nodes
-    ///
-    /// # Returns
-    /// A DagNN ready for MNIST classification
-    pub fn from_mnist_with_classifier(
-        pixels: &[f32],
-        hidden_size: usize,
-    ) -> GraphemeResult<Self> {
-        let mut dag = Self::from_mnist(pixels)?;
-
-        // Add hidden layer with ReLU activation
-        let mut hidden_nodes = Vec::with_capacity(hidden_size);
-        for _ in 0..hidden_size {
-            let hidden = dag.add_hidden_with_activation(ActivationFn::ReLU);
-            hidden_nodes.push(hidden);
-        }
-
-        // Connect input nodes to hidden nodes with Xavier-initialized edges
-        // Each hidden node connects to a subset of inputs for efficiency
-        let inputs_per_hidden = (dag.input_nodes.len() / hidden_size).max(1);
-        for (h_idx, &hidden) in hidden_nodes.iter().enumerate() {
-            let start = (h_idx * inputs_per_hidden) % dag.input_nodes.len();
-            let end = ((h_idx + 1) * inputs_per_hidden).min(dag.input_nodes.len());
-
-            // Connect to local region of inputs
-            for input_idx in start..end {
-                let fan_in = inputs_per_hidden.max(1) as f32;
-                let fan_out = 10.0; // 10 output classes
-                let limit = (6.0 / (fan_in + fan_out)).sqrt();
-                let weight = rand::random::<f32>() * 2.0 * limit - limit;
-                dag.add_edge(
-                    dag.input_nodes[input_idx],
-                    hidden,
-                    Edge::new(weight, EdgeType::Sequential),
-                );
-            }
-        }
-
-        // Add 10 output nodes (one per digit class)
-        let mut class_outputs = Vec::with_capacity(10);
-        for class_idx in 0..10 {
-            let output = dag.graph.add_node(Node::class_output(class_idx));
-            dag.output_nodes.push(output);
-            class_outputs.push(output);
-        }
-
-        // Connect hidden nodes to output nodes
-        for &hidden in &hidden_nodes {
-            for &output in &class_outputs {
-                let fan_in = hidden_size as f32;
-                let fan_out = 1.0;
-                let limit = (6.0 / (fan_in + fan_out)).sqrt();
-                let weight = rand::random::<f32>() * 2.0 * limit - limit;
-                dag.add_edge(hidden, output, Edge::new(weight, EdgeType::Sequential));
-            }
-        }
-
-        // Update topology
-        dag.update_topology()?;
-
-        Ok(dag)
-    }
-
     /// Build a DagNN classifier with configurable input/hidden/output sizes.
     ///
-    /// This is the generic AGI-ready classifier builder that works with any
-    /// input dimension (not just 784 for MNIST). Use this for VisionGraph inputs
-    /// or any other variable-size input.
+    /// This is the generic classifier builder that works with any
+    /// input dimension. Use this for VisionGraph inputs or any other
+    /// variable-size input.
     ///
     /// # Arguments
     /// * `num_inputs` - Number of input nodes
@@ -8171,7 +8080,7 @@ pub fn create_cognitive_orchestrator() -> CognitiveBrainOrchestrator {
 }
 
 // ============================================================================
-// Classification Utilities (Backend-113: MNIST Cognitive Module)
+// Classification Utilities (Generic)
 // ============================================================================
 
 /// Softmax function for converting logits to probabilities
@@ -8283,7 +8192,7 @@ pub fn compute_accuracy(predictions: &[usize], targets: &[usize]) -> f32 {
     correct as f32 / predictions.len() as f32
 }
 
-/// Configuration for MNIST classification training
+/// Configuration for classification training
 #[derive(Debug, Clone)]
 pub struct ClassificationConfig {
     /// Learning rate for gradient descent
@@ -8381,7 +8290,7 @@ pub struct ClassificationStepResult {
 /// the expected output graph structure/activations for that class.
 #[derive(Debug, Clone)]
 pub struct ClassTemplate {
-    /// Class index (0-9 for MNIST)
+    /// Class index (e.g., 0-9 for 10-class classification)
     pub class_id: usize,
     /// Template activation pattern for output nodes
     /// This is the "ideal" output pattern for this class
@@ -12888,12 +12797,12 @@ mod tests {
     }
 
     #[test]
-    fn test_from_mnist_dimensions() {
-        // MNIST is 28x28 = 784 pixels
-        let pixels = vec![0.5_f32; 784];
-        let dag = DagNN::from_mnist(&pixels).unwrap();
+    fn test_from_image_dimensions() {
+        // Generic image test (10x10)
+        let pixels = vec![0.5_f32; 100];
+        let dag = DagNN::from_image(&pixels, 10, 10).unwrap();
 
-        assert_eq!(dag.input_nodes().len(), 784);
+        assert_eq!(dag.input_nodes().len(), 100);
 
         // Verify pixel intensities are set correctly
         for &node_id in dag.input_nodes() {
@@ -12903,22 +12812,23 @@ mod tests {
     }
 
     #[test]
-    fn test_from_mnist_wrong_size() {
-        let pixels = vec![0.5_f32; 100]; // Wrong size
-        let result = DagNN::from_mnist(&pixels);
+    fn test_from_image_wrong_size() {
+        let pixels = vec![0.5_f32; 100];
+        // Wrong dimensions (should be 10x10=100, not 8x8=64)
+        let result = DagNN::from_image(&pixels, 8, 8);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_from_mnist_with_classifier() {
-        let pixels = vec![0.1_f32; 784];
-        let dag = DagNN::from_mnist_with_classifier(&pixels, 64).unwrap();
+    fn test_with_classifier() {
+        let activations = vec![0.1_f32; 100];
+        let dag = DagNN::with_classifier(100, 32, 5, Some(&activations)).unwrap();
 
-        // Should have 784 input + 64 hidden + 10 output nodes
-        assert!(dag.node_count() > 784 + 64 + 10 - 1); // At least this many
+        // Should have 100 input + 32 hidden + 5 output nodes
+        assert!(dag.node_count() >= 100 + 32 + 5);
 
-        // Should have 10 output nodes
-        assert_eq!(dag.output_nodes().len(), 10);
+        // Should have 5 output nodes
+        assert_eq!(dag.output_nodes().len(), 5);
 
         // All output nodes should be ClassOutput type
         for &out_id in dag.output_nodes() {
@@ -12943,10 +12853,10 @@ mod tests {
     }
 
     #[test]
-    fn test_mnist_classification_forward() {
-        // Create a simple MNIST classifier and run forward pass
-        let pixels = vec![0.5_f32; 784];
-        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+    fn test_classification_forward() {
+        // Create a classifier with generic dimensions and run forward pass
+        let activations = vec![0.5_f32; 100];
+        let mut dag = DagNN::with_classifier(100, 32, 5, Some(&activations)).unwrap();
 
         // Run forward pass
         let result = dag.neuromorphic_forward();
@@ -12954,7 +12864,7 @@ mod tests {
 
         // Get logits
         let logits = dag.get_classification_logits();
-        assert_eq!(logits.len(), 10);
+        assert_eq!(logits.len(), 5);
 
         // All logits should be finite (not NaN or inf)
         for &logit in &logits {
@@ -12964,16 +12874,16 @@ mod tests {
 
     #[test]
     fn test_predict_class() {
-        let pixels = vec![0.5_f32; 784];
-        let mut dag = DagNN::from_mnist_with_classifier(&pixels, 32).unwrap();
+        let activations = vec![0.5_f32; 100];
+        let mut dag = DagNN::with_classifier(100, 32, 5, Some(&activations)).unwrap();
         dag.neuromorphic_forward().unwrap();
 
         let predicted = dag.predict_class();
-        assert!(predicted < 10); // Should be a valid class
+        assert!(predicted < 5); // Should be a valid class (0-4)
     }
 
     // ========================================================================
-    // Classification Utilities Tests (Backend-113)
+    // Classification Utilities Tests (Generic)
     // ========================================================================
 
     #[test]

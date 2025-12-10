@@ -162,7 +162,7 @@ fn train_epoch(
             let label = mnist.trn_lbl[sample_idx] as usize;
 
             // Create DAG from image
-            let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+            let mut dag = match DagNN::with_classifier(784, config.hidden_size, 10, Some(&pixels)) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Failed to create DAG: {}", e);
@@ -315,7 +315,7 @@ fn train_epoch_structural(
             let label = mnist.trn_lbl[sample_idx] as usize;
 
             // Create DAG from image
-            let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+            let mut dag = match DagNN::with_classifier(784, config.hidden_size, 10, Some(&pixels)) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Failed to create DAG: {}", e);
@@ -407,7 +407,7 @@ fn evaluate_structural(mnist: &Mnist, config: &ClassificationConfig, classifier:
         let label = mnist.tst_lbl[sample_idx] as usize;
 
         // Create DAG and run forward pass
-        let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+        let mut dag = match DagNN::with_classifier(784, config.hidden_size, 10, Some(&pixels)) {
             Ok(d) => d,
             Err(_) => continue,
         };
@@ -463,7 +463,7 @@ fn evaluate(mnist: &Mnist, config: &ClassificationConfig) -> (f32, f32) {
         let label = mnist.tst_lbl[sample_idx] as usize;
 
         // Create DAG and run forward pass
-        let mut dag = match DagNN::from_mnist_with_classifier(&pixels, config.hidden_size) {
+        let mut dag = match DagNN::with_classifier(784, config.hidden_size, 10, Some(&pixels)) {
             Ok(d) => d,
             Err(_) => continue,
         };
