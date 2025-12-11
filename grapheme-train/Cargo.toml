@@ -60,3 +60,7 @@ path = "src/bin/train_mnist.rs"
 [[bin]]
 name = "train_timeseries"
 path = "src/bin/train_timeseries.rs"
+
+[[bin]]
+name = "train_multitask"
+path = "src/bin/train_multitask.rs"
