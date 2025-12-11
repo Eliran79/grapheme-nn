@@ -1702,4 +1702,70 @@ cargo run -p grapheme-train --bin import_datasets -- \
 
 ---
 
+### backend-216: Pure Rust Parquet Dataset Pipeline
+
+**NO PYTHON** - Native Rust dataset loading with Apache Arrow/Parquet.
+
+**Dependencies Added** (grapheme-train/Cargo.toml):
+```toml
+parquet = "54.0"
+arrow = { version = "54.0", features = ["json"] }
+```
+
+**Supported Formats**:
+| Format | Source | Auto-Detection |
+|--------|--------|----------------|
+| `.parquet` | HuggingFace datasets | ✅ Primary |
+| `.jsonl` | OpenAI/Google formats | ✅ Fallback |
+
+**Current Knowledge Base Stats**:
+```
+╔════════════════════════════════════════════════╗
+║        CORTEX MESH KNOWLEDGE BASE              ║
+╠════════════════════════════════════════════════╣
+║  Total entries:                           8265 ║
+║  Avg question nodes:                     226.1 ║
+║  Avg answer nodes:                        17.0 ║
+╠════════════════════════════════════════════════╣
+║  By Cortex/Topic:                              ║
+║    • code_generation     :   664 entries       ║
+║    • math_word_problem   :  7473 entries       ║
+║    • synthetic (all)     :   128 entries       ║
+╚════════════════════════════════════════════════╝
+```
+
+**Datasets Loaded**:
+- **GSM8K** (7,473 entries): Grade school math word problems
+- **HumanEval** (164 entries): Python code generation tasks
+- **MBPP** (500 entries): Mostly Basic Python Problems
+
+**Usage - Load Parquet Directly**:
+```bash
+# Download datasets (parquet format)
+curl -L "https://huggingface.co/datasets/openai/openai_humaneval/resolve/main/openai_humaneval/test-00000-of-00001.parquet" -o datasets/external/humaneval.parquet
+curl -L "https://huggingface.co/datasets/google-research-datasets/mbpp/resolve/main/full/test-00000-of-00001.parquet" -o datasets/external/mbpp.parquet
+
+# Import all datasets
+cargo run --release -p grapheme-train --bin import_datasets -- \
+  --gsm8k datasets/external \
+  --code datasets/external \
+  --generate-synthetic \
+  --output checkpoints/cortex_mesh_kb.json \
+  --max-entries 10000 \
+  --verbose
+```
+
+**Test Retrieval Accuracy**:
+```bash
+# Math word problem (exact GSM8K match)
+agi_infer --input "Natalia sold clips to 48 friends in April..."
+# → 72 (100% similarity)
+
+# Code generation (synthetic match)
+agi_infer --input "Write a function to add two numbers"
+# → def add(a, b): return a + b (100% similarity)
+```
+
+---
+
 *"GRAPHEME: Where every character matters, every connection has meaning, and understanding emerges from structure."*
