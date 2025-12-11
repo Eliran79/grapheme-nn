@@ -1,7 +1,7 @@
 ---
 id: docs-003
 title: 'Document: Add P-time complexity requirement to all algorithm tasks'
-status: todo
+status: done
 priority: critical
 tags:
 - docs

@@ -1,7 +1,7 @@
 ---
 id: docs-002
 title: 'Document: Add MUST_READ_VISION.md requirement to all task templates'
-status: todo
+status: done
 priority: critical
 tags:
 - docs

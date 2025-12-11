@@ -7616,7 +7616,21 @@ pub enum DomainError {
 /// - Transformation rules for the domain
 /// - Validation and type checking
 /// - Training data generation
+///
+/// ## Multi-Modal Support (Brain Slicing)
+///
+/// For multi-modal processing, each brain "owns" a slice of the shared DagNN:
+/// - `input_node_count()` specifies how many input nodes this brain needs
+/// - `output_node_count()` specifies how many output nodes this brain needs
+/// - `write_inputs()` writes domain input to the brain's input slice
+/// - `read_outputs()` reads domain output from the brain's output slice
+///
+/// See GRAPHEME_Vision.md for full architecture documentation.
 pub trait DomainBrain: Send + Sync + std::fmt::Debug {
+    // ========================================================================
+    // Identity Methods
+    // ========================================================================
+
     /// Get the unique domain identifier (e.g., "math", "code", "law")
     fn domain_id(&self) -> &str;
 
@@ -7625,6 +7639,10 @@ pub trait DomainBrain: Send + Sync + std::fmt::Debug {
 
     /// Get the version of this brain
     fn version(&self) -> &str;
+
+    // ========================================================================
+    // Processing Methods
+    // ========================================================================
 
     /// Check if this brain can process the given input
     fn can_process(&self, input: &str) -> bool;
@@ -7653,6 +7671,58 @@ pub trait DomainBrain: Send + Sync + std::fmt::Debug {
 
     /// Generate training examples for this domain
     fn generate_examples(&self, count: usize) -> Vec<DomainExample>;
+
+    // ========================================================================
+    // Multi-Modal / Brain Slicing Methods (GRAPHEME_Vision.md spec)
+    // ========================================================================
+
+    /// How many input nodes does this brain need?
+    ///
+    /// For multi-modal processing, each brain requests a slice of the shared
+    /// DagNN's input nodes. Default: 0 (brain doesn't provide input).
+    fn input_node_count(&self) -> usize {
+        0
+    }
+
+    /// How many output nodes does this brain need?
+    ///
+    /// For multi-modal processing, each brain requests a slice of the shared
+    /// DagNN's output nodes. Default: 0 (brain doesn't consume output).
+    fn output_node_count(&self) -> usize {
+        0
+    }
+
+    /// Write domain input to DagNN input nodes.
+    ///
+    /// Called by the orchestrator when this brain is used as an input provider.
+    /// The brain writes activations to nodes in `slice.input_range`.
+    ///
+    /// Default: no-op (override for input-providing brains)
+    fn write_inputs(&self, _input: &str, _dag: &mut DagNN, _slice: &BrainSlice) {
+        // Default: no-op
+    }
+
+    /// Read domain output from DagNN output nodes.
+    ///
+    /// Called by the orchestrator when this brain is used as an output consumer.
+    /// The brain reads activations from nodes in `slice.output_range`.
+    ///
+    /// Default: returns empty string (override for output-consuming brains)
+    fn read_outputs(&self, _dag: &DagNN, _slice: &BrainSlice) -> String {
+        String::new()
+    }
+
+    /// Get the brain's role in multi-modal processing.
+    ///
+    /// Default: determined by input/output node counts.
+    fn brain_role(&self) -> BrainRole {
+        match (self.input_node_count(), self.output_node_count()) {
+            (0, 0) => BrainRole::Input, // Default to input if no counts specified
+            (i, 0) if i > 0 => BrainRole::Input,
+            (0, o) if o > 0 => BrainRole::Output,
+            _ => BrainRole::Bidirectional,
+        }
+    }
 }
 
 /// Validation issue found in a domain graph
@@ -13966,5 +14036,186 @@ mod tests {
             initial_weight,
             new_weight
         );
+    }
+
+    // ========================================================================
+    // DomainBrain Multi-Modal Tests
+    // ========================================================================
+
+    /// Mock brain for testing multi-modal features
+    #[derive(Debug)]
+    struct MockInputBrain {
+        id: String,
+        input_nodes: usize,
+        output_nodes: usize,
+    }
+
+    impl MockInputBrain {
+        fn new(id: &str, input_nodes: usize, output_nodes: usize) -> Self {
+            Self {
+                id: id.to_string(),
+                input_nodes,
+                output_nodes,
+            }
+        }
+    }
+
+    impl DomainBrain for MockInputBrain {
+        fn domain_id(&self) -> &str { &self.id }
+        fn domain_name(&self) -> &str { &self.id }
+        fn version(&self) -> &str { "1.0" }
+        fn can_process(&self, _input: &str) -> bool { true }
+        fn parse(&self, _input: &str) -> DomainResult<DagNN> {
+            Ok(DagNN::default())
+        }
+        fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+            Ok(graph.clone())
+        }
+        fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+            Ok(graph.clone())
+        }
+        fn validate(&self, _graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
+            Ok(vec![])
+        }
+        fn execute(&self, _graph: &DagNN) -> DomainResult<ExecutionResult> {
+            Ok(ExecutionResult::Unit)
+        }
+        fn get_rules(&self) -> Vec<DomainRule> { vec![] }
+        fn transform(&self, graph: &DagNN, _rule_id: usize) -> DomainResult<DagNN> {
+            Ok(graph.clone())
+        }
+        fn generate_examples(&self, _count: usize) -> Vec<DomainExample> { vec![] }
+
+        // Multi-modal overrides
+        fn input_node_count(&self) -> usize { self.input_nodes }
+        fn output_node_count(&self) -> usize { self.output_nodes }
+
+        fn write_inputs(&self, input: &str, dag: &mut DagNN, slice: &BrainSlice) {
+            // Write input length as activation to nodes in slice
+            if !slice.input_range.is_empty() {
+                let activation = input.len() as f32 / 100.0;
+                for i in slice.input_range.clone() {
+                    let indices: Vec<_> = dag.graph.node_indices().collect();
+                    if i < indices.len() {
+                        dag.graph[indices[i]].activation = activation;
+                    }
+                }
+            }
+        }
+
+        fn read_outputs(&self, dag: &DagNN, slice: &BrainSlice) -> String {
+            // Read activations from output slice and sum them
+            let mut sum = 0.0f32;
+            let indices: Vec<_> = dag.graph.node_indices().collect();
+            for i in slice.output_range.clone() {
+                if i < indices.len() {
+                    sum += dag.graph[indices[i]].activation;
+                }
+            }
+            format!("sum:{:.2}", sum)
+        }
+    }
+
+    #[test]
+    fn test_domain_brain_input_node_count() {
+        let brain = MockInputBrain::new("test", 100, 10);
+        assert_eq!(brain.input_node_count(), 100);
+        assert_eq!(brain.output_node_count(), 10);
+    }
+
+    #[test]
+    fn test_domain_brain_role() {
+        // Input-only brain
+        let input_brain = MockInputBrain::new("input", 100, 0);
+        assert_eq!(input_brain.brain_role(), BrainRole::Input);
+
+        // Output-only brain
+        let output_brain = MockInputBrain::new("output", 0, 50);
+        assert_eq!(output_brain.brain_role(), BrainRole::Output);
+
+        // Bidirectional brain
+        let bi_brain = MockInputBrain::new("bidirectional", 100, 50);
+        assert_eq!(bi_brain.brain_role(), BrainRole::Bidirectional);
+
+        // Default (no slicing specified)
+        let default_brain = MockInputBrain::new("default", 0, 0);
+        assert_eq!(default_brain.brain_role(), BrainRole::Input);
+    }
+
+    #[test]
+    fn test_domain_brain_write_inputs() {
+        let brain = MockInputBrain::new("test", 5, 0);
+        let mut dag = DagNN::default();
+
+        // Add nodes to DagNN
+        for _ in 0..10 {
+            dag.graph.add_node(Node::hidden());
+        }
+
+        let slice = BrainSlice::new("test", 0..5, 0..0);
+
+        // Write inputs
+        brain.write_inputs("Hello, World!", &mut dag, &slice);
+
+        // Check activations were set (length 13 / 100 = 0.13)
+        let expected = 13.0 / 100.0;
+        let indices: Vec<_> = dag.graph.node_indices().collect();
+        for (i, &idx) in indices.iter().enumerate().take(5) {
+            let act = dag.graph[idx].activation;
+            assert!((act - expected).abs() < 0.01, "Node {} activation: {}", i, act);
+        }
+    }
+
+    #[test]
+    fn test_domain_brain_read_outputs() {
+        let brain = MockInputBrain::new("test", 0, 5);
+        let mut dag = DagNN::default();
+
+        // Add nodes and set activations
+        for i in 0..10 {
+            let idx = dag.graph.add_node(Node::hidden());
+            dag.graph[idx].activation = i as f32 * 0.1;
+        }
+
+        let slice = BrainSlice::new("test", 0..0, 0..5);
+
+        // Read outputs (sum of nodes 0-4: 0 + 0.1 + 0.2 + 0.3 + 0.4 = 1.0)
+        let result = brain.read_outputs(&dag, &slice);
+        assert_eq!(result, "sum:1.00");
+    }
+
+    #[test]
+    fn test_brain_slice_integration() {
+        // Test full multi-modal workflow
+        let input_brain = MockInputBrain::new("vision", 100, 0);
+        let output_brain = MockInputBrain::new("text", 0, 10);
+
+        let mut dag = DagNN::default();
+
+        // Add nodes (100 input + 10 output + some hidden)
+        for _ in 0..150 {
+            dag.graph.add_node(Node::hidden());
+        }
+
+        // Allocate slices
+        let vision_slice = BrainSlice::new("vision", 0..100, 0..0);
+        let text_slice = BrainSlice::new("text", 0..0, 100..110);
+
+        // Write input
+        input_brain.write_inputs("Test image data", &mut dag, &vision_slice);
+
+        // Check vision slice has activations
+        let indices: Vec<_> = dag.graph.node_indices().collect();
+        let vis_act = dag.graph[indices[0]].activation;
+        assert!(vis_act > 0.0, "Vision nodes should have activation");
+
+        // Simulate forward pass - just set output node activations
+        for &idx in indices.iter().skip(100).take(10) {
+            dag.graph[idx].activation = 0.5;
+        }
+
+        // Read output
+        let output = output_brain.read_outputs(&dag, &text_slice);
+        assert_eq!(output, "sum:5.00"); // 10 nodes * 0.5 = 5.0
     }
 }
