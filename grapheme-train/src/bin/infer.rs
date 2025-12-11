@@ -12,6 +12,7 @@
 
 use clap::Parser;
 use grapheme_core::{EncoderDecoder, GraphemeGraph, GraphTransformNet, UnifiedCheckpoint};
+use grapheme_train::cortex_mesh::init_parallel;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -122,14 +123,24 @@ fn infer_encoder_decoder(model: &mut EncoderDecoder, question: &str, verbose: bo
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Initialize parallel CPU by default
+    let num_threads = init_parallel(0);
+
     println!("GRAPHEME Inference");
-    println!("====================\n");
+    println!("====================");
+    println!("Parallel CPU: {} threads\n", num_threads);
 
     // Load model
     println!("Loading model from: {:?}", args.model);
 
-    let checkpoint = UnifiedCheckpoint::load_from_file(&args.model)
-        .map_err(|e| anyhow::anyhow!("Failed to parse checkpoint: {}", e))?;
+    // Try direct model loading first (train_unified_code format), fallback to UnifiedCheckpoint
+    let direct_model = GraphTransformNet::load_from_file(&args.model);
+    let checkpoint = if direct_model.is_err() {
+        Some(UnifiedCheckpoint::load_from_file(&args.model)
+            .map_err(|e| anyhow::anyhow!("Failed to parse checkpoint: {}", e))?)
+    } else {
+        None
+    };
 
     // Get question
     let question = if let Some(q) = args.question {
@@ -150,8 +161,12 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(50));
 
     if args.encoder_decoder {
-        // Try to load EncoderDecoder
-        match checkpoint.load_module::<EncoderDecoder>() {
+        // Try to load EncoderDecoder - requires checkpoint format
+        let cp = checkpoint.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("EncoderDecoder requires checkpoint format (not direct model format)")
+        })?;
+
+        match cp.load_module::<EncoderDecoder>() {
             Ok(mut model) => {
                 println!("Loaded EncoderDecoder model");
                 infer_encoder_decoder(&mut model, &question, args.verbose);
@@ -161,7 +176,7 @@ fn main() -> anyhow::Result<()> {
                 println!("Falling back to GraphTransformNet...");
 
                 // Fallback to GraphTransformNet
-                match checkpoint.load_module::<GraphTransformNet>() {
+                match cp.load_module::<GraphTransformNet>() {
                     Ok(model) => {
                         println!("Loaded GraphTransformNet (fallback)");
                         println!("Model: {} hidden dim, {} layers",
@@ -179,19 +194,21 @@ fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        // Load GraphTransformNet (default)
-        match checkpoint.load_module::<GraphTransformNet>() {
-            Ok(model) => {
-                println!("Loaded GraphTransformNet");
-                println!("Model: {} hidden dim, {} layers\n",
-                    model.hidden_dim,
-                    model.mp_layers.len());
-                infer_transform_net(&model, &question, args.verbose);
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to load GraphTransformNet: {}", e));
-            }
-        }
+        // Load GraphTransformNet (default) - try direct model first, then checkpoint
+        let model = if let Ok(m) = direct_model {
+            println!("Loaded GraphTransformNet (direct format)");
+            m
+        } else if let Some(ref cp) = checkpoint {
+            cp.load_module::<GraphTransformNet>()
+                .map_err(|e| anyhow::anyhow!("Failed to load GraphTransformNet: {}", e))?
+        } else {
+            return Err(anyhow::anyhow!("No model loaded"));
+        };
+
+        println!("Model: {} hidden dim, {} layers\n",
+            model.hidden_dim,
+            model.mp_layers.len());
+        infer_transform_net(&model, &question, args.verbose);
     }
 
     Ok(())

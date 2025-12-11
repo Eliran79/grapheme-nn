@@ -23,7 +23,7 @@ grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }
 grapheme-core = { path = "../grapheme-core" }
-grapheme-code = { path = "../grapheme-code" }
+grapheme-code = { path = "../grapheme-code", features = ["tree-sitter-parsing"] }
 grapheme-law = { path = "../grapheme-law" }
 grapheme-music = { path = "../grapheme-music" }
 grapheme-chem = { path = "../grapheme-chem" }
@@ -34,6 +34,11 @@ grapheme-safety = { path = "../grapheme-safety" }
 grapheme-memory = { path = "../grapheme-memory" }
 grapheme-meta = { path = "../grapheme-meta" }
 grapheme-reason = { path = "../grapheme-reason" }
+grapheme-ground = { path = "../grapheme-ground" }
+grapheme-world = { path = "../grapheme-world" }
+grapheme-agent = { path = "../grapheme-agent" }
+grapheme-multimodal = { path = "../grapheme-multimodal" }
+grapheme-parallel = { path = "../grapheme-parallel" }
 regex = "1.10"
 ureq = { version = "2.9", features = ["native-tls"] }
 parquet = "54.0"
@@ -105,3 +110,39 @@ path = "src/bin/build_kb.rs"
 [[bin]]
 name = "import_datasets"
 path = "src/bin/import_datasets.rs"
+
+[[bin]]
+name = "generate_code_training"
+path = "src/bin/generate_code_training.rs"
+
+[[bin]]
+name = "train_code"
+path = "src/bin/train_code.rs"
+
+[[bin]]
+name = "train_code_gen"
+path = "src/bin/train_code_gen.rs"
+
+[[bin]]
+name = "train_code_graph"
+path = "src/bin/train_code_graph.rs"
+
+[[bin]]
+name = "train_unified_code"
+path = "src/bin/train_unified_code.rs"
+
+[[bin]]
+name = "eval_humaneval"
+path = "src/bin/eval_humaneval.rs"
+
+[[bin]]
+name = "train_ast_code"
+path = "src/bin/train_ast_code.rs"
+
+[[bin]]
+name = "train_ast_gen"
+path = "src/bin/train_ast_gen.rs"
+
+[[bin]]
+name = "train_cortex_mesh"
+path = "src/bin/train_cortex_mesh.rs"

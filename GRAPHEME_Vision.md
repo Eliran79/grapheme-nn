@@ -1028,6 +1028,68 @@ cargo run --release -p grapheme-train --bin train_online -- \
     --max-level 7
 ```
 
+### CortexMesh - Full AGI Training with Auto-Discovery
+
+CortexMesh provides a unified architecture for training with ALL cognitive components meshed together with automatic parallel processing. It auto-discovers all registered brains and router modules at compile time.
+
+```rust
+use grapheme_train::cortex_mesh::{CortexMesh, MeshConfig, init_parallel};
+
+// Auto-discover and mesh ALL components (parallel init is automatic)
+let mut mesh = CortexMesh::discover();
+println!("Discovered {} brains", mesh.brain_count());
+
+// Or with custom configuration
+let config = MeshConfig {
+    activation_threshold: 0.2,  // Lower = more brains active
+    max_active_brains: usize::MAX,
+    parallel: true,
+    hidden_dim: 256,
+    num_layers: 6,
+    vocab_size: 256,
+    embed_dim: 64,
+};
+let mut mesh = CortexMesh::discover_with_config(config);
+
+// Process with ALL brains in parallel
+let result = mesh.process_parallel("def add(a, b): return a + b");
+println!("Active brains: {:?}", result.active_brains);
+
+// Train step with structural loss
+let loss = mesh.train_step("input", "target", learning_rate);
+```
+
+**Auto-Discovered Brains** (compile-time):
+- `math` - MathBrain for mathematical expressions
+- `code` - CodeBrain for programming languages
+- `vision` - VisionBrain for image processing
+- `classification` - ClassificationBrain for categorization
+- `law` - LawBrain for legal text
+- `music` - MusicBrain for musical notation
+- `chem` - ChemBrain for chemistry
+- `time` - TimeBrain for time series
+
+**Parallel Processing**:
+```rust
+// Initialize parallel (0 = auto-detect all CPU cores)
+let num_threads = init_parallel(0);  // Called automatically by CortexMesh
+
+// Or specify thread count
+init_parallel(8);  // Use exactly 8 threads
+```
+
+**Binary**: `train_cortex_mesh` provides CLI for full AGI training:
+```bash
+cargo run --release -p grapheme-train --bin train_cortex_mesh -- \
+    --data data/training \
+    --output checkpoints/cortex_mesh.json \
+    --epochs 100 \
+    --batch-size 16 \
+    --lr 0.001 \
+    --activation-threshold 0.2 \
+    --workers 0  # 0 = auto-detect CPU cores
+```
+
 ### Web Learning (backend-170)
 
 GRAPHEME can learn directly from web content using the `web_fetcher` and `train_from_web` modules:
