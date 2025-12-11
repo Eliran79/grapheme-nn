@@ -5457,3 +5457,1013 @@ mod transfer_tests {
         assert_eq!(ids.len(), 2);
     }
 }
+
+// ============================================================================
+// CausalReasoning: Graph-based cause-effect inference (P-time algorithms)
+// ============================================================================
+
+/// Represents a causal event (cause or effect)
+#[derive(Debug, Clone, PartialEq)]
+pub struct CausalEvent {
+    /// Unique identifier
+    pub id: String,
+    /// Human-readable description
+    pub description: String,
+    /// Timestamp when event occurred (simulation time)
+    pub timestamp: u64,
+    /// Confidence that this event actually occurred
+    pub confidence: f32,
+    /// Associated data/features
+    pub features: Vec<f32>,
+}
+
+impl CausalEvent {
+    /// Create a new causal event
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+            timestamp: 0,
+            confidence: 1.0,
+            features: Vec::new(),
+        }
+    }
+
+    /// Create event with timestamp
+    pub fn with_timestamp(mut self, timestamp: u64) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
+
+    /// Create event with confidence
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = confidence.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Create event with features
+    pub fn with_features(mut self, features: Vec<f32>) -> Self {
+        self.features = features;
+        self
+    }
+}
+
+/// A causal link between two events (cause -> effect)
+#[derive(Debug, Clone, PartialEq)]
+pub struct CausalLink {
+    /// ID of the cause event
+    pub cause_id: String,
+    /// ID of the effect event
+    pub effect_id: String,
+    /// Strength of the causal relationship [0, 1]
+    pub strength: f32,
+    /// Delay between cause and effect (in time units)
+    pub delay: u64,
+    /// How many times this link has been observed
+    pub observation_count: u64,
+    /// Type of causal relationship
+    pub link_type: CausalLinkType,
+}
+
+impl CausalLink {
+    /// Create a new causal link
+    pub fn new(cause_id: impl Into<String>, effect_id: impl Into<String>, strength: f32) -> Self {
+        Self {
+            cause_id: cause_id.into(),
+            effect_id: effect_id.into(),
+            strength: strength.clamp(0.0, 1.0),
+            delay: 0,
+            observation_count: 1,
+            link_type: CausalLinkType::Direct,
+        }
+    }
+
+    /// Set the delay
+    pub fn with_delay(mut self, delay: u64) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    /// Set the link type
+    pub fn with_type(mut self, link_type: CausalLinkType) -> Self {
+        self.link_type = link_type;
+        self
+    }
+
+    /// Check if this link is statistically significant
+    pub fn is_significant(&self) -> bool {
+        self.strength >= 0.5 && self.observation_count >= 3
+    }
+
+    /// Update strength based on new observation
+    pub fn update_strength(&mut self, new_observation: f32) {
+        // Exponential moving average
+        let alpha = 0.3;
+        self.strength = alpha * new_observation + (1.0 - alpha) * self.strength;
+        self.observation_count += 1;
+    }
+}
+
+/// Types of causal relationships
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CausalLinkType {
+    /// A directly causes B
+    #[default]
+    Direct,
+    /// A and B have a common cause
+    CommonCause,
+    /// A indirectly causes B through intermediaries
+    Indirect,
+    /// Statistical association without clear direction
+    Association,
+    /// Bidirectional causation
+    Bidirectional,
+}
+
+/// Result of a causal inference query
+#[derive(Debug, Clone)]
+pub struct CausalInference {
+    /// The query that was asked
+    pub query: String,
+    /// Events in the causal chain
+    pub chain: Vec<String>,
+    /// Overall confidence in the inference
+    pub confidence: f32,
+    /// Explanation of the reasoning
+    pub explanation: String,
+    /// Alternative explanations considered
+    pub alternatives: Vec<String>,
+}
+
+impl CausalInference {
+    /// Create a new inference result
+    pub fn new(query: impl Into<String>, chain: Vec<String>, confidence: f32) -> Self {
+        Self {
+            query: query.into(),
+            chain,
+            confidence: confidence.clamp(0.0, 1.0),
+            explanation: String::new(),
+            alternatives: Vec::new(),
+        }
+    }
+
+    /// Check if inference is reliable
+    pub fn is_reliable(&self) -> bool {
+        self.confidence >= 0.7 && !self.chain.is_empty()
+    }
+
+    /// Add explanation
+    pub fn with_explanation(mut self, explanation: impl Into<String>) -> Self {
+        self.explanation = explanation.into();
+        self
+    }
+}
+
+/// Configuration for causal reasoning
+#[derive(Debug, Clone)]
+pub struct CausalConfig {
+    /// Minimum strength to consider a link valid
+    pub min_link_strength: f32,
+    /// Maximum chain length to search
+    pub max_chain_length: usize,
+    /// Minimum observations for statistical significance
+    pub min_observations: u64,
+    /// Whether to consider indirect effects
+    pub include_indirect: bool,
+    /// Decay factor for confidence over chain length
+    pub chain_decay: f32,
+}
+
+impl Default for CausalConfig {
+    fn default() -> Self {
+        Self {
+            min_link_strength: 0.3,
+            max_chain_length: 5,
+            min_observations: 2,
+            include_indirect: true,
+            chain_decay: 0.9,
+        }
+    }
+}
+
+/// Statistics for causal reasoning operations
+#[derive(Debug, Clone, Default)]
+pub struct CausalStats {
+    /// Total queries performed
+    pub queries_performed: u64,
+    /// Successful inferences
+    pub successful_inferences: u64,
+    /// Failed inferences
+    pub failed_inferences: u64,
+    /// Links discovered
+    pub links_discovered: u64,
+    /// Average chain length
+    pub avg_chain_length: f32,
+}
+
+impl CausalStats {
+    /// Record a query result
+    pub fn record_query(&mut self, success: bool, chain_length: usize) {
+        self.queries_performed += 1;
+        if success {
+            self.successful_inferences += 1;
+            // Update running average
+            let n = self.successful_inferences as f32;
+            self.avg_chain_length = ((n - 1.0) * self.avg_chain_length + chain_length as f32) / n;
+        } else {
+            self.failed_inferences += 1;
+        }
+    }
+
+    /// Success rate
+    pub fn success_rate(&self) -> f32 {
+        if self.queries_performed == 0 {
+            0.0
+        } else {
+            self.successful_inferences as f32 / self.queries_performed as f32
+        }
+    }
+}
+
+/// Main causal reasoning engine
+/// Uses P-time graph algorithms (BFS, topological sort)
+#[derive(Debug)]
+pub struct CausalReasoning {
+    /// Configuration
+    pub config: CausalConfig,
+    /// Registered events
+    events: std::collections::HashMap<String, CausalEvent>,
+    /// Causal links (adjacency list: cause_id -> effects)
+    links: std::collections::HashMap<String, Vec<CausalLink>>,
+    /// Reverse links for backward inference (effect_id -> causes)
+    reverse_links: std::collections::HashMap<String, Vec<String>>,
+    /// Statistics
+    pub stats: CausalStats,
+}
+
+impl CausalReasoning {
+    /// Create a new causal reasoning engine
+    pub fn new() -> Self {
+        Self {
+            config: CausalConfig::default(),
+            events: std::collections::HashMap::new(),
+            links: std::collections::HashMap::new(),
+            reverse_links: std::collections::HashMap::new(),
+            stats: CausalStats::default(),
+        }
+    }
+
+    /// Create with custom config
+    pub fn with_config(config: CausalConfig) -> Self {
+        Self {
+            config,
+            events: std::collections::HashMap::new(),
+            links: std::collections::HashMap::new(),
+            reverse_links: std::collections::HashMap::new(),
+            stats: CausalStats::default(),
+        }
+    }
+
+    /// Register a causal event
+    pub fn register_event(&mut self, event: CausalEvent) {
+        self.events.insert(event.id.clone(), event);
+    }
+
+    /// Get an event by ID
+    pub fn get_event(&self, id: &str) -> Option<&CausalEvent> {
+        self.events.get(id)
+    }
+
+    /// Add a causal link between events
+    pub fn add_link(&mut self, link: CausalLink) -> bool {
+        // Verify both events exist
+        if !self.events.contains_key(&link.cause_id) ||
+           !self.events.contains_key(&link.effect_id) {
+            return false;
+        }
+
+        // Add to forward links
+        self.links
+            .entry(link.cause_id.clone())
+            .or_default()
+            .push(link.clone());
+
+        // Add to reverse links
+        self.reverse_links
+            .entry(link.effect_id.clone())
+            .or_default()
+            .push(link.cause_id.clone());
+
+        self.stats.links_discovered += 1;
+        true
+    }
+
+    /// Observe a causal relationship (updates existing or creates new)
+    pub fn observe(&mut self, cause_id: &str, effect_id: &str, strength: f32) -> bool {
+        if !self.events.contains_key(cause_id) || !self.events.contains_key(effect_id) {
+            return false;
+        }
+
+        // Check if link exists
+        if let Some(links) = self.links.get_mut(cause_id) {
+            for link in links.iter_mut() {
+                if link.effect_id == effect_id {
+                    link.update_strength(strength);
+                    return true;
+                }
+            }
+        }
+
+        // Create new link
+        let link = CausalLink::new(cause_id, effect_id, strength);
+        self.add_link(link)
+    }
+
+    /// Get direct effects of an event
+    pub fn get_effects(&self, cause_id: &str) -> Vec<&CausalLink> {
+        self.links
+            .get(cause_id)
+            .map(|links| links.iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get direct causes of an event
+    pub fn get_causes(&self, effect_id: &str) -> Vec<&str> {
+        self.reverse_links
+            .get(effect_id)
+            .map(|causes| causes.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Find causal chain from cause to effect using BFS (P-time: O(V + E))
+    pub fn find_chain(&mut self, cause_id: &str, effect_id: &str) -> Option<CausalInference> {
+        if !self.events.contains_key(cause_id) || !self.events.contains_key(effect_id) {
+            self.stats.record_query(false, 0);
+            return None;
+        }
+
+        // BFS to find shortest causal path
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut parent: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        queue.push_back(cause_id.to_string());
+        visited.insert(cause_id.to_string());
+
+        while let Some(current) = queue.pop_front() {
+            if current == effect_id {
+                // Reconstruct path
+                let chain = self.reconstruct_path(&parent, cause_id, effect_id);
+                let confidence = self.calculate_chain_confidence(&chain);
+                let inference = CausalInference::new(
+                    format!("Does {} cause {}?", cause_id, effect_id),
+                    chain.clone(),
+                    confidence,
+                ).with_explanation(format!(
+                    "Found causal chain of length {} with confidence {:.2}",
+                    chain.len(), confidence
+                ));
+                self.stats.record_query(true, chain.len());
+                return Some(inference);
+            }
+
+            if visited.len() >= self.config.max_chain_length {
+                break;
+            }
+
+            // Explore effects
+            if let Some(links) = self.links.get(&current) {
+                for link in links {
+                    if link.strength >= self.config.min_link_strength &&
+                       !visited.contains(&link.effect_id) {
+                        visited.insert(link.effect_id.clone());
+                        parent.insert(link.effect_id.clone(), current.clone());
+                        queue.push_back(link.effect_id.clone());
+                    }
+                }
+            }
+        }
+
+        self.stats.record_query(false, 0);
+        None
+    }
+
+    /// Reconstruct path from parent map
+    fn reconstruct_path(
+        &self,
+        parent: &std::collections::HashMap<String, String>,
+        start: &str,
+        end: &str,
+    ) -> Vec<String> {
+        let mut path = vec![end.to_string()];
+        let mut current = end.to_string();
+
+        while current != start {
+            if let Some(p) = parent.get(&current) {
+                path.push(p.clone());
+                current = p.clone();
+            } else {
+                break;
+            }
+        }
+
+        path.reverse();
+        path
+    }
+
+    /// Calculate confidence of a causal chain
+    fn calculate_chain_confidence(&self, chain: &[String]) -> f32 {
+        if chain.len() < 2 {
+            return 0.0;
+        }
+
+        let mut confidence = 1.0;
+
+        for i in 0..chain.len() - 1 {
+            if let Some(links) = self.links.get(&chain[i]) {
+                for link in links {
+                    if link.effect_id == chain[i + 1] {
+                        confidence *= link.strength * self.config.chain_decay;
+                        break;
+                    }
+                }
+            }
+        }
+
+        confidence
+    }
+
+    /// Find all effects reachable from a cause (P-time: O(V + E))
+    pub fn find_all_effects(&self, cause_id: &str) -> Vec<String> {
+        let mut visited = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        queue.push_back(cause_id.to_string());
+        visited.insert(cause_id.to_string());
+
+        while let Some(current) = queue.pop_front() {
+            if current != cause_id {
+                result.push(current.clone());
+            }
+
+            if let Some(links) = self.links.get(&current) {
+                for link in links {
+                    if !visited.contains(&link.effect_id) {
+                        visited.insert(link.effect_id.clone());
+                        queue.push_back(link.effect_id.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Find root causes of an effect (P-time: O(V + E))
+    pub fn find_root_causes(&self, effect_id: &str) -> Vec<String> {
+        let mut visited = std::collections::HashSet::new();
+        let mut roots = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        queue.push_back(effect_id.to_string());
+        visited.insert(effect_id.to_string());
+
+        while let Some(current) = queue.pop_front() {
+            let causes = self.get_causes(&current);
+
+            if causes.is_empty() && current != effect_id {
+                roots.push(current);
+            } else {
+                for cause in causes {
+                    if !visited.contains(cause) {
+                        visited.insert(cause.to_string());
+                        queue.push_back(cause.to_string());
+                    }
+                }
+            }
+        }
+
+        roots
+    }
+
+    /// Infer causal strength from data (correlation-based, P-time)
+    pub fn infer_strength(&self, cause: &CausalEvent, effect: &CausalEvent) -> f32 {
+        if cause.features.is_empty() || effect.features.is_empty() {
+            // Use timestamp-based inference
+            if cause.timestamp < effect.timestamp {
+                // Cause precedes effect - base confidence
+                0.5 * cause.confidence * effect.confidence
+            } else {
+                0.0
+            }
+        } else {
+            // Feature correlation (simplified Pearson)
+            let min_len = cause.features.len().min(effect.features.len());
+            if min_len == 0 {
+                return 0.0;
+            }
+
+            let sum_product: f32 = cause.features.iter()
+                .zip(effect.features.iter())
+                .take(min_len)
+                .map(|(a, b)| a * b)
+                .sum();
+
+            let mag_cause: f32 = cause.features.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+            let mag_effect: f32 = effect.features.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+
+            if mag_cause == 0.0 || mag_effect == 0.0 {
+                0.0
+            } else {
+                // Convert cosine similarity to [0, 1] strength
+                let cosine = sum_product / (mag_cause * mag_effect);
+                ((cosine + 1.0) / 2.0).clamp(0.0, 1.0)
+            }
+        }
+    }
+
+    /// Get counterfactual: "If not A, would B happen?"
+    pub fn counterfactual(&mut self, cause_id: &str, effect_id: &str) -> CausalInference {
+        // Check if there's a direct path
+        if let Some(inference) = self.find_chain(cause_id, effect_id) {
+            // Check for alternative causes
+            let other_causes: Vec<_> = self.get_causes(effect_id)
+                .into_iter()
+                .filter(|c| *c != cause_id)
+                .collect();
+
+            let mut result = CausalInference::new(
+                format!("If not {}, would {} still happen?", cause_id, effect_id),
+                inference.chain,
+                1.0 - inference.confidence,
+            );
+
+            if other_causes.is_empty() {
+                result.explanation = format!(
+                    "{} is the only known cause of {}. Without it, {} likely would not occur.",
+                    cause_id, effect_id, effect_id
+                );
+            } else {
+                result.explanation = format!(
+                    "{} could still occur through alternative causes: {:?}",
+                    effect_id, other_causes
+                );
+                result.alternatives = other_causes.iter().map(|s| s.to_string()).collect();
+                result.confidence = 0.5; // Uncertain
+            }
+
+            result
+        } else {
+            CausalInference::new(
+                format!("If not {}, would {} still happen?", cause_id, effect_id),
+                vec![],
+                1.0, // High confidence B would still happen (no causal link)
+            ).with_explanation(format!(
+                "No causal link found between {} and {}. {} is independent.",
+                cause_id, effect_id, effect_id
+            ))
+        }
+    }
+
+    /// Get intervention analysis: "What happens if we force A?"
+    pub fn intervention(&self, cause_id: &str) -> Vec<(String, f32)> {
+        let effects = self.find_all_effects(cause_id);
+        let mut result = Vec::new();
+
+        for effect_id in effects {
+            // Calculate cumulative effect strength
+            let strength = self.calculate_intervention_strength(cause_id, &effect_id);
+            result.push((effect_id, strength));
+        }
+
+        // Sort by strength descending
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        result
+    }
+
+    /// Calculate intervention strength (how much forcing cause affects effect)
+    fn calculate_intervention_strength(&self, cause_id: &str, effect_id: &str) -> f32 {
+        // Use direct link strength if available
+        if let Some(links) = self.links.get(cause_id) {
+            for link in links {
+                if link.effect_id == effect_id {
+                    return link.strength;
+                }
+            }
+        }
+
+        // Otherwise estimate from path
+        let mut visited = std::collections::HashSet::new();
+        let mut max_strength = 0.0f32;
+
+        self.dfs_strength(cause_id, effect_id, 1.0, &mut visited, &mut max_strength);
+        max_strength
+    }
+
+    /// DFS to find maximum strength path
+    fn dfs_strength(
+        &self,
+        current: &str,
+        target: &str,
+        current_strength: f32,
+        visited: &mut std::collections::HashSet<String>,
+        max_strength: &mut f32,
+    ) {
+        if current == target {
+            *max_strength = max_strength.max(current_strength);
+            return;
+        }
+
+        if visited.len() >= self.config.max_chain_length {
+            return;
+        }
+
+        visited.insert(current.to_string());
+
+        if let Some(links) = self.links.get(current) {
+            for link in links {
+                if !visited.contains(&link.effect_id) {
+                    self.dfs_strength(
+                        &link.effect_id,
+                        target,
+                        current_strength * link.strength * self.config.chain_decay,
+                        visited,
+                        max_strength,
+                    );
+                }
+            }
+        }
+
+        visited.remove(current);
+    }
+
+    /// Total number of events
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Total number of links
+    pub fn link_count(&self) -> usize {
+        self.links.values().map(|v| v.len()).sum()
+    }
+
+    /// Clear all data
+    pub fn clear(&mut self) {
+        self.events.clear();
+        self.links.clear();
+        self.reverse_links.clear();
+        self.stats = CausalStats::default();
+    }
+
+    /// Get all event IDs
+    pub fn all_event_ids(&self) -> Vec<&str> {
+        self.events.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+impl Default for CausalReasoning {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Factory function for creating CausalReasoning
+pub fn create_causal_reasoning() -> CausalReasoning {
+    CausalReasoning::new()
+}
+
+#[cfg(test)]
+mod causal_tests {
+    use super::*;
+
+    #[test]
+    fn test_causal_event_creation() {
+        let event = CausalEvent::new("e1", "Test event")
+            .with_timestamp(100)
+            .with_confidence(0.9)
+            .with_features(vec![1.0, 2.0]);
+
+        assert_eq!(event.id, "e1");
+        assert_eq!(event.timestamp, 100);
+        assert_eq!(event.confidence, 0.9);
+        assert_eq!(event.features.len(), 2);
+    }
+
+    #[test]
+    fn test_causal_link_creation() {
+        let link = CausalLink::new("cause", "effect", 0.8)
+            .with_delay(10)
+            .with_type(CausalLinkType::Direct);
+
+        assert_eq!(link.cause_id, "cause");
+        assert_eq!(link.effect_id, "effect");
+        assert_eq!(link.strength, 0.8);
+        assert_eq!(link.delay, 10);
+    }
+
+    #[test]
+    fn test_link_significance() {
+        let mut link = CausalLink::new("a", "b", 0.7);
+        link.observation_count = 5;
+        assert!(link.is_significant());
+
+        link.strength = 0.3;
+        assert!(!link.is_significant());
+    }
+
+    #[test]
+    fn test_link_update_strength() {
+        let mut link = CausalLink::new("a", "b", 0.5);
+        link.update_strength(1.0);
+
+        assert!(link.strength > 0.5);
+        assert_eq!(link.observation_count, 2);
+    }
+
+    #[test]
+    fn test_causal_inference_reliability() {
+        let reliable = CausalInference::new("query", vec!["a".to_string()], 0.8);
+        assert!(reliable.is_reliable());
+
+        let unreliable = CausalInference::new("query", vec![], 0.8);
+        assert!(!unreliable.is_reliable());
+    }
+
+    #[test]
+    fn test_causal_reasoning_creation() {
+        let engine = CausalReasoning::new();
+        assert_eq!(engine.event_count(), 0);
+        assert_eq!(engine.link_count(), 0);
+    }
+
+    #[test]
+    fn test_register_event() {
+        let mut engine = CausalReasoning::new();
+        let event = CausalEvent::new("e1", "Event 1");
+
+        engine.register_event(event);
+
+        assert_eq!(engine.event_count(), 1);
+        assert!(engine.get_event("e1").is_some());
+    }
+
+    #[test]
+    fn test_add_link() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("cause", "Cause"));
+        engine.register_event(CausalEvent::new("effect", "Effect"));
+
+        let link = CausalLink::new("cause", "effect", 0.8);
+        assert!(engine.add_link(link));
+        assert_eq!(engine.link_count(), 1);
+    }
+
+    #[test]
+    fn test_add_link_missing_event() {
+        let mut engine = CausalReasoning::new();
+        engine.register_event(CausalEvent::new("cause", "Cause"));
+
+        let link = CausalLink::new("cause", "missing", 0.8);
+        assert!(!engine.add_link(link));
+    }
+
+    #[test]
+    fn test_get_effects() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.register_event(CausalEvent::new("c", "C"));
+
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+        engine.add_link(CausalLink::new("a", "c", 0.6));
+
+        let effects = engine.get_effects("a");
+        assert_eq!(effects.len(), 2);
+    }
+
+    #[test]
+    fn test_get_causes() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.register_event(CausalEvent::new("c", "C"));
+
+        engine.add_link(CausalLink::new("a", "c", 0.8));
+        engine.add_link(CausalLink::new("b", "c", 0.6));
+
+        let causes = engine.get_causes("c");
+        assert_eq!(causes.len(), 2);
+    }
+
+    #[test]
+    fn test_find_chain_direct() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+
+        let inference = engine.find_chain("a", "b");
+        assert!(inference.is_some());
+
+        let inf = inference.unwrap();
+        assert_eq!(inf.chain.len(), 2);
+        assert!(inf.confidence > 0.0);
+    }
+
+    #[test]
+    fn test_find_chain_indirect() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.register_event(CausalEvent::new("c", "C"));
+
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+        engine.add_link(CausalLink::new("b", "c", 0.8));
+
+        let inference = engine.find_chain("a", "c");
+        assert!(inference.is_some());
+
+        let inf = inference.unwrap();
+        assert_eq!(inf.chain.len(), 3);
+    }
+
+    #[test]
+    fn test_find_chain_no_path() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+
+        let inference = engine.find_chain("a", "b");
+        assert!(inference.is_none());
+    }
+
+    #[test]
+    fn test_find_all_effects() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.register_event(CausalEvent::new("c", "C"));
+        engine.register_event(CausalEvent::new("d", "D"));
+
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+        engine.add_link(CausalLink::new("b", "c", 0.8));
+        engine.add_link(CausalLink::new("b", "d", 0.8));
+
+        let effects = engine.find_all_effects("a");
+        assert_eq!(effects.len(), 3); // b, c, d
+    }
+
+    #[test]
+    fn test_find_root_causes() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("root1", "Root 1"));
+        engine.register_event(CausalEvent::new("root2", "Root 2"));
+        engine.register_event(CausalEvent::new("mid", "Middle"));
+        engine.register_event(CausalEvent::new("effect", "Effect"));
+
+        engine.add_link(CausalLink::new("root1", "mid", 0.8));
+        engine.add_link(CausalLink::new("root2", "mid", 0.8));
+        engine.add_link(CausalLink::new("mid", "effect", 0.8));
+
+        let roots = engine.find_root_causes("effect");
+        assert_eq!(roots.len(), 2);
+    }
+
+    #[test]
+    fn test_observe() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+
+        assert!(engine.observe("a", "b", 0.5));
+        assert_eq!(engine.link_count(), 1);
+
+        // Update existing
+        assert!(engine.observe("a", "b", 0.9));
+        assert_eq!(engine.link_count(), 1);
+
+        let effects = engine.get_effects("a");
+        assert!(effects[0].strength > 0.5);
+    }
+
+    #[test]
+    fn test_infer_strength_timestamp() {
+        let engine = CausalReasoning::new();
+
+        let cause = CausalEvent::new("c", "Cause").with_timestamp(0);
+        let effect = CausalEvent::new("e", "Effect").with_timestamp(10);
+
+        let strength = engine.infer_strength(&cause, &effect);
+        assert!(strength > 0.0);
+    }
+
+    #[test]
+    fn test_infer_strength_features() {
+        let engine = CausalReasoning::new();
+
+        let cause = CausalEvent::new("c", "Cause").with_features(vec![1.0, 0.0, 0.0]);
+        let effect = CausalEvent::new("e", "Effect").with_features(vec![1.0, 0.0, 0.0]);
+
+        let strength = engine.infer_strength(&cause, &effect);
+        assert_eq!(strength, 1.0); // Perfect correlation
+    }
+
+    #[test]
+    fn test_counterfactual() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+
+        let cf = engine.counterfactual("a", "b");
+        assert!(!cf.explanation.is_empty());
+    }
+
+    #[test]
+    fn test_intervention() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.register_event(CausalEvent::new("c", "C"));
+
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+        engine.add_link(CausalLink::new("a", "c", 0.5));
+
+        let effects = engine.intervention("a");
+        assert_eq!(effects.len(), 2);
+        // Should be sorted by strength
+        assert!(effects[0].1 >= effects[1].1);
+    }
+
+    #[test]
+    fn test_causal_stats() {
+        let mut stats = CausalStats::default();
+
+        stats.record_query(true, 3);
+        stats.record_query(true, 5);
+        stats.record_query(false, 0);
+
+        assert_eq!(stats.queries_performed, 3);
+        assert_eq!(stats.successful_inferences, 2);
+        assert_eq!(stats.failed_inferences, 1);
+        assert!((stats.success_rate() - 0.666).abs() < 0.01);
+        assert_eq!(stats.avg_chain_length, 4.0);
+    }
+
+    #[test]
+    fn test_causal_config_default() {
+        let config = CausalConfig::default();
+        assert_eq!(config.max_chain_length, 5);
+        assert!(config.include_indirect);
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+        engine.add_link(CausalLink::new("a", "b", 0.8));
+
+        engine.clear();
+
+        assert_eq!(engine.event_count(), 0);
+        assert_eq!(engine.link_count(), 0);
+    }
+
+    #[test]
+    fn test_all_event_ids() {
+        let mut engine = CausalReasoning::new();
+
+        engine.register_event(CausalEvent::new("a", "A"));
+        engine.register_event(CausalEvent::new("b", "B"));
+
+        let ids = engine.all_event_ids();
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_create_causal_reasoning_factory() {
+        let engine = create_causal_reasoning();
+        assert_eq!(engine.event_count(), 0);
+    }
+
+    #[test]
+    fn test_causal_link_type_default() {
+        let link_type = CausalLinkType::default();
+        assert_eq!(link_type, CausalLinkType::Direct);
+    }
+}
