@@ -19,6 +19,12 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+// Parquet support for HumanEval/MBPP
+use arrow::array::{ArrayRef, StringArray};
+use arrow::record_batch::RecordBatch;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(Parser, Debug)]
 #[command(name = "import_datasets")]
@@ -269,11 +275,25 @@ fn import_squad(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose
 // CODE CORTEX DATASET IMPORT
 // ============================================================================
 
-/// Import HumanEval dataset for code generation
+/// Helper to get string column from arrow batch
+fn get_string_column(batch: &RecordBatch, name: &str) -> Option<Arc<StringArray>> {
+    batch.column_by_name(name).and_then(|col| {
+        col.as_any().downcast_ref::<StringArray>().map(|arr| Arc::new(arr.clone()))
+    })
+}
+
+/// Import HumanEval dataset for code generation (supports .parquet and .jsonl)
 fn import_humaneval(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose: bool) -> usize {
+    // Try parquet first
+    let parquet_path = path.join("humaneval.parquet");
+    if parquet_path.exists() {
+        return import_humaneval_parquet(&parquet_path, kb, max, verbose);
+    }
+
+    // Fall back to JSONL
     let train_path = path.join("HumanEval.jsonl");
     if !train_path.exists() {
-        println!("HumanEval.jsonl not found at {:?}", train_path);
+        println!("HumanEval not found (tried .parquet and .jsonl) at {:?}", path);
         return 0;
     }
 
@@ -317,11 +337,103 @@ fn import_humaneval(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, ver
     count
 }
 
-/// Import MBPP dataset for code generation
+/// Import HumanEval from Parquet format
+fn import_humaneval_parquet(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose: bool) -> usize {
+    println!("  Reading parquet: {:?}", path);
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Failed to open parquet: {}", e);
+            return 0;
+        }
+    };
+
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("Failed to create parquet reader: {}", e);
+            return 0;
+        }
+    };
+
+    let reader = match builder.build() {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Failed to build parquet reader: {}", e);
+            return 0;
+        }
+    };
+
+    let mut count = 0;
+
+    for batch_result in reader {
+        let batch = match batch_result {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // HumanEval columns: task_id, prompt, canonical_solution, entry_point, test
+        let task_ids = get_string_column(&batch, "task_id");
+        let prompts = get_string_column(&batch, "prompt");
+        let solutions = get_string_column(&batch, "canonical_solution");
+        let entry_points = get_string_column(&batch, "entry_point");
+
+        if prompts.is_none() || solutions.is_none() {
+            println!("  Missing required columns in parquet");
+            continue;
+        }
+
+        let prompts = prompts.unwrap();
+        let solutions = solutions.unwrap();
+
+        for i in 0..batch.num_rows() {
+            if count >= max {
+                break;
+            }
+
+            let prompt = prompts.value(i);
+            let solution = solutions.value(i);
+            let task_id = task_ids.as_ref().map(|t| t.value(i).to_string()).unwrap_or_else(|| format!("{}", i));
+            let entry_point = entry_points.as_ref().map(|e| e.value(i)).unwrap_or("function");
+
+            if verbose && count < 3 {
+                println!("  HumanEval #{}: {}", task_id, entry_point);
+            }
+
+            let kb_entry = KnowledgeEntry::new(
+                format!("humaneval_{}", task_id),
+                "code_generation",
+                prompt,
+                solution,
+            )
+            .with_confidence(0.95)
+            .with_epoch(1);
+
+            kb.add(kb_entry);
+            count += 1;
+        }
+
+        if count >= max {
+            break;
+        }
+    }
+
+    println!("Imported {} HumanEval entries from parquet", count);
+    count
+}
+
+/// Import MBPP dataset for code generation (supports .parquet and .jsonl)
 fn import_mbpp(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose: bool) -> usize {
+    // Try parquet first
+    let parquet_path = path.join("mbpp.parquet");
+    if parquet_path.exists() {
+        return import_mbpp_parquet(&parquet_path, kb, max, verbose);
+    }
+
     let train_path = path.join("mbpp.jsonl");
     if !train_path.exists() {
-        println!("mbpp.jsonl not found at {:?}", train_path);
+        println!("MBPP not found (tried .parquet and .jsonl) at {:?}", path);
         return 0;
     }
 
@@ -362,6 +474,88 @@ fn import_mbpp(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose:
     }
 
     println!("Imported {} MBPP entries", count);
+    count
+}
+
+/// Import MBPP from Parquet format
+fn import_mbpp_parquet(path: &PathBuf, kb: &mut GraphKnowledgeBase, max: usize, verbose: bool) -> usize {
+    println!("  Reading parquet: {:?}", path);
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Failed to open parquet: {}", e);
+            return 0;
+        }
+    };
+
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("Failed to create parquet reader: {}", e);
+            return 0;
+        }
+    };
+
+    let reader = match builder.build() {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Failed to build parquet reader: {}", e);
+            return 0;
+        }
+    };
+
+    let mut count = 0;
+
+    for batch_result in reader {
+        let batch = match batch_result {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // MBPP columns: task_id, text, code, test_list
+        let texts = get_string_column(&batch, "text");
+        let codes = get_string_column(&batch, "code");
+
+        if texts.is_none() || codes.is_none() {
+            println!("  Missing required columns in parquet");
+            continue;
+        }
+
+        let texts = texts.unwrap();
+        let codes = codes.unwrap();
+
+        for i in 0..batch.num_rows() {
+            if count >= max {
+                break;
+            }
+
+            let text = texts.value(i);
+            let code = codes.value(i);
+
+            if verbose && count < 3 {
+                println!("  MBPP #{}: {}...", count, &text[..text.len().min(50)]);
+            }
+
+            let kb_entry = KnowledgeEntry::new(
+                format!("mbpp_{}", count),
+                "code_generation",
+                text,
+                code,
+            )
+            .with_confidence(0.9)
+            .with_epoch(1);
+
+            kb.add(kb_entry);
+            count += 1;
+        }
+
+        if count >= max {
+            break;
+        }
+    }
+
+    println!("Imported {} MBPP entries from parquet", count);
     count
 }
 

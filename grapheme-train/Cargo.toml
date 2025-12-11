@@ -36,6 +36,8 @@ grapheme-meta = { path = "../grapheme-meta" }
 grapheme-reason = { path = "../grapheme-reason" }
 regex = "1.10"
 ureq = { version = "2.9", features = ["native-tls"] }
+parquet = "54.0"
+arrow = { version = "54.0", features = ["json"] }
 
 [dev-dependencies]
 criterion.workspace = true
