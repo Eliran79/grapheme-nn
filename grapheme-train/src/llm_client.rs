@@ -10,7 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::TcpStream;
 use std::time::Duration;
 
 /// LLM provider type
@@ -669,35 +668,29 @@ impl LLMClient {
         })
     }
 
-    // Simple HTTP POST (pure Rust, no external deps)
+    // HTTP POST using ureq with TLS support
     fn http_post(
         &self,
         url: &str,
         body: &str,
         headers: &[(&str, &str)],
     ) -> Result<String, LLMError> {
-        // Parse URL
-        let url = url.trim_start_matches("https://").trim_start_matches("http://");
-        let (host, path) = url.split_once('/').unwrap_or((url, ""));
-        let path = format!("/{}", path);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(self.config.timeout_secs))
+            .build();
 
-        // Connect
-        let addr = format!("{}:443", host);
-        let stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| LLMError::NetworkError(format!("Invalid address: {}", e)))?,
-            Duration::from_secs(self.config.timeout_secs),
-        )
-        .map_err(|e| LLMError::NetworkError(e.to_string()))?;
+        let mut request = agent.post(url);
+        for (key, value) in headers {
+            request = request.set(key, value);
+        }
 
-        // For HTTPS we need TLS - this is a simplified stub
-        // In production, use rustls or native-tls
-        // For now, return a mock response for testing
-        let _ = (stream, path, body, headers);
+        let response = request
+            .send_string(body)
+            .map_err(|e| LLMError::NetworkError(format!("Request failed: {}", e)))?;
 
-        // Mock response for testing (real impl needs TLS)
-        Err(LLMError::NetworkError(
-            "HTTPS not implemented in minimal client - use ureq/reqwest in production".to_string(),
-        ))
+        response
+            .into_string()
+            .map_err(|e| LLMError::NetworkError(format!("Failed to read response: {}", e)))
     }
 
     // JSON parsing helpers

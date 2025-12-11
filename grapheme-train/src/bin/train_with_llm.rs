@@ -100,6 +100,9 @@ fn generate_examples(
 
         match client.generate(&prompt) {
             Ok(response) => {
+                if verbose {
+                    eprintln!("  Raw response ({} chars): {}", response.len(), &response[..response.len().min(500)]);
+                }
                 // Parse Q&A pairs from response
                 let parsed = parse_qa_pairs(&response, topic);
                 if verbose {
@@ -119,6 +122,10 @@ fn generate_examples(
 /// Parse Q&A pairs from LLM response
 fn parse_qa_pairs(text: &str, topic: &str) -> Vec<LLMTrainingPair> {
     let mut pairs = Vec::new();
+
+    // Handle escaped newlines from JSON responses
+    let text = text.replace("\\n", "\n");
+
     let mut current_question = String::new();
 
     for line in text.lines() {
