@@ -1,7 +1,7 @@
 ---
 id: backend-114
 title: Implement time series cognitive module (forecasting)
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -276,25 +276,60 @@ fn generate_sine_wave(n: usize) -> Vec<f32> {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **New crate: `grapheme-time`** (`/grapheme-time/`)
+  - `Cargo.toml`: Dependencies on grapheme-core, ndarray, rayon, criterion
+  - `src/lib.rs`: Complete time series cognitive module implementation
+  - `benches/time_bench.rs`: Criterion benchmarks for performance testing
+
+- **New types:**
+  - `TimeSeriesConfig`: Configuration (window_size, skip_connections, hidden_nodes, normalization)
+  - `NormalizationParams`: MinMax/ZScore/None normalization with denormalize support
+  - `TimeBrain`: DomainBrain implementation for time series
+  - `TimeSeriesTrainer`: Gradient descent trainer with template weight persistence
+  - `TimeSeriesError`: Error types for time series operations
+
+- **Key methods:**
+  - `TimeBrain::to_graph(&[f32]) -> DagNN`: Converts window to graph with input nodes, hidden nodes, output node
+  - `TimeBrain::predict(&DagNN) -> f32`: Forward pass returning denormalized prediction
+  - `TimeSeriesTrainer::train_step(&[f32], f32) -> f32`: Single training step with weight updates
+  - `TimeSeriesTrainer::predict(&[f32]) -> f32`: Inference with learned weights
+  - `generate_sine_wave(length, freq, amp, offset)`: Synthetic data generation
+  - `create_training_pairs(&[f32], window_size)`: Creates (windows, targets) for training
+
+- **Training binary:** `grapheme-train/src/bin/train_timeseries.rs`
+  - Demonstrates end-to-end training on sine wave
+  - Shows 87.69% improvement over naive baseline
+  - 100% predictions within 0.1 of actual after 100 epochs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Input nodes are properly registered in `input_nodes_set` via `add_character()` method
+- Forward pass respects input node registration (keeps activations)
+- Template weights persist across training iterations via `TimeSeriesTrainer`
+- Gradient flows: output → hidden → input (simplified backprop with scaling)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `grapheme-time` to workspace Cargo.toml
+- Added `grapheme-time` dependency to `grapheme-train/Cargo.toml`
+- `TimeBrain` implements `DomainBrain` trait fully:
+  - `domain_id() = "time"`, `domain_name() = "Time Series"`
+  - `can_process()`: Validates comma-separated float input
+  - `parse()`: Converts string to DagNN
+  - `validate()`: Checks node/edge counts
+  - `execute()`: Returns numeric prediction
+  - `generate_examples()`: Creates sine wave training examples
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- **Build:** `cargo build -p grapheme-time`
+- **Test:** `cargo test -p grapheme-time` (19 tests pass)
+- **Clippy:** `cargo clippy -p grapheme-time --all-targets -- -D warnings` (0 warnings)
+- **Run:** `cargo run --bin train_timeseries`
+- **Benchmark:** `cargo bench -p grapheme-time`
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **Graph structure:** Window → input nodes (with sequential edges) → hidden nodes → output node
+- **Skip connections:** Optional edges i → i+skip_interval for long-term dependencies
+- **Weight initialization:** Template weights start at 0.5, updated via gradient descent
+- **Normalization:** Applied to input values; predictions are denormalized
+- **Learning rate:** 0.01 works well for sine wave; may need tuning for other data
+- **Gotcha:** Must use `add_character()` not `graph.add_node()` for input nodes to be recognized
+- **Performance:** MSE < 0.001 achievable on sine wave with 100 epochs

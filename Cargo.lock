@@ -534,6 +534,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-time"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "ndarray",
+ "petgraph",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-train"
 version = "0.1.0"
 dependencies = [
@@ -548,6 +563,7 @@ dependencies = [
  "grapheme-math",
  "grapheme-music",
  "grapheme-polish",
+ "grapheme-time",
  "grapheme-vision",
  "indicatif",
  "mnist",

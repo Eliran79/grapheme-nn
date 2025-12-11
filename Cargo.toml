@@ -19,6 +19,7 @@ members = [
     "grapheme-music",
     "grapheme-chem",
     "grapheme-vision",
+    "grapheme-time",
     "grapheme-tests",
     "grapheme-brain-common",
 ]

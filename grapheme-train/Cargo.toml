@@ -28,6 +28,7 @@ grapheme-law = { path = "../grapheme-law" }
 grapheme-music = { path = "../grapheme-music" }
 grapheme-chem = { path = "../grapheme-chem" }
 grapheme-vision = { path = "../grapheme-vision" }
+grapheme-time = { path = "../grapheme-time" }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -55,3 +56,7 @@ path = "src/bin/repl.rs"
 [[bin]]
 name = "train_mnist"
 path = "src/bin/train_mnist.rs"
+
+[[bin]]
+name = "train_timeseries"
+path = "src/bin/train_timeseries.rs"
