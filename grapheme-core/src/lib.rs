@@ -5070,10 +5070,6 @@ impl SabagPooling {
         // Sabag Step 3: Build output DAG with k nodes
         let output_graph = self.create_coarsened_dag(graph, k, &h_new, &assignment);
 
-        // DEBUG: Verify dimensions before returning
-        eprintln!("Sabag forward: n={}, k={}, assignment.shape={:?}, h_new.shape={:?}, output_graph.input_nodes={}",
-                 n, k, assignment.dim(), h_new.dim(), output_graph.input_nodes.len());
-
         PoolingResult {
             graph: output_graph,
             features: h_new,

@@ -5,9 +5,11 @@ areas = [
     "api",
     "auth",
     "backend",
+    "data",
     "deployment",
     "docs",
     "frontend",
+    "integration",
     "setup",
     "testing",
 ]

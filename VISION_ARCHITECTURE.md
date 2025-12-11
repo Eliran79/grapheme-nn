@@ -169,11 +169,88 @@ The `transform()` method can be used for:
 - **Feature enhancement**: Add edge/corner features on demand
 - **Resolution changes**: Re-extract features at different scales
 
-## Refactoring TODO
+## Refactoring Status (December 2025)
 
-1. [ ] VisionBrain.to_graph() returns generic Graph (not VisionGraph)
-2. [ ] VisionGraph becomes private/internal type (pub(crate))
-3. [ ] ClassificationBrain gets learnable parameters
-4. [ ] MnistModel → ImageClassificationModel (generic)
-5. [ ] Move MNIST-specific code to grapheme-train
-6. [ ] Remove all hardcoded 28, 784, 10 values from grapheme-vision
+1. [x] VisionBrain.to_graph() returns generic Graph (not VisionGraph)
+2. [x] VisionGraph becomes private/internal type (pub(crate))
+3. [x] ClassificationBrain gets learnable parameters (template matching with Adam)
+4. [x] MnistModel → ImageClassificationModel (generic)
+5. [x] Move MNIST-specific code to grapheme-train (train_mnist.rs)
+6. [x] Remove all hardcoded 28, 784, 10 values from grapheme-vision
+7. [x] Router-to-training integration (process_to_graph, input_to_graph)
+
+**All refactoring complete** - grapheme-vision is now generic and configuration-driven.
+
+## Router Integration (December 2025)
+
+The `CognitiveRouter` now supports training graph generation:
+
+```rust
+/// Route input and return (input_graph, output_graph) pair for training
+pub fn route_for_training(&self, input: &Input) -> RouterResult<TrainingPair>;
+
+/// Generate training examples from a batch of inputs
+pub fn generate_training_batch(&self, inputs: &[Input]) -> Vec<RouterResult<TrainingPair>>;
+
+pub struct TrainingPair {
+    pub module_id: ModuleId,
+    pub confidence: f32,
+    pub input_graph: DagNN,
+    pub output_graph: DagNN,
+}
+```
+
+This enables multi-modal AGI training with structural loss across all domain brains.
+
+## Unified AGI Training (December 2025)
+
+The `train_unified_agi` binary implements shared DagNN training with brain slices:
+
+```rust
+/// Shared DagNN model with brain slice allocation
+struct SharedAGIModel {
+    dag: DagNN,                              // Single shared network
+    slices: HashMap<String, BrainSlice>,     // Per-domain node ownership
+    learning_rate: f32,
+    gradients: HashMap<String, Vec<f32>>,    // Per-slice gradient accumulation
+}
+
+// Brain slice allocation
+let brain_requests = vec![
+    ("math".to_string(), 32, 16),       // Math: 32 input, 16 output
+    ("text".to_string(), 64, 32),       // Text: 64 input, 32 output
+    ("timeseries".to_string(), 16, 8),  // TimeSeries: 16 input, 8 output
+    ("vision".to_string(), 48, 16),     // Vision: 48 input, 16 output
+];
+```
+
+The `generate_mixed_agi` binary creates multi-modal datasets:
+- **Math**: Arithmetic expressions
+- **Text**: QA factoid pairs
+- **TimeSeries**: Sequence prediction (linear, doubling, Fibonacci)
+- **Vision**: 4x4 pattern classification (8 pattern types)
+
+## AGI Roadmap (December 2025)
+
+### Planned: Graph-to-Graph (G2G) Learning
+- `backend-175`: G2G transformation learning
+- `backend-176`: Graph morphism detection and alignment
+- `backend-180`: Efficient graph serialization for network transport
+
+### Planned: A2A (Agent-to-Agent) Protocol
+- `api-015`: A2A communication protocol
+- `api-016`: Graph-based message format
+- `api-019`: Agent discovery and registry
+- `backend-177`: Multi-agent orchestration with GRAPHEME coordinator
+
+### Planned: LLM Collaboration
+- `integration-001`: LLM API client (Claude, OpenAI, Gemini)
+- `integration-002`: LLM response → DagNN graph translation
+- `integration-003`: DagNN graph → LLM prompt translation
+- `backend-178`: Collaborative learning from LLM interactions
+- `backend-179`: Knowledge distillation from LLMs to graphs
+
+### Planned: MCP Integration
+- `api-017`: MCP server for GRAPHEME
+- `api-018`: MCP tools (graph_query, graph_transform, train_step)
+- `integration-004`: MCP client for external tool servers

@@ -51,7 +51,7 @@ Revolutionary neural architecture that processes text without tokenization, grow
 └─────────────────────────────┴───────────────────────────────┘
 ```
 
-## Crates (22 total, 55K+ LOC)
+## Crates (22 total, 67K+ LOC)
 
 ### Core Foundation
 | Crate | Purpose |
@@ -75,7 +75,7 @@ Revolutionary neural architecture that processes text without tokenization, grow
 ### Cognitive Modules
 | Crate | Purpose |
 |-------|---------|
-| `grapheme-router` | AGI-ready cognitive router: auto-routes inputs to appropriate brain modules |
+| `grapheme-router` | AGI-ready cognitive router: auto-routes inputs to brain modules, generates training pairs |
 | `grapheme-memory` | Episodic, semantic, working, procedural memory |
 | `grapheme-reason` | Deduction, induction, abduction, analogy, causal reasoning |
 | `grapheme-world` | World model: state, prediction, dynamics |
@@ -118,11 +118,31 @@ if let Some(brain) = registry.get_for_input("solve x^2 = 4") {
 
 ```bash
 cargo build --workspace
-cargo test --workspace   # 1136 tests, all passing
+cargo test --workspace   # 1139 tests, all passing
 cargo clippy --workspace # 0 warnings
 ```
 
 ## Recent Milestones
+
+**December 2025 - AGI Roadmap (27 new tasks planned):**
+- 🔄 Text/Web Learning: File ingestion, web fetcher, preprocessing pipelines
+- 🔄 Graph-to-Graph (G2G): Transformation learning, morphism detection, serialization
+- 🔄 A2A Protocol: Agent-to-agent communication, message format, orchestration
+- 🔄 LLM Collaboration: Claude/OpenAI/Gemini integration, bidirectional translation
+- 🔄 MCP Integration: Server/client implementation, graph tools
+
+**December 2025 - Unified AGI Training (backend-166, 167, 168):**
+- ✅ `train_unified_agi`: Single binary trains all modules at once
+- ✅ SharedAGIModel: Single DagNN with BrainSlice allocation per domain
+- ✅ `generate_mixed_agi`: Multi-modal dataset generator (math, text, timeseries, vision)
+- ✅ 160 shared nodes, 4 brain slices with disjoint input/output ranges
+- ✅ 30K+ examples/sec training throughput
+
+**December 2025 - Router-Training Integration (backend-165):**
+- ✅ `route_for_training()`: Returns TrainingPair with (input_graph, output_graph)
+- ✅ `generate_training_batch()`: Batch processing for multi-modal training
+- ✅ All Input variants supported: Text, Sequence, Image, CSV, Raw
+- ✅ Enables structural loss computation across all domain brains
 
 **December 2025 - AGI-Ready Cognitive Router (backend-116):**
 - ✅ Multi-modal input routing: text, math, images, time series
@@ -148,7 +168,7 @@ cargo clippy --workspace # 0 warnings
 - ✅ Removed all cross-entropy code (pure graph-to-graph learning)
 - ✅ DAG-specific O(n) clique alignment (no NP-hard enumeration)
 - ✅ Sinkhorn optimal transport for differentiable graph matching
-- ✅ 1136 tests passing, zero warnings
+- ✅ 1139 tests passing, zero warnings
 
 **Training Ready:**
 - Complete GRAPHEME vision formula implemented
@@ -386,7 +406,7 @@ taskguard validate      # Check ready tasks
 taskguard update status <id> done  # Mark complete
 ```
 
-Current status: **187 tasks** (187 done, 0 pending) ✅
+Current status: **224 tasks** (197 done, 27 pending) 🚧
 
 ## License
 

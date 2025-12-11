@@ -8,6 +8,7 @@
 //! - Curriculum learning support
 //! - Dataset management (JSONL format)
 //! - Batch iteration for training loops
+//! - Text file ingestion (TXT, MD, JSON, CSV)
 //!
 //! Key training concepts:
 //! - Engine generates infinite verified training pairs
@@ -17,6 +18,26 @@
 
 // Allow &self in recursive methods for API consistency
 #![allow(clippy::only_used_in_recursion)]
+
+// ============================================================================
+// Modules (progressively extracting from monolithic lib.rs)
+// ============================================================================
+
+/// Text file ingestion for training data (backend-169)
+pub mod text_ingestion;
+pub use text_ingestion::*;
+
+/// Web content fetcher for training data (backend-170)
+pub mod web_fetcher;
+pub use web_fetcher::*;
+
+/// Text preprocessing pipeline (data-001)
+pub mod text_preprocessor;
+pub use text_preprocessor::*;
+
+/// HTML/web content parser (data-002)
+pub mod html_parser;
+pub use html_parser::*;
 
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{

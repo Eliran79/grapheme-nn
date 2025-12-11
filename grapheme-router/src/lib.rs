@@ -167,8 +167,43 @@ pub trait CognitiveModule: Send + Sync {
     /// Get the input types this module prefers
     fn preferred_input_types(&self) -> Vec<InputType>;
 
-    /// Process the input and return output
+    /// Process the input and return output as string (for display)
     fn process(&self, input: &Input) -> RouterResult<String>;
+
+    /// Process the input and return output as DagNN graph (for training)
+    /// Default implementation converts process() output to graph
+    fn process_to_graph(&self, input: &Input) -> RouterResult<grapheme_core::DagNN> {
+        let output = self.process(input)?;
+        grapheme_core::DagNN::from_text(&output)
+            .map_err(|e| RouterError::AnalysisFailed(format!("Graph conversion failed: {}", e)))
+    }
+
+    /// Get input as DagNN graph (for training)
+    fn input_to_graph(&self, input: &Input) -> RouterResult<grapheme_core::DagNN> {
+        match input {
+            Input::Text(text) => grapheme_core::DagNN::from_text(text)
+                .map_err(|e| RouterError::AnalysisFailed(format!("Input graph conversion failed: {}", e))),
+            Input::NumericSequence(vals) => {
+                let text = vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                grapheme_core::DagNN::from_text(&text)
+                    .map_err(|e| RouterError::AnalysisFailed(format!("Sequence graph conversion failed: {}", e)))
+            }
+            Input::CsvNumeric(csv) => grapheme_core::DagNN::from_text(csv)
+                .map_err(|e| RouterError::AnalysisFailed(format!("CSV graph conversion failed: {}", e))),
+            Input::Image { width, height, pixels } => {
+                // Encode image as compact text representation
+                let text = format!("IMG:{}x{}:{}", width, height, pixels.len());
+                grapheme_core::DagNN::from_text(&text)
+                    .map_err(|e| RouterError::AnalysisFailed(format!("Image graph conversion failed: {}", e)))
+            }
+            Input::Raw(bytes) => {
+                // Encode raw bytes as hex string
+                let text = format!("RAW:{}", bytes.len());
+                grapheme_core::DagNN::from_text(&text)
+                    .map_err(|e| RouterError::AnalysisFailed(format!("Raw graph conversion failed: {}", e)))
+            }
+        }
+    }
 }
 
 /// Cognitive router that automatically routes inputs to appropriate modules
@@ -380,6 +415,60 @@ impl CognitiveRouter {
 
         Ok((best_module_id, confidence))
     }
+
+    /// Route input and return (input_graph, output_graph) pair for training
+    ///
+    /// This method:
+    /// 1. Analyzes input to select appropriate module
+    /// 2. Converts input to DagNN graph
+    /// 3. Processes input through module
+    /// 4. Converts output to DagNN graph
+    /// 5. Returns the graph pair for structural loss training
+    pub fn route_for_training(
+        &self,
+        input: &Input,
+    ) -> RouterResult<TrainingPair> {
+        // Get routing decision
+        let (module_id, confidence) = self.get_routing_decision(input)?;
+
+        // Get the module
+        let module = self.modules.get(&module_id)
+            .ok_or_else(|| RouterError::NoSuitableModule(format!("{:?}", module_id)))?;
+
+        // Convert input to graph
+        let input_graph = module.input_to_graph(input)?;
+
+        // Process through module and get output graph
+        let output_graph = module.process_to_graph(input)?;
+
+        Ok(TrainingPair {
+            module_id,
+            confidence,
+            input_graph,
+            output_graph,
+        })
+    }
+
+    /// Generate training examples from a batch of inputs
+    pub fn generate_training_batch(
+        &self,
+        inputs: &[Input],
+    ) -> Vec<RouterResult<TrainingPair>> {
+        inputs.iter().map(|input| self.route_for_training(input)).collect()
+    }
+}
+
+/// Training pair output from router for structural loss training
+#[derive(Debug, Clone)]
+pub struct TrainingPair {
+    /// Module that processed this input
+    pub module_id: ModuleId,
+    /// Confidence score for this routing decision
+    pub confidence: f32,
+    /// Input converted to DagNN graph
+    pub input_graph: grapheme_core::DagNN,
+    /// Output converted to DagNN graph
+    pub output_graph: grapheme_core::DagNN,
 }
 
 // ============================================================================
@@ -833,5 +922,61 @@ mod tests {
         let module = TimeSeriesModule::new();
         let result = module.process(&Input::sequence(vec![1.0, 2.0, 3.0, 4.0, 5.0])).unwrap();
         assert!(result.contains("next=6")); // Linear extrapolation: 5 + 1 = 6
+    }
+
+    #[test]
+    fn test_route_for_training() {
+        let mut router = CognitiveRouter::new(0.3);
+        router.register_module(Box::new(MathModule::new()));
+
+        let input = Input::text("2 + 3");
+        let training_pair = router.route_for_training(&input).unwrap();
+
+        assert_eq!(training_pair.module_id, ModuleId::Math);
+        assert!(training_pair.confidence > 0.3);
+        assert!(training_pair.input_graph.node_count() > 0);
+        assert!(training_pair.output_graph.node_count() > 0);
+    }
+
+    #[test]
+    fn test_generate_training_batch() {
+        let mut router = CognitiveRouter::new(0.3);
+        router.register_module(Box::new(MathModule::new()));
+        router.register_module(Box::new(TextModule::new()));
+        router.register_module(Box::new(TimeSeriesModule::new()));
+
+        let inputs = vec![
+            Input::text("2 + 3"),
+            Input::text("Hello world"),
+            Input::sequence(vec![1.0, 2.0, 3.0]),
+        ];
+
+        let results = router.generate_training_batch(&inputs);
+        assert_eq!(results.len(), 3);
+
+        // All should succeed
+        for result in results {
+            assert!(result.is_ok());
+            let pair = result.unwrap();
+            assert!(pair.input_graph.node_count() > 0);
+            assert!(pair.output_graph.node_count() > 0);
+        }
+    }
+
+    #[test]
+    fn test_input_to_graph_variants() {
+        let module = TextModule::new();
+
+        // Test text input
+        let text_graph = module.input_to_graph(&Input::text("test")).unwrap();
+        assert!(text_graph.node_count() > 0);
+
+        // Test sequence input
+        let seq_graph = module.input_to_graph(&Input::sequence(vec![1.0, 2.0])).unwrap();
+        assert!(seq_graph.node_count() > 0);
+
+        // Test image input
+        let img_graph = module.input_to_graph(&Input::image(2, 2, vec![0.5; 4])).unwrap();
+        assert!(img_graph.node_count() > 0);
     }
 }

@@ -86,12 +86,15 @@ setup-001 (Cargo workspace)
 - **Layer 2**: `grapheme-polish` - Polish notation intermediate representation
 - **Layer 1**: `grapheme-engine` - Formal math rules and execution
 - **Training**: `grapheme-train` - Training infrastructure
+- **Routing**: `grapheme-router` - AGI cognitive routing with training integration
 
 ### Key Documentation
 - `GRAPHEME_Vision.md` - Main specification (API signatures, pseudocode)
 - `GRAPHEME_Math.md` - Mathematical reasoning extension
 - `GRAPHEME_Math_Dataset.md` - Dataset generation strategy
 - `GRAPHEME_Technical_Abstract.md` - Academic abstract
+- `TRAINING_STRATEGY.md` - Local training guide
+- `VISION_ARCHITECTURE.md` - Vision component architecture
 
 ## Development Notes
 
@@ -116,3 +119,18 @@ export PATH="$HOME/.local/bin:$PATH"
 2. **Dynamic graph morphogenesis** - Network topology adapts to input complexity
 3. **Graph-to-graph transformations** - Structural alignment loss instead of cross-entropy
 4. **Rust implementation** - Required for memory efficiency (17 bytes vs 150 bytes per node in Python)
+5. **Router-to-training integration** - CognitiveRouter generates TrainingPair (input_graph, output_graph) for AGI training
+
+## Project Stats (December 2025)
+
+- **Tests**: 1139 passing, zero warnings
+- **Tasks**: 224 total (197 done, 27 planned)
+- **LOC**: 67K+ Rust code
+- **Crates**: 22 modules
+
+### AGI Roadmap (27 new tasks)
+- Text/Web Learning: File ingestion, web fetcher, preprocessing
+- Graph-to-Graph (G2G): Transformation learning, morphism, serialization
+- A2A Protocol: Agent-to-agent communication, orchestration
+- LLM Collaboration: Claude/OpenAI/Gemini integration
+- MCP Integration: Server, client, graph tools

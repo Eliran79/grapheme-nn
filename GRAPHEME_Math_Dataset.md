@@ -245,15 +245,22 @@ data/
 
 ```bash
 # Generate level 2 training data
-grapheme-train generate --level 2 --samples 50000 --output data/generated/level_2/
+cargo run --release -p grapheme-train --bin generate -- \
+    --level 2 --samples 50000 --output data/generated/level_2/
 
-# Augment with NL variants
-grapheme-train augment --input data/generated/ --output data/augmented/
+# Generate all levels
+cargo run --release -p grapheme-train --bin generate -- \
+    --all-levels --output data/generated/
 
 # Validate dataset integrity
-grapheme-train validate --input data/
+cargo run --release -p grapheme-train --bin validate -- \
+    --input data/generated/
+
+# Train on generated data
+cargo run --release -p grapheme-train --bin train -- \
+    --config train_config.toml
 ```
 
 ---
 
-*Self-generating, verified, curriculum-based.*
+*Self-generating, verified, curriculum-based. Core implementation complete (197/224 tasks done, 27 AGI roadmap tasks planned).*

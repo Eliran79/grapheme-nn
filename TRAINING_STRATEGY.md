@@ -3,13 +3,45 @@
 ## Implementation Status
 
 **✅ Complete**: Pure structural loss with Sinkhorn optimal transport (backend-096, 097, 098)
-- 595 tests passing, zero warnings
+- 1139 tests passing, zero warnings
 - O(n) DAG clique metric (no NP-hard enumeration)
 - Differentiable graph matching via Sinkhorn algorithm
 - All cross-entropy code removed
 
-**🚧 In Progress**: Training infrastructure integration
-**📋 Planned**: Full curriculum learning pipeline
+**✅ Complete**: Training infrastructure (backend-101, 102)
+- Unified `train` command supports both math curriculum and QA text pairs
+- Auto-format detection from JSONL files
+- Multi-task learning without catastrophic forgetting
+
+**✅ Complete**: Domain brain training
+- `grapheme-vision`: Image classification (MNIST >90% accuracy)
+- `grapheme-time`: Time series forecasting (87% improvement over baseline)
+- `grapheme-router`: AGI-ready cognitive router (8µs latency)
+
+**✅ Complete**: Router-to-training integration (backend-165)
+- `route_for_training()`: Returns `TrainingPair` with (input_graph, output_graph)
+- `generate_training_batch()`: Batch processing for multi-modal training
+- All Input variants supported: Text, Sequence, Image, CSV, Raw
+
+**✅ Complete**: Unified AGI Training (backend-166, 167, 168)
+- `train_unified_agi`: Single binary trains all modules at once
+- `SharedAGIModel`: Single DagNN with BrainSlice allocation per domain
+- `generate_mixed_agi`: Multi-modal dataset generator (math, text, timeseries, vision)
+- 160 shared nodes, 4 brain slices with disjoint input/output ranges
+- 30K+ examples/sec training throughput
+
+**🔄 Planned**: Text/Web Learning (backend-169 to 174, data-001 to 003)
+- Text file ingestion (TXT, MD, JSON, CSV)
+- Web content fetcher (HTTP/HTTPS)
+- Text preprocessing pipeline (tokenization, cleaning, chunking)
+- HTML/web content parser
+- `train_from_text` and `train_from_web` binaries
+
+**🔄 Planned**: LLM Collaboration (integration-001 to 004)
+- LLM API client (Claude, OpenAI, Gemini)
+- Bidirectional graph↔LLM translation
+- Collaborative learning from LLM interactions
+- Knowledge distillation from LLMs to GRAPHEME graphs
 
 ## Quick Start Guide
 
