@@ -86,25 +86,27 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added "⚠️ CRITICAL REQUIREMENTS FOR AI AGENTS" section to CLAUDE.md (lines 3-36)
+- Added "Read Vision Documents First" requirement (lines 5-13)
+- Listed mandatory files: GRAPHEME_Vision.md, VISION_ARCHITECTURE.md, GRAPHEME_Math.md
+- Statement: "Implementations that don't follow them will be rejected"
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- AI agents are now required to read vision docs before implementing features
+- Prevents architectural drift by enforcing spec-first development
+- Ensures consistent implementation across all cognitive brains
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- CLAUDE.md is read by Claude Code at session start
+- Instructions apply to all future AI-assisted development
+- Complements the P-time requirement (docs-003)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Check CLAUDE.md lines 5-13 for the MUST_READ requirement
+- All new PRs should show evidence of reading vision docs
+- Code review should verify implementations match specifications
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- "Read Vision Documents First" is a process requirement, not code
+- Applies to all feature/algorithm implementations
+- Vision docs define the canonical API - don't deviate without updating them

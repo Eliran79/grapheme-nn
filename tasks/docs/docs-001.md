@@ -87,25 +87,28 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Updated GRAPHEME_Vision.md with "One Graph In, One Graph Out" principle (lines 164-183)
+- Added "Multi-Modal Brain Slicing" architecture diagram (lines 185-214)
+- Added BrainSlice struct definition and DomainBrain trait extensions (lines 216-243)
+- Added VisionBrain: Image-to-Graph Embedding specification (lines 266+)
+- Documented example: Image Captioning with Vision + Text brains (lines 245-264)
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- DagNN is now documented as domain-agnostic - only sees nodes, edges, activations
+- Brains "own" slices of the shared graph via BrainSlice ranges
+- write_inputs() and read_outputs() provide deterministic I/O contracts
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- BrainSlice concept implemented in grapheme-core and grapheme-vision
+- DomainBrain trait extended with input_node_count/output_node_count
+- Cognitive brains (Math, Code, Music, Chem, Law, Vision) all follow this pattern
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Check GRAPHEME_Vision.md lines 164-300 for complete specification
+- Implementation in grapheme-vision/src/lib.rs follows the documented API
+- All brain implementations use BrainSlice for node ownership
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- "One Graph In/Out" is fundamental - do not create separate graphs per modality
+- Brain slicing enables multi-modal training with shared DagNN
+- All future brains should implement input_node_count/output_node_count

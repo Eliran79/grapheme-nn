@@ -87,25 +87,31 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added "P-Time Complexity Only" requirement to CLAUDE.md (lines 15-35)
+- Documented ALLOWED algorithms: BFS/DFS O(V+E), Cosine similarity O(n), sorts O(n log n)
+- Documented FORBIDDEN algorithms: backtracking, exhaustive clique enumeration, NP-complete solvers
+- Added concrete examples for both categories
+- Statement: "If unsure about complexity, ask or use a simpler algorithm"
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- All algorithms must be polynomial time - exponential algorithms rejected
+- Prevents GRAPHEME from becoming computationally intractable
+- Graph algorithms use BFS/DFS instead of exhaustive search
+- Clique operations use fixed-k enumeration, not max-clique finding
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- CLAUDE.md enforces this for all AI-assisted development
+- Existing algorithms reviewed: all confirmed P-time
+- backend-009 (fixed-k clique enumeration) specifically implements P-time constraint
+- Graph edit distance uses polynomial approximations (BP2)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Check CLAUDE.md lines 15-35 for complete P-time specification
+- Review any new algorithms for complexity bounds
+- All graph operations should cite their time complexity in comments
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- P-time is non-negotiable for GRAPHEME scalability
+- Use O(n³) max for graph operations on large inputs
+- When in doubt, use simpler algorithms with better bounds
+- Fixed-k clique enumeration is polynomial: O(n^k) for fixed k
