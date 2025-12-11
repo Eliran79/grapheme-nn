@@ -43,6 +43,10 @@ pub use html_parser::*;
 pub mod g2g;
 pub use g2g::*;
 
+/// LLM API client (integration-001)
+pub mod llm_client;
+pub use llm_client::*;
+
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{
     Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,

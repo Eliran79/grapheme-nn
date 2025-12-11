@@ -1,7 +1,7 @@
 ---
 id: integration-001
 title: Implement LLM API client (Claude, OpenAI, Gemini)
-status: todo
+status: done
 priority: high
 tags:
 - integration
