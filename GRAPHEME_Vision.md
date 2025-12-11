@@ -1656,7 +1656,7 @@ Google's protocol for inter-agent discovery and task delegation.
 26. ✅ **AGI Inference Stack** (backend-206 to backend-211):
     - Graph-to-Text decoder with Embedding.decode() (backend-206)
     - Encoder-Decoder architecture for Q→A (backend-207)
-    - Sabag pooling serialization fix (backend-208)
+    - Sabag pooling with proper DAG adjacency coarsening: A_new = S^T · A · S (backend-208)
     - GraphKnowledgeBase with persistent Q&A storage (backend-210)
     - AGI-ready inference binary (`agi_infer`) leveraging full cognitive stack (backend-211):
       * UnifiedCognition (7 domain brains + attention + self-model)

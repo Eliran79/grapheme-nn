@@ -1,24 +1,24 @@
 ---
-id: backend-209
-title: Improve Graph-to-Graph transformation output quality
-status: doing
-priority: high
+id: testing-018
+title: Beat HumanEval SOTA (96.2%) with GRAPHEME cortex mesh
+status: todo
+priority: critical
 tags:
-- backend
-- graph-transform
-- generation
-- inference
+- testing
+- humaneval
+- sota
+- benchmark
+- agi
 dependencies:
-- backend-206
-- backend-208
+- testing-017
 assignee: developer
-created: 2025-12-11T14:27:56.100673805Z
-estimate: 10h
-complexity: 8
-area: backend
+created: 2025-12-11T17:25:49.487845811Z
+estimate: 16h
+complexity: 10
+area: testing
 ---
 
-# Improve Graph-to-Graph Transformation Output Quality
+# Beat HumanEval SOTA (96.2%) with GRAPHEME cortex mesh
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -32,42 +32,50 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
+Current HumanEval SOTA is ~96.2% (GPT-4 Turbo with extensive prompting).
+GRAPHEME aims to surpass this using **Graph → Transform → Graph** paradigm.
 
-GRAPHEME's core paradigm is **One Graph In, One Graph Out**:
-- Input (text/image/etc) → Input Graph
-- GraphTransformNet transforms Input Graph → Output Graph
-- Output Graph → Output (text/code/etc)
+Key advantages of GRAPHEME's approach:
+1. **Structural output**: Produces code as graph structure (AST-like), not tokens
+2. **Multi-brain fusion**: Math, Code, Text brains collaborate on problems
+3. **No autoregressive errors**: Entire solution generated at once, no error propagation
+4. **Domain expertise**: Specialized brains handle mathematical reasoning, string manipulation, etc.
 
-This is fundamentally different from autoregressive (character-by-character) generation used by LLMs.
-The output graph structure should contain the full answer, not be generated sequentially.
-
-**Original task description was misaligned** with GRAPHEME vision - updated to focus on improving
-the graph transformation and output graph quality.
+**Key paradigm note**: GRAPHEME doesn't predict next token. It transforms the problem graph
+into a solution graph. This fundamentally different approach may have advantages for
+structured outputs like code.
 
 ## Objectives
-- Improve output graph structure quality from GraphTransformNet
-- Better output graph → text decoding
-- Ensure structural loss training produces meaningful output graphs
-- Validate the Graph → Transform → Graph pipeline works end-to-end
+- Achieve >96.2% pass@1 on HumanEval benchmark
+- Demonstrate GRAPHEME's Graph → Transform → Graph advantage for code generation
+- Document performance characteristics vs autoregressive baselines
+- Create reproducible evaluation pipeline
 
 ## Tasks
-- [x] Review existing GraphTransformNet.forward() and .infer() methods
-- [x] Review existing output graph decoding (to_text, Sabag pooling)
-- [ ] Improve output graph node embedding quality
-- [ ] Add output graph structure validation
-- [ ] Test full pipeline: text → graph → transform → graph → text
+- [ ] Establish baseline: evaluate current CortexMesh on HumanEval
+- [ ] Analyze failure cases: identify patterns in incorrect solutions
+- [ ] Tune graph→code decoding for Python syntax accuracy
+- [ ] Optimize brain fusion weights for code generation
+- [ ] Iterative improvement: train on failure patterns
+- [ ] Final evaluation with statistical significance testing
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- pass@1 > 96.2% on HumanEval-164 (beat current SOTA)
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Reproducible: same model + seed produces consistent results
+
+✅ **Criteria 3:**
+- Documented analysis of why GRAPHEME succeeds/fails on specific problem types
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- SOTA reference: GPT-4 Turbo achieves ~96.2% with optimal prompting
+- GRAPHEME advantage: structural code generation may reduce syntax errors
+- Potential challenges: complex control flow, nested data structures
+- Training data: may need HumanEval-like problems for fine-tuning
+- Key metric: pass@1 is most relevant (deterministic output from graph)
+- Analysis: categorize problems by type (math, string, list, tree, etc.)
 
 ## Testing
 - [ ] Write unit tests for new functionality

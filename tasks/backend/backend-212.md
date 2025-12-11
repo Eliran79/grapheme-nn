@@ -1,24 +1,24 @@
 ---
-id: backend-209
-title: Improve Graph-to-Graph transformation output quality
-status: doing
-priority: high
+id: backend-212
+title: Implement parallel multi-cortex code training with Rayon
+status: todo
+priority: critical
 tags:
 - backend
-- graph-transform
-- generation
-- inference
+- parallel
+- cortex
+- training
+- humaneval
 dependencies:
-- backend-206
-- backend-208
+- backend-209
 assignee: developer
-created: 2025-12-11T14:27:56.100673805Z
-estimate: 10h
+created: 2025-12-11T17:25:48.581475389Z
+estimate: 6h
 complexity: 8
 area: backend
 ---
 
-# Improve Graph-to-Graph Transformation Output Quality
+# Implement parallel multi-cortex code training with Rayon
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -32,42 +32,47 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
+GRAPHEME uses **Graph → Transform → Graph** paradigm (NOT autoregressive generation).
+CortexMesh already supports parallel processing via Rayon. This task extends parallel
+training to leverage multiple cortices (domain brains) simultaneously during training.
 
-GRAPHEME's core paradigm is **One Graph In, One Graph Out**:
-- Input (text/image/etc) → Input Graph
-- GraphTransformNet transforms Input Graph → Output Graph
-- Output Graph → Output (text/code/etc)
+Currently, `train_cortex_mesh.rs` processes batches sequentially. We need to:
+1. Parallelize batch processing across multiple samples
+2. Enable multiple brains to process in parallel during `mesh.train_step()`
+3. Ensure thread-safe gradient accumulation and model updates
 
-This is fundamentally different from autoregressive (character-by-character) generation used by LLMs.
-The output graph structure should contain the full answer, not be generated sequentially.
-
-**Original task description was misaligned** with GRAPHEME vision - updated to focus on improving
-the graph transformation and output graph quality.
+**Key paradigm note**: We're training graph transformation, not character generation.
+The parallel training improves throughput for Graph → Transform → Graph operations.
 
 ## Objectives
-- Improve output graph structure quality from GraphTransformNet
-- Better output graph → text decoding
-- Ensure structural loss training produces meaningful output graphs
-- Validate the Graph → Transform → Graph pipeline works end-to-end
+- Enable Rayon-based parallel batch processing during training
+- Achieve N× speedup where N = number of CPU cores
+- Maintain training quality (loss convergence) with parallel updates
+- Support parallel brain activation during forward passes
 
 ## Tasks
-- [x] Review existing GraphTransformNet.forward() and .infer() methods
-- [x] Review existing output graph decoding (to_text, Sabag pooling)
-- [ ] Improve output graph node embedding quality
-- [ ] Add output graph structure validation
-- [ ] Test full pipeline: text → graph → transform → graph → text
+- [ ] Review existing CortexMesh parallel infrastructure (`process_parallel()`)
+- [ ] Implement parallel batch processing in train_step loop
+- [ ] Add thread-safe gradient accumulation for model parameters
+- [ ] Benchmark: measure training throughput improvement
+- [ ] Verify loss convergence matches sequential training
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- Training throughput increases by at least 2× on multi-core systems
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Model quality (val_loss, similarity) matches sequential baseline
+
+✅ **Criteria 3:**
+- All existing tests pass, no race conditions or data corruption
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- CortexMesh already has `config.parallel` flag and uses Rayon for brain processing
+- Key file: `grapheme-train/src/cortex_mesh.rs` and `train_cortex_mesh.rs`
+- Must ensure GraphTransformNet weight updates are thread-safe
+- Consider using `parking_lot::Mutex` or atomic operations for gradient accumulation
+- Graph transformation (not autoregressive) - batch graphs can be processed independently
 
 ## Testing
 - [ ] Write unit tests for new functionality

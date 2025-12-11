@@ -1,24 +1,24 @@
 ---
-id: backend-209
-title: Improve Graph-to-Graph transformation output quality
-status: doing
-priority: high
+id: backend-213
+title: Connect all 7 cortices (Math,Code,Vision,Music,Chem,Law,Text) for unified code generation
+status: todo
+priority: critical
 tags:
 - backend
-- graph-transform
-- generation
-- inference
+- cortex
+- unified
+- codegen
+- humaneval
 dependencies:
-- backend-206
-- backend-208
+- backend-209
 assignee: developer
-created: 2025-12-11T14:27:56.100673805Z
-estimate: 10h
-complexity: 8
+created: 2025-12-11T17:25:48.840882209Z
+estimate: 8h
+complexity: 9
 area: backend
 ---
 
-# Improve Graph-to-Graph Transformation Output Quality
+# Connect all 7 cortices (Math,Code,Vision,Music,Chem,Law,Text) for unified code generation
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -32,42 +32,48 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
+GRAPHEME uses **Graph → Transform → Graph** paradigm with domain-specific brains.
+CortexMesh auto-discovers 8 domain brains: Math, Code, Vision, Classification, Law, Music, Chem, Time.
 
-GRAPHEME's core paradigm is **One Graph In, One Graph Out**:
-- Input (text/image/etc) → Input Graph
-- GraphTransformNet transforms Input Graph → Output Graph
-- Output Graph → Output (text/code/etc)
+Currently, brains are independent. This task connects them for **unified code generation**:
+- Input: Problem description graph (text → graph)
+- Router: Activates relevant brains based on problem domain
+- Brains: Each contributes domain-specific graph transformations
+- Fusion: Combine brain outputs into unified output graph
+- Output: Code solution graph (graph → text)
 
-This is fundamentally different from autoregressive (character-by-character) generation used by LLMs.
-The output graph structure should contain the full answer, not be generated sequentially.
-
-**Original task description was misaligned** with GRAPHEME vision - updated to focus on improving
-the graph transformation and output graph quality.
+**Key paradigm note**: We're NOT doing autoregressive token generation.
+The output is a complete code graph that gets decoded to text.
 
 ## Objectives
-- Improve output graph structure quality from GraphTransformNet
-- Better output graph → text decoding
-- Ensure structural loss training produces meaningful output graphs
-- Validate the Graph → Transform → Graph pipeline works end-to-end
+- Implement multi-brain fusion for code generation tasks
+- Enable cross-domain reasoning (e.g., Math brain helps with algorithm problems)
+- Create unified output graph from multiple brain contributions
+- Support HumanEval-style problems that span multiple domains
 
 ## Tasks
-- [x] Review existing GraphTransformNet.forward() and .infer() methods
-- [x] Review existing output graph decoding (to_text, Sabag pooling)
-- [ ] Improve output graph node embedding quality
-- [ ] Add output graph structure validation
-- [ ] Test full pipeline: text → graph → transform → graph → text
+- [ ] Design brain output fusion mechanism (weighted combination vs attention)
+- [ ] Implement unified_process() that routes to multiple brains
+- [ ] Add cross-brain attention for information sharing
+- [ ] Create code-specific output graph structure (AST-like nodes)
+- [ ] Test on multi-domain problems (math+code, text+code)
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- All 8 domain brains can contribute to a single output graph
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- Code output graph structure is valid and decodable to syntactically correct code
+
+✅ **Criteria 3:**
+- Cross-domain problems show improved accuracy vs single-brain baseline
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- CortexMesh has `process_parallel()` that routes to activated brains
+- Brain activation based on input graph characteristics (not just keywords)
+- Output fusion: consider attention over brain outputs vs simple weighted sum
+- Code graph should preserve AST structure for accurate decoding
+- Key files: `cortex_mesh.rs`, domain brain implementations in respective crates
 
 ## Testing
 - [ ] Write unit tests for new functionality

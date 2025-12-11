@@ -1,24 +1,25 @@
 ---
-id: backend-209
-title: Improve Graph-to-Graph transformation output quality
-status: doing
+id: testing-017
+title: Implement HumanEval evaluation harness with pass@1 scoring
+status: todo
 priority: high
 tags:
-- backend
-- graph-transform
-- generation
-- inference
+- testing
+- humaneval
+- evaluation
+- benchmark
+- pass@1
 dependencies:
-- backend-206
-- backend-208
+- backend-212
+- backend-213
 assignee: developer
-created: 2025-12-11T14:27:56.100673805Z
-estimate: 10h
-complexity: 8
-area: backend
+created: 2025-12-11T17:25:49.162005854Z
+estimate: 4h
+complexity: 7
+area: testing
 ---
 
-# Improve Graph-to-Graph Transformation Output Quality
+# Implement HumanEval evaluation harness with pass@1 scoring
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -32,42 +33,48 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
+HumanEval is a code generation benchmark with 164 programming problems.
+Standard evaluation uses **pass@k** metric: probability that at least 1 of k samples passes all tests.
 
-GRAPHEME's core paradigm is **One Graph In, One Graph Out**:
-- Input (text/image/etc) → Input Graph
-- GraphTransformNet transforms Input Graph → Output Graph
-- Output Graph → Output (text/code/etc)
+GRAPHEME uses **Graph → Transform → Graph** paradigm:
+- Input: Problem docstring → Input Graph
+- Transform: CortexMesh (multi-brain) produces Code Graph
+- Output: Code Graph → Python function text
+- Evaluation: Execute generated code against test cases
 
-This is fundamentally different from autoregressive (character-by-character) generation used by LLMs.
-The output graph structure should contain the full answer, not be generated sequentially.
-
-**Original task description was misaligned** with GRAPHEME vision - updated to focus on improving
-the graph transformation and output graph quality.
+**Key paradigm note**: Unlike LLMs that generate tokens autoregressively, GRAPHEME produces
+the entire code structure as a graph, then decodes to text. This may require different
+sampling strategies (graph perturbation vs temperature sampling).
 
 ## Objectives
-- Improve output graph structure quality from GraphTransformNet
-- Better output graph → text decoding
-- Ensure structural loss training produces meaningful output graphs
-- Validate the Graph → Transform → Graph pipeline works end-to-end
+- Implement HumanEval evaluation harness in Rust
+- Support pass@1 (greedy), pass@10, pass@100 scoring
+- Enable batch evaluation for efficiency
+- Integrate with CortexMesh inference pipeline
 
 ## Tasks
-- [x] Review existing GraphTransformNet.forward() and .infer() methods
-- [x] Review existing output graph decoding (to_text, Sabag pooling)
-- [ ] Improve output graph node embedding quality
-- [ ] Add output graph structure validation
-- [ ] Test full pipeline: text → graph → transform → graph → text
+- [ ] Download and parse HumanEval dataset (164 problems)
+- [ ] Implement evaluation harness that executes Python code safely
+- [ ] Create pass@k calculation following OpenAI's unbiased estimator
+- [ ] Add batch inference support for CortexMesh
+- [ ] Generate evaluation report with per-problem breakdown
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
-- Specific, testable criteria
+- Evaluation harness correctly scores 164 HumanEval problems
 
 ✅ **Criteria 2:**
-- Additional criteria as needed
+- pass@1 metric matches expected format (X.X% with confidence intervals)
+
+✅ **Criteria 3:**
+- Safe Python execution (sandboxed, timeout-protected)
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- HumanEval problems have: prompt (docstring), entry_point (function name), canonical_solution, test
+- pass@k formula: 1 - C(n-c, k) / C(n, k) where n=samples, c=correct, k=k
+- Python execution: use subprocess with timeout, capture stdout/stderr
+- For GRAPHEME: may need to tune graph→text decoding for Python syntax
+- Key files: `grapheme-train/src/bin/eval_humaneval.rs` (to create)
 
 ## Testing
 - [ ] Write unit tests for new functionality

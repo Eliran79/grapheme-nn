@@ -74,6 +74,7 @@ struct Args {
 #[derive(Debug, Clone, Deserialize)]
 struct TrainingSample {
     input: String,
+    #[serde(alias = "target")]
     output: String,
     #[serde(default)]
     domain: Option<String>,

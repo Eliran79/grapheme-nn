@@ -4990,6 +4990,14 @@ pub struct SabagPooling {
     pub sinkhorn_iterations: usize,
     /// Temperature for softmax (lower = sharper assignments)
     pub temperature: f32,
+    /// Edge threshold for coarsened adjacency (A_new = S^T·A·S)
+    /// Edges with weight below this threshold are pruned
+    #[serde(default = "default_edge_threshold")]
+    pub edge_threshold: f32,
+}
+
+fn default_edge_threshold() -> f32 {
+    0.1
 }
 
 impl SabagPooling {
@@ -5014,6 +5022,7 @@ impl SabagPooling {
             query_grad: None,
             sinkhorn_iterations: 10,
             temperature: 0.1,
+            edge_threshold: default_edge_threshold(),
         }
     }
 
@@ -5225,15 +5234,23 @@ impl SabagPooling {
         }
     }
 
-    /// Sabag Step 6: Create coarsened DAG structure
+    /// Sabag Step 6: Create coarsened DAG structure with proper adjacency coarsening
     ///
     /// Builds a new DAG with k nodes (k < n) where:
     /// - Nodes represent soft clusters of input nodes
-    /// - Edges are weighted by soft assignment probabilities
-    /// - DAG topology is preserved (no cycles introduced)
+    /// - Edges are computed via: A_new = S^T · A · S
+    /// - DAG topology is preserved through soft adjacency aggregation
     ///
-    /// For now: Create simple chain graph with k nodes
-    /// Future: Coarsen adjacency properly (A_new = S^T · A · S)
+    /// # Mathematical Foundation
+    /// Given:
+    /// - A ∈ ℝ^{n × n}: Input adjacency matrix (weighted)
+    /// - S ∈ ℝ^{n × k}: Soft assignment matrix (each row sums to 1)
+    ///
+    /// The coarsened adjacency is:
+    /// - A_new = S^T · A · S ∈ ℝ^{k × k}
+    ///
+    /// Element (i,j) of A_new represents: "how much do nodes assigned to cluster i
+    /// connect to nodes assigned to cluster j?"
     ///
     /// # Arguments
     /// * `input_graph` - Original DAG with n nodes
@@ -5242,18 +5259,17 @@ impl SabagPooling {
     /// * `assignment` - Soft assignment matrix S ∈ ℝ^{n × k}
     fn create_coarsened_dag(
         &self,
-        _input_graph: &GraphemeGraph,
+        input_graph: &GraphemeGraph,
         k: usize,
         features: &Array2<f32>,
-        _assignment: &Array2<f32>,
+        assignment: &Array2<f32>,
     ) -> GraphemeGraph {
-        // CRITICAL FIX: Manually create graph with EXACTLY k input nodes
-        // Don't use from_text() as it may create additional structure nodes!
+        use ndarray::Array2;
 
         let mut graph = DiGraph::new();
         let mut input_nodes = Vec::with_capacity(k);
 
-        // Create exactly k independent input nodes
+        // Step 1: Create k nodes for the coarsened graph
         for idx in 0..k {
             let activation = if idx < features.nrows() {
                 features.row(idx).mean().unwrap_or(0.0)
@@ -5274,10 +5290,86 @@ impl SabagPooling {
             input_nodes.push(node_id);
         }
 
+        // Step 2: Build adjacency matrix A from input graph
+        // Map node indices to dense [0..n) range
+        let node_list: Vec<_> = input_graph.graph.node_indices().collect();
+        let n = node_list.len();
+
+        if n == 0 || k == 0 {
+            return GraphemeGraph {
+                graph,
+                input_nodes,
+                cliques: Vec::new(),
+            };
+        }
+
+        // Create node index mapping: NodeIndex -> dense index
+        let mut node_to_idx = std::collections::HashMap::new();
+        for (idx, &node_id) in node_list.iter().enumerate() {
+            node_to_idx.insert(node_id, idx);
+        }
+
+        // Build sparse adjacency A (n × n)
+        let mut adj = Array2::<f32>::zeros((n, n));
+        for edge_idx in input_graph.graph.edge_indices() {
+            if let Some((source, target)) = input_graph.graph.edge_endpoints(edge_idx) {
+                if let (Some(&src_idx), Some(&tgt_idx)) = (node_to_idx.get(&source), node_to_idx.get(&target)) {
+                    if let Some(edge) = input_graph.graph.edge_weight(edge_idx) {
+                        adj[[src_idx, tgt_idx]] = edge.weight.abs().max(0.1); // Use edge weight
+                    } else {
+                        adj[[src_idx, tgt_idx]] = 1.0; // Default weight
+                    }
+                }
+            }
+        }
+
+        // Step 3: Compute coarsened adjacency A_new = S^T · A · S
+        // S is (n × k), so S^T is (k × n)
+        // A is (n × n)
+        // Result: (k × n) · (n × n) · (n × k) = (k × k)
+
+        // Ensure assignment matrix dimensions match
+        let (s_rows, s_cols) = assignment.dim();
+        if s_rows != n || s_cols != k {
+            // Dimension mismatch - fall back to no edges
+            return GraphemeGraph {
+                graph,
+                input_nodes,
+                cliques: Vec::new(),
+            };
+        }
+
+        // A_new = S^T · A · S
+        let s_t = assignment.t(); // (k × n)
+        let temp = s_t.dot(&adj);  // (k × n) · (n × n) = (k × n)
+        let adj_new = temp.dot(assignment); // (k × n) · (n × k) = (k × k)
+
+        // Step 4: Create edges based on coarsened adjacency
+        // Use threshold to create discrete edges from soft adjacency
+        let edge_threshold = self.edge_threshold;
+
+        for i in 0..k {
+            for j in 0..k {
+                if i == j {
+                    continue; // Skip self-loops
+                }
+
+                let weight = adj_new[[i, j]];
+                if weight > edge_threshold {
+                    // Create edge from cluster i to cluster j
+                    graph.add_edge(
+                        input_nodes[i],
+                        input_nodes[j],
+                        Edge::new(weight, EdgeType::Sequential),
+                    );
+                }
+            }
+        }
+
         GraphemeGraph {
             graph,
             input_nodes,
-            cliques: Vec::new(),  // No cliques in coarsened graph
+            cliques: Vec::new(),  // Cliques could be coarsened similarly in future
         }
     }
 
@@ -7898,8 +7990,13 @@ pub struct GraphDecoder {
     pub context_proj: Array2<f32>,
     /// Message passing layers for output generation
     pub mp_layers: Vec<MessagePassingLayer>,
-    /// Output projection to character space
+    /// Output projection to character space (for decoding via cosine similarity)
     pub output_proj: Embedding,
+    /// Linear projection: hidden_dim -> vocab_size (for training)
+    pub linear_proj: Array2<f32>,
+    /// Gradient for linear_proj
+    #[serde(skip)]
+    pub linear_grad: Option<Array2<f32>>,
     /// Hidden dimension
     pub hidden_dim: usize,
     /// Output vocabulary size
@@ -7926,13 +8023,22 @@ impl GraphDecoder {
         // Single message passing layer for refinement
         let mp_layers = vec![MessagePassingLayer::new(hidden_dim, hidden_dim)];
 
-        // Output projection uses embedding for decode
+        // Output projection uses embedding for decode (cosine similarity based)
         let output_proj = Embedding::xavier(vocab_size, embed_dim);
+
+        // Linear projection: hidden_dim -> vocab_size (Xavier init)
+        let scale = (2.0 / (hidden_dim + vocab_size) as f32).sqrt();
+        let linear_proj = Array2::from_shape_fn(
+            (hidden_dim, vocab_size),
+            |_| (rand::random::<f32>() - 0.5) * 2.0 * scale
+        );
 
         Self {
             context_proj,
             mp_layers,
             output_proj,
+            linear_proj,
+            linear_grad: None,
             hidden_dim,
             vocab_size,
             max_length,
@@ -7974,9 +8080,45 @@ impl GraphDecoder {
         outputs
     }
 
-    /// Decode embeddings to text
+    /// Decode embeddings to text using embedding cosine similarity
     pub fn decode_to_text(&self, embeddings: &Array2<f32>) -> String {
         self.output_proj.decode_batch(embeddings)
+    }
+
+    /// Decode hidden states to text using trained linear projection (argmax)
+    ///
+    /// This uses the trained linear_proj layer for decoding, which is the
+    /// same layer updated during training. This ensures decoding matches training.
+    pub fn decode_with_linear(&self, hidden_states: &Array2<f32>) -> String {
+        // Compute logits: hidden_states @ linear_proj -> (seq_len, vocab_size)
+        let logits = self.compute_logits(hidden_states);
+
+        let mut result = String::new();
+        for i in 0..logits.nrows() {
+            let row = logits.row(i);
+            // Find argmax (best character)
+            let mut best_idx = 0usize;
+            let mut best_val = f32::NEG_INFINITY;
+            for (j, &val) in row.iter().enumerate() {
+                if val > best_val {
+                    best_val = val;
+                    best_idx = j;
+                }
+            }
+            // Convert to printable character
+            if best_idx >= 32 && best_idx <= 126 {
+                result.push((best_idx as u8) as char);
+            } else if best_idx == 10 {
+                result.push('\n');
+            } else if best_idx == 9 {
+                result.push('\t');
+            } else if best_idx == 13 {
+                result.push('\r');
+            } else {
+                result.push(' '); // Replace non-printable with space
+            }
+        }
+        result
     }
 }
 
@@ -8040,13 +8182,13 @@ impl EncoderDecoder {
         self.last_encoder_features = Some(encoder_features.clone());
         self.last_context = Some(context.clone());
 
-        // Decode to answer embeddings
-        let output_embeddings = self.decoder.decode(&context, &encoder_features);
+        // Decode to hidden states
+        let hidden_states = self.decoder.decode(&context, &encoder_features);
 
-        // Decode to text
-        let decoded_text = self.decoder.decode_to_text(&output_embeddings);
+        // Decode to text using trained linear projection (argmax)
+        let decoded_text = self.decoder.decode_with_linear(&hidden_states);
 
-        (output_embeddings, decoded_text)
+        (hidden_states, decoded_text)
     }
 
     /// Inference: question text → answer text
@@ -8059,6 +8201,140 @@ impl EncoderDecoder {
     /// Get the decoder's output embedding layer for decoding
     pub fn decode_embeddings(&self, embeddings: &Array2<f32>) -> String {
         self.decoder.decode_to_text(embeddings)
+    }
+
+    /// Zero out accumulated gradients
+    pub fn zero_grad(&mut self) {
+        self.encoder.zero_grad();
+        self.decoder.zero_grad();
+    }
+
+    /// Train step: compute loss and update weights
+    ///
+    /// # Arguments
+    /// * `input` - Input question graph
+    /// * `target` - Target answer text
+    /// * `lr` - Learning rate
+    ///
+    /// # Returns
+    /// Loss value (cross-entropy)
+    pub fn train_step(&mut self, input: &GraphemeGraph, target: &str, lr: f32) -> f32 {
+        // Forward pass - get hidden states
+        let (encoder_features, context) = self.encoder.encode(input);
+
+        // Cache for gradient computation
+        self.last_encoder_features = Some(encoder_features.clone());
+        self.last_context = Some(context.clone());
+
+        // Decode to hidden states
+        let hidden_states = self.decoder.decode(&context, &encoder_features);
+
+        // Compute logits via linear projection: (seq_len, hidden_dim) -> (seq_len, vocab_size)
+        let logits = self.decoder.compute_logits(&hidden_states);
+
+        // Compute cross-entropy loss and gradients
+        let target_chars: Vec<usize> = target.chars()
+            .map(|c| (c as usize).min(self.decoder.vocab_size - 1))
+            .collect();
+
+        let seq_len = logits.nrows().min(target_chars.len());
+        let mut total_loss = 0.0f32;
+
+        // Gradient for decoder linear projection
+        for i in 0..seq_len {
+            let target_idx = target_chars[i];
+            let row_logits = logits.row(i);
+
+            // Softmax
+            let max_logit = row_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp_logits: Vec<f32> = row_logits.iter().map(|&x| (x - max_logit).exp()).collect();
+            let sum_exp: f32 = exp_logits.iter().sum();
+            let probs: Vec<f32> = exp_logits.iter().map(|&e| e / sum_exp).collect();
+
+            // Cross-entropy loss
+            let log_prob = probs[target_idx].max(1e-10).ln();
+            total_loss -= log_prob;
+
+            // Gradient: softmax(logits) - one_hot(target)
+            let mut grad = Array1::zeros(self.decoder.vocab_size);
+            for (j, &p) in probs.iter().enumerate() {
+                grad[j] = if j == target_idx { p - 1.0 } else { p };
+            }
+
+            // Get hidden state for this position
+            let hidden = hidden_states.row(i).to_owned();
+
+            // Accumulate gradient for linear projection
+            self.decoder.backward_linear(&hidden, &grad);
+        }
+
+        // Gradient for context projection (simplified - just scale existing weights)
+        let grad_scale = total_loss / seq_len.max(1) as f32;
+        for i in 0..self.decoder.context_proj.nrows() {
+            for j in 0..self.decoder.context_proj.ncols() {
+                self.decoder.context_proj[[i, j]] -= lr * grad_scale * context[j] * 0.01;
+            }
+        }
+
+        // Update weights
+        self.encoder.step(lr);
+        self.decoder.step(lr);
+
+        if seq_len > 0 {
+            total_loss / seq_len as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+impl GraphEncoder {
+    /// Zero gradients
+    pub fn zero_grad(&mut self) {
+        self.embedding.zero_grad();
+    }
+
+    /// Update weights
+    pub fn step(&mut self, lr: f32) {
+        self.embedding.step(lr);
+    }
+}
+
+impl GraphDecoder {
+    /// Zero gradients
+    pub fn zero_grad(&mut self) {
+        self.output_proj.zero_grad();
+        self.linear_grad = Some(Array2::zeros(self.linear_proj.dim()));
+    }
+
+    /// Update weights
+    pub fn step(&mut self, lr: f32) {
+        self.output_proj.step(lr);
+        // Update linear projection
+        if let Some(ref grad) = self.linear_grad {
+            self.linear_proj = &self.linear_proj - &(grad * lr);
+        }
+    }
+
+    /// Compute logits from hidden states using linear projection
+    pub fn compute_logits(&self, hidden: &Array2<f32>) -> Array2<f32> {
+        // hidden: (seq_len, hidden_dim) -> (seq_len, vocab_size)
+        hidden.dot(&self.linear_proj)
+    }
+
+    /// Accumulate gradient for linear projection
+    pub fn backward_linear(&mut self, hidden: &Array1<f32>, grad: &Array1<f32>) {
+        if self.linear_grad.is_none() {
+            self.zero_grad();
+        }
+        if let Some(ref mut linear_grad) = self.linear_grad {
+            // grad_w[i,j] = hidden[i] * grad[j]
+            for i in 0..hidden.len() {
+                for j in 0..grad.len() {
+                    linear_grad[[i, j]] += hidden[i] * grad[j];
+                }
+            }
+        }
     }
 }
 
