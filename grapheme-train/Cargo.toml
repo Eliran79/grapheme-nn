@@ -29,6 +29,7 @@ grapheme-music = { path = "../grapheme-music" }
 grapheme-chem = { path = "../grapheme-chem" }
 grapheme-vision = { path = "../grapheme-vision" }
 grapheme-time = { path = "../grapheme-time" }
+grapheme-router = { path = "../grapheme-router" }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -64,3 +65,7 @@ path = "src/bin/train_timeseries.rs"
 [[bin]]
 name = "train_multitask"
 path = "src/bin/train_multitask.rs"
+
+[[bin]]
+name = "demo_agi_router"
+path = "src/bin/demo_agi_router.rs"

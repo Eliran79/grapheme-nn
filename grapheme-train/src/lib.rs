@@ -72,6 +72,16 @@ pub enum OutputType {
     Both,
 }
 
+/// Dataset format enumeration for auto-detection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DatasetFormat {
+    /// Math curriculum format: input_polish, expected_symbolic/expected_result
+    #[default]
+    MathCurriculum,
+    /// Text pairs format: input, target (for QA, kindergarten, etc.)
+    TextPairs,
+}
+
 /// Specification for a curriculum level
 #[derive(Debug, Clone)]
 pub struct LevelSpec {
@@ -253,49 +263,81 @@ impl LevelSpec {
 // ============================================================================
 
 /// A training example: input expression -> expected result
+/// Supports both math curriculum and text pairs formats.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingExample {
     /// Unique identifier (e.g., "L2-00001")
+    #[serde(default)]
     pub id: String,
-    /// The input expression in Polish notation
+    /// The input expression in Polish notation (math format)
+    #[serde(default)]
     pub input_polish: String,
-    /// The input expression
-    pub input_expr: Expr,
+    /// The input expression (math format) - None for text pairs
+    #[serde(default)]
+    pub input_expr: Option<Expr>,
     /// The expected numeric result (if applicable)
+    #[serde(default)]
     pub expected_result: Option<f64>,
     /// The expected symbolic result (if applicable)
+    #[serde(default)]
     pub expected_symbolic: Option<Expr>,
     /// Difficulty level (1-7)
+    #[serde(default)]
     pub level: u8,
     /// Symbol bindings used (if any)
     #[serde(default)]
     pub bindings: Vec<(String, f64)>,
+    /// Plain text input (for text pairs format: QA, kindergarten, etc.)
+    #[serde(default)]
+    pub input: Option<String>,
+    /// Plain text target (for text pairs format)
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 impl TrainingExample {
-    /// Create a numeric example
+    /// Create a numeric example (math curriculum format)
     pub fn numeric(id: String, expr: Expr, result: f64, level: u8) -> Self {
         Self {
             id,
             input_polish: expr_to_polish(&expr),
-            input_expr: expr,
+            input_expr: Some(expr),
             expected_result: Some(result),
             expected_symbolic: None,
             level,
             bindings: Vec::new(),
+            input: None,
+            target: None,
         }
     }
 
-    /// Create a symbolic example
+    /// Create a symbolic example (math curriculum format)
     pub fn symbolic(id: String, expr: Expr, result_expr: Expr, level: u8) -> Self {
         Self {
             id,
             input_polish: expr_to_polish(&expr),
-            input_expr: expr,
+            input_expr: Some(expr),
             expected_result: None,
             expected_symbolic: Some(result_expr),
             level,
             bindings: Vec::new(),
+            input: None,
+            target: None,
+        }
+    }
+
+    /// Create a text pairs example (QA, kindergarten format)
+    pub fn text_pair(input: String, target: String) -> Self {
+        Self {
+            id: String::new(),
+            input_polish: input.clone(), // Use input as polish for compatibility
+            input_expr: None,
+            expected_result: None,
+            expected_symbolic: None,
+            level: 1,
+            bindings: Vec::new(),
+            input: Some(input),
+            target: Some(target),
         }
     }
 
@@ -303,6 +345,31 @@ impl TrainingExample {
     pub fn with_bindings(mut self, bindings: Vec<(String, f64)>) -> Self {
         self.bindings = bindings;
         self
+    }
+
+    /// Check if this is a text pairs format example
+    pub fn is_text_pair(&self) -> bool {
+        self.input.is_some() && self.target.is_some()
+    }
+
+    /// Get the input string (works for both formats)
+    pub fn get_input(&self) -> &str {
+        if let Some(ref input) = self.input {
+            input
+        } else {
+            &self.input_polish
+        }
+    }
+
+    /// Get the target string (works for both formats)
+    pub fn get_target(&self) -> Option<String> {
+        if let Some(ref target) = self.target {
+            Some(target.clone())
+        } else if let Some(ref symbolic) = self.expected_symbolic {
+            Some(expr_to_polish(symbolic))
+        } else {
+            self.expected_result.map(|r| r.to_string())
+        }
     }
 }
 
@@ -847,6 +914,9 @@ pub struct Dataset {
     pub examples: Vec<TrainingExample>,
     /// Dataset metadata
     pub metadata: DatasetMetadata,
+    /// Detected format of the dataset
+    #[serde(default)]
+    pub format: DatasetFormat,
 }
 
 /// Dataset metadata
@@ -876,11 +946,42 @@ impl Dataset {
                 total_examples: 0,
                 seed: None,
             },
+            format: DatasetFormat::default(),
         }
     }
 
-    /// Create a dataset from examples
+    /// Create a dataset from examples with auto-detected format
     pub fn from_examples(name: &str, examples: Vec<TrainingExample>) -> Self {
+        let levels: Vec<u8> = examples
+            .iter()
+            .map(|e| e.level)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let total = examples.len();
+
+        // Auto-detect format from first example
+        let format = if examples.first().is_some_and(|e| e.is_text_pair()) {
+            DatasetFormat::TextPairs
+        } else {
+            DatasetFormat::MathCurriculum
+        };
+
+        Self {
+            examples,
+            metadata: DatasetMetadata {
+                name: name.to_string(),
+                version: "1.0".to_string(),
+                levels,
+                total_examples: total,
+                seed: None,
+            },
+            format,
+        }
+    }
+
+    /// Create a dataset with explicit format
+    pub fn from_examples_with_format(name: &str, examples: Vec<TrainingExample>, format: DatasetFormat) -> Self {
         let levels: Vec<u8> = examples
             .iter()
             .map(|e| e.level)
@@ -898,6 +999,7 @@ impl Dataset {
                 total_examples: total,
                 seed: None,
             },
+            format,
         }
     }
 
@@ -961,21 +1063,62 @@ impl Dataset {
         Ok(())
     }
 
-    /// Load from JSONL file
+    /// Load from JSONL file with auto-format detection
+    ///
+    /// Detects format from the first line:
+    /// - If "input_polish" field exists -> MathCurriculum format
+    /// - If "input" and "target" fields exist -> TextPairs format
     pub fn load_jsonl<P: AsRef<Path>>(path: P, name: &str) -> TrainingResult<Self> {
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut examples = Vec::new();
+        let mut detected_format = None;
 
         for line in reader.lines() {
             let line = line?;
-            if !line.trim().is_empty() {
-                let example: TrainingExample = serde_json::from_str(&line)?;
-                examples.push(example);
+            if line.trim().is_empty() {
+                continue;
             }
+
+            // On first line, detect format from JSON structure
+            if detected_format.is_none() {
+                detected_format = Some(Self::detect_format_from_json(&line));
+            }
+
+            let example: TrainingExample = serde_json::from_str(&line)?;
+            examples.push(example);
         }
 
-        Ok(Dataset::from_examples(name, examples))
+        let format = detected_format.unwrap_or(DatasetFormat::MathCurriculum);
+        Ok(Dataset::from_examples_with_format(name, examples, format))
+    }
+
+    /// Detect dataset format from a JSON line
+    fn detect_format_from_json(json_line: &str) -> DatasetFormat {
+        // Parse as generic JSON to check field presence
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) {
+            // Check for text pairs format fields
+            if value.get("input").is_some() && value.get("target").is_some()
+                && value.get("input_polish").is_none() {
+                return DatasetFormat::TextPairs;
+            }
+            // Check for math curriculum format fields
+            if value.get("input_polish").is_some() {
+                return DatasetFormat::MathCurriculum;
+            }
+        }
+        // Default to math curriculum
+        DatasetFormat::MathCurriculum
+    }
+
+    /// Get the dataset format
+    pub fn format(&self) -> DatasetFormat {
+        self.format
+    }
+
+    /// Check if this is a text pairs format dataset
+    pub fn is_text_pairs(&self) -> bool {
+        self.format == DatasetFormat::TextPairs
     }
 
     /// Create an iterator for batched training
@@ -4105,9 +4248,14 @@ impl Trainer {
         }
 
         if let Some(expected) = example.expected_result {
-            match eval_engine.evaluate(&example.input_expr) {
-                Ok(result) => (result - expected).abs() < 1e-10,
-                Err(_) => false,
+            if let Some(ref input_expr) = example.input_expr {
+                match eval_engine.evaluate(input_expr) {
+                    Ok(result) => (result - expected).abs() < 1e-10,
+                    Err(_) => false,
+                }
+            } else {
+                // Text pairs format - skip math validation
+                true
             }
         } else {
             // Symbolic validation would go here
@@ -4769,29 +4917,34 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
 
         // Validate numeric result
         if let Some(expected) = example.expected_result {
-            match eval_engine.evaluate(&example.input_expr) {
-                Ok(result) => {
-                    if (result - expected).abs() < 1e-10 {
-                        report.valid += 1;
-                    } else {
-                        report.invalid += 1;
-                        report.errors.push(format!(
-                            "{}: expected {}, got {}",
-                            example.id, expected, result
-                        ));
+            if let Some(ref input_expr) = example.input_expr {
+                match eval_engine.evaluate(input_expr) {
+                    Ok(result) => {
+                        if (result - expected).abs() < 1e-10 {
+                            report.valid += 1;
+                        } else {
+                            report.invalid += 1;
+                            report.errors.push(format!(
+                                "{}: expected {}, got {}",
+                                example.id, expected, result
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        report.errors_count += 1;
+                        report.errors.push(format!("{}: {}", example.id, e));
                     }
                 }
-                Err(e) => {
-                    report.errors_count += 1;
-                    report.errors.push(format!("{}: {}", example.id, e));
-                }
+            } else {
+                // Text pairs format - skip numeric validation
+                report.valid += 1;
             }
-        } else {
+        } else if let Some(ref input_expr) = example.input_expr {
             // Symbolic validation - check expression structure
             const MAX_DEPTH: usize = 100;
 
             // Validate input expression
-            if let Err(e) = validate_symbolic_expr(&example.input_expr, MAX_DEPTH) {
+            if let Err(e) = validate_symbolic_expr(input_expr, MAX_DEPTH) {
                 report.invalid += 1;
                 report
                     .errors
@@ -4811,6 +4964,17 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
             }
 
             report.valid += 1;
+        } else {
+            // Text pairs format - valid if input and target exist
+            if example.input.is_some() && example.target.is_some() {
+                report.valid += 1;
+            } else {
+                report.invalid += 1;
+                report.errors.push(format!(
+                    "{}: missing input/target for text pairs format",
+                    example.id
+                ));
+            }
         }
     }
 
@@ -5426,7 +5590,7 @@ mod tests {
             assert!(example.id.starts_with("L1-"));
             // Verify the result is correct
             let engine = MathEngine::new();
-            let computed = engine.evaluate(&example.input_expr).unwrap();
+            let computed = engine.evaluate(example.input_expr.as_ref().unwrap()).unwrap();
             assert!((computed - example.expected_result.unwrap()).abs() < 1e-10);
         }
     }

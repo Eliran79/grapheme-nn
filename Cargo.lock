@@ -517,6 +517,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grapheme-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "grapheme-core",
+ "grapheme-math",
+ "grapheme-time",
+ "grapheme-vision",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grapheme-tests"
 version = "0.1.0"
 dependencies = [
@@ -563,6 +578,7 @@ dependencies = [
  "grapheme-math",
  "grapheme-music",
  "grapheme-polish",
+ "grapheme-router",
  "grapheme-time",
  "grapheme-vision",
  "indicatif",

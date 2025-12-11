@@ -1,7 +1,7 @@
 ---
 id: backend-102
 title: Extend train command to support QA pairs format
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -149,25 +149,30 @@ match dataset.format() {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Added `DatasetFormat` enum with `#[default]` derive for `MathCurriculum`
+- Extended `TrainingExample` with `input` and `target` Option<String> fields for text pairs
+- Implemented `Dataset::detect_format_from_json()` for auto-detection from JSON structure
+- Added unified `get_input()` and `get_target()` methods to `TrainingExample`
+- Modified `train.rs` training loop to use unified accessors instead of format-specific fields
+- Changed `input_expr` from `Expr` to `Option<Expr>` for text pairs compatibility
+- Fixed test cases that use `input_expr` directly to use `.as_ref().unwrap()`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Format detection happens at load time in `Dataset::load_jsonl()`
+- Training loop unified - same code path for both math and QA datasets
+- Structural loss computation unchanged - works on graph representations
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No external dependencies changed
+- Internal `TrainingExample` struct now has `#[serde(default)]` on all fields
+- `train_kindergarten_loop.rs` can be deprecated (unified into `train.rs`)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- `cargo run --bin train -- --config train_config.toml --dry-run` works for math
+- `cargo run --bin train -- --config train_config_kindergarten.toml --epochs 5` works for QA
+- All workspace tests pass, zero clippy warnings
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Unified training command is now complete
+- Both MathCurriculum and TextPairs formats supported
+- Format auto-detected from first JSON line's field presence

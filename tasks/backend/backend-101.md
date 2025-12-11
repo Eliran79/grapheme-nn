@@ -1,7 +1,7 @@
 ---
 id: backend-101
 title: Full end-to-end training on kindergarten QA dataset
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -86,25 +86,32 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Extended `TrainingExample` struct to support both math curriculum and text pairs format
+- Added `DatasetFormat` enum with `MathCurriculum` and `TextPairs` variants
+- Implemented auto-format detection in `Dataset::load_jsonl()` based on JSON field presence
+- Added `get_input()` and `get_target()` methods to `TrainingExample` for unified access
+- Modified `train.rs` to use unified methods instead of format-specific field access
+- Training now works with both math datasets (`input_polish`, `expected_symbolic`) and QA datasets (`input`, `target`)
+- Successfully trained on kindergarten QA dataset (10 examples, text pairs format)
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `Dataset::load_jsonl()` now auto-detects format from first JSON line
+- `TrainingExample.input_expr` changed from `Expr` to `Option<Expr>` (None for text pairs)
+- Training loop uses `example.get_input()` and `example.get_target()` for unified access
+- Validation code updated to handle both formats gracefully
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No new external dependencies
+- `TrainingExample` fields now have `#[serde(default)]` for backward compatibility
+- Existing math training configs continue to work unchanged
+- New `train_config_kindergarten.toml` works with text pairs format
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- `cargo run --bin train -- --config train_config_kindergarten.toml --epochs 5 -v` successfully trains on QA data
+- All 187 workspace tests pass
+- Zero clippy warnings across workspace
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Unified train command now supports both math curriculum and text pairs datasets
+- Format auto-detected from first JSON line - no manual configuration needed
+- Loss is still structural graph edit distance, regardless of input format

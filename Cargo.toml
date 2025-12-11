@@ -20,6 +20,7 @@ members = [
     "grapheme-chem",
     "grapheme-vision",
     "grapheme-time",
+    "grapheme-router",
     "grapheme-tests",
     "grapheme-brain-common",
 ]

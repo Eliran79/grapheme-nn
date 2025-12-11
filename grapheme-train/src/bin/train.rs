@@ -4,7 +4,6 @@
 
 use clap::Parser;
 use grapheme_core::{GraphTransformNet, UnifiedCheckpoint};
-use grapheme_polish::expr_to_polish;
 use grapheme_train::{
     compute_structural_loss, Adam, ConfigFile, Dataset, LRScheduler, StructuralLossConfig,
     TrainingLoop, TrainingMetrics, TrainingState,
@@ -284,28 +283,22 @@ fn main() -> anyhow::Result<()> {
             let mut batch_count = 0;
 
             // Process batches with supervised edit prediction (backend-092)
+            // Supports both MathCurriculum and TextPairs formats (backend-102)
             for batch in train_dataset.batches(config.training.batch_size) {
                 // Zero gradients before each batch
                 model.zero_grad();
 
-                // Collect inputs and targets for batch
-                let mut inputs: Vec<&str> = Vec::with_capacity(batch.len());
+                // Collect inputs and targets for batch (unified format handling)
+                let mut inputs: Vec<String> = Vec::with_capacity(batch.len());
                 let mut targets: Vec<String> = Vec::with_capacity(batch.len());
 
                 for example in batch {
-                    let input = &example.input_polish;
-
-                    // Get target string
-                    let target = if let Some(ref symbolic) = &example.expected_symbolic {
-                        expr_to_polish(symbolic)
-                    } else if let Some(result) = example.expected_result {
-                        result.to_string()
-                    } else {
-                        continue;
-                    };
-
-                    inputs.push(input);
-                    targets.push(target);
+                    // Use unified get_input/get_target methods
+                    let input = example.get_input().to_string();
+                    if let Some(target) = example.get_target() {
+                        inputs.push(input);
+                        targets.push(target);
+                    }
                 }
 
                 if inputs.is_empty() {
@@ -321,7 +314,7 @@ fn main() -> anyhow::Result<()> {
                 let mut total_accuracy = 0.0;
 
                 for (input, target) in inputs.iter().zip(targets.iter()) {
-                    // Convert text to graph structures
+                    // Convert text to graph structures (works for both math and text pairs)
                     let input_graph = grapheme_core::GraphemeGraph::from_text(input);
                     let target_graph = grapheme_core::GraphemeGraph::from_text(target);
 
@@ -385,23 +378,19 @@ fn main() -> anyhow::Result<()> {
             // Validation using structural loss (consistent with training)
             if let Some(ref val) = val_dataset {
                 if training_loop.should_validate() {
-                    // Compute validation structural loss
+                    // Compute validation structural loss (supports both formats)
                     let mut val_loss = 0.0;
                     let mut val_accuracy = 0.0;
                     let mut val_count = 0;
 
                     for example in &val.examples {
-                        let target = if let Some(ref symbolic) = &example.expected_symbolic {
-                            expr_to_polish(symbolic)
-                        } else if let Some(result) = example.expected_result {
-                            result.to_string()
-                        } else {
+                        let Some(target) = example.get_target() else {
                             continue;
                         };
 
-                        // Convert to graphs
+                        // Convert to graphs (unified format handling)
                         let predicted_graph =
-                            grapheme_core::GraphemeGraph::from_text(&example.input_polish);
+                            grapheme_core::GraphemeGraph::from_text(example.get_input());
                         let target_graph = grapheme_core::GraphemeGraph::from_text(&target);
 
                         // Compute structural loss
