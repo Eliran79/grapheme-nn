@@ -1,5 +1,41 @@
 # CLAUDE.md - Project Context for Claude Code
 
+## ⚠️ CRITICAL REQUIREMENTS FOR AI AGENTS
+
+Before implementing ANY new features or algorithms, you MUST:
+
+### 1. Read Vision Documents First
+**ALWAYS read these files before implementing:**
+- `GRAPHEME_Vision.md` - Main specification with API signatures and pseudocode
+- `VISION_ARCHITECTURE.md` - Component distinctions and data flow
+- `GRAPHEME_Math.md` - Mathematical reasoning extension (if doing math-related work)
+
+These documents define the architecture. Implementations that don't follow them will be rejected.
+
+### 2. P-Time Complexity Only (No NP-Hard Algorithms)
+**ALL algorithms MUST be polynomial time (P-time):**
+- Use O(n), O(n log n), O(n²), O(n³) algorithms
+- NEVER use exponential-time algorithms (O(2^n), O(n!))
+- NEVER implement NP-hard solutions (TSP, SAT, clique finding, etc.)
+- For graph algorithms: BFS (O(V+E)), not backtracking/exhaustive search
+- For pattern matching: Use linear-time algorithms, not exponential regex
+
+**Examples of ALLOWED algorithms:**
+- BFS/DFS for graph traversal: O(V+E)
+- Cosine similarity for pattern matching: O(n)
+- Merge sort / quicksort: O(n log n)
+- Dynamic programming (when polynomial): varies
+
+**Examples of FORBIDDEN algorithms:**
+- Backtracking without pruning bounds
+- Exhaustive clique enumeration
+- NP-complete problem solvers
+- Exponential combinatorial searches
+
+If unsure about complexity, ask or use a simpler algorithm.
+
+---
+
 ## Project Overview
 
 **GRAPHEME** (Graph Representation through Adaptive Pattern Hierarchy and Emergent Modular Encoding) is a revolutionary neural architecture that eliminates tokenization and processes text directly at the character level using dynamic graphs.

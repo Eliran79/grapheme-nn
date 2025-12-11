@@ -1,7 +1,7 @@
 ---
 id: backend-153
 title: Parallelize VisionBrain feature extraction (grid sampling)
-status: todo
+status: done
 priority: high
 tags:
 - backend
