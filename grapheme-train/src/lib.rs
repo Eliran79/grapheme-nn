@@ -483,7 +483,9 @@ impl DataGenerator {
             self.stats.attempted += 1;
             let a = self.rand_int(1, 20);
             let b = self.rand_int(1, 20);
-            let op = *self.choose(&ops).unwrap();
+            let Some(&op) = self.choose(&ops) else {
+                continue; // ops array is never empty, but handle gracefully
+            };
 
             let expr = Expr::BinOp {
                 op,
@@ -513,8 +515,9 @@ impl DataGenerator {
             let a = self.rand_int(1, 10);
             let b = self.rand_int(1, 10);
             let c = self.rand_int(1, 10);
-            let op1 = *self.choose(&ops).unwrap();
-            let op2 = *self.choose(&ops).unwrap();
+            let (Some(&op1), Some(&op2)) = (self.choose(&ops), self.choose(&ops)) else {
+                continue; // ops array is never empty, but handle gracefully
+            };
 
             let expr = Expr::BinOp {
                 op: op2,
@@ -546,10 +549,11 @@ impl DataGenerator {
 
         for _ in 0..count {
             self.stats.attempted += 1;
-            let sym = *self.choose(&symbols).unwrap();
+            let (Some(&sym), Some(&op)) = (self.choose(&symbols), self.choose(&ops)) else {
+                continue; // arrays are never empty, but handle gracefully
+            };
             let sym_value = self.rand_int(1, 10) as f64;
             let b = self.rand_int(1, 10);
-            let op = *self.choose(&ops).unwrap();
 
             // Create expression: sym op b
             let expr = Expr::BinOp {

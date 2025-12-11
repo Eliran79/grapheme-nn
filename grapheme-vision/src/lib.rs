@@ -1028,7 +1028,7 @@ pub fn extract_hierarchical_blobs(image: &RawImage, config: &FeatureConfig) -> B
                     if cx >= px as f32 && cx < (px + pw) as f32 &&
                        cy >= py as f32 && cy < (py + ph) as f32 {
                         let parent_size = parent_blob.blob.pixels.len();
-                        if best_parent.is_none() || parent_size < best_parent.unwrap().1 {
+                        if best_parent.is_none_or(|(_, best_size)| parent_size < best_size) {
                             best_parent = Some((parent_idx, parent_size));
                         }
                     }
@@ -2524,7 +2524,9 @@ impl ImageClassificationModel {
         if self.config.use_hybrid_learning && self.config.hebbian_weight > 0.0 {
             let hebbian_lr = self.config.learning_rate * self.config.hebbian_weight;
             for edge_idx in self.dag.graph.edge_indices() {
-                let (source, target) = self.dag.graph.edge_endpoints(edge_idx).unwrap();
+                let Some((source, target)) = self.dag.graph.edge_endpoints(edge_idx) else {
+                    continue;
+                };
                 let pre = self.dag.graph[source].activation;
                 let post = self.dag.graph[target].activation;
 

@@ -1,7 +1,7 @@
 ---
 id: testing-011
 title: 'Code quality: Add comprehensive error handling (no unwrap in lib code)'
-status: todo
+status: done
 priority: high
 tags:
 - testing
@@ -86,25 +86,48 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **grapheme-core/src/lib.rs**: Replaced 4 `unwrap()` calls with safe alternatives:
+  - `edge_endpoints().unwrap()` → `filter_map` with `?` operator (line 1033)
+  - `edge_endpoints().unwrap()` in filter closure → `let Some(...) else { return false }` (line 1374)
+  - `min_by_key().unwrap()` → `let Some(...) else { break }` (line 3852)
+  - Two Hebbian learning `edge_endpoints().unwrap()` → `let Some(...) else { continue }` (lines 6428, 6506)
+- **grapheme-vision/src/lib.rs**: Replaced 2 `unwrap()` calls:
+  - `best_parent.unwrap()` → `is_none_or()` pattern (line 1031)
+  - `edge_endpoints().unwrap()` → `let Some(...) else { continue }` (line 2527)
+- **grapheme-meta/src/lib.rs**: Replaced `partial_cmp().unwrap()` → `unwrap_or(Ordering::Equal)` (line 5039)
+- **grapheme-train/src/lib.rs**: Replaced 5 `choose().unwrap()` calls with `let Some(...) else { continue }` patterns (lines 486, 518, 552)
+- **grapheme-code/src/lib.rs**: Replaced `edge_endpoints().unwrap()` → `let Some(...) else { continue }` (line 768)
+- **grapheme-chem/src/lib.rs**: Replaced `to_digit().unwrap()` → `if let Some(digit)` (line 323)
+- **grapheme-music/src/lib.rs**: Replaced `chars().next().unwrap()` → extracted `first_char` with `let Some(...) else { return Err }` (line 270)
+- **grapheme-math/src/lib.rs**: Replaced `text.find(pattern).unwrap()` → `if let Some(idx)` (line 1276)
+- **grapheme-reason/src/lib.rs**: Replaced 3 `unwrap()` calls:
+  - `steps.last().unwrap()` → `map(...).unwrap_or_default()` (line 299)
+  - `min_by_key().unwrap()` → `let Some(...) else { return Ok(DagNN::new()) }` (line 812)
+  - `best_match.unwrap()` → `is_none_or()` pattern (line 925)
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- No behavior changes - all replacements maintain identical logic
+- Edge cases now gracefully skip invalid data instead of panicking
+- Test code still uses `unwrap()` (acceptable for tests)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No new dependencies added
+- All existing tests pass (1000+ tests)
+- Zero clippy warnings
+- Pattern used consistently across all crates
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- `cargo build --release` - succeeds
+- `cargo clippy --all-targets` - zero warnings
+- `cargo test --workspace` - all tests pass
+- Patterns used:
+  - `filter_map` with `?` for iterator transformations
+  - `let Some(...) else { continue/return false/break }` for loop bodies
+  - `is_none_or()` for Option comparisons
+  - `unwrap_or_default()` for default values
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Test code (`#[test]` functions) and benchmark code are allowed to use `unwrap()`
+- Doc comments (`/// # Example`) are allowed to use `unwrap()` in example code
+- New library code should follow these patterns to avoid `unwrap()`
+- The `is_none_or()` method is idiomatic Rust for "if None or condition"

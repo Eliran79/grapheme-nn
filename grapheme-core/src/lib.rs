@@ -1030,12 +1030,12 @@ impl DagNN {
         let edge_info: Vec<_> = self
             .graph
             .edge_indices()
-            .map(|edge_idx| {
-                let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+            .filter_map(|edge_idx| {
+                let (source, target) = self.graph.edge_endpoints(edge_idx)?;
                 let fan_in = self.graph.edges_directed(source, Direction::Incoming).count();
                 let fan_out = self.graph.edges_directed(target, Direction::Outgoing).count();
                 let edge_type = self.graph[edge_idx].edge_type;
-                (edge_idx, fan_in, fan_out, edge_type)
+                Some((edge_idx, fan_in, fan_out, edge_type))
             })
             .collect();
 
@@ -1371,7 +1371,9 @@ impl DagNN {
             .graph
             .edge_indices()
             .filter(|&edge_idx| {
-                let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+                let Some((source, target)) = self.graph.edge_endpoints(edge_idx) else {
+                    return false; // Skip edges with invalid endpoints
+                };
 
                 // Get activation vectors for source and target
                 let source_acts: Vec<f32> = activation_history
@@ -3845,7 +3847,7 @@ impl DagNN {
 
         while !remaining.is_empty() {
             // Find node with minimum degree among remaining (O(n) per iteration)
-            let min_node = remaining
+            let Some(min_node) = remaining
                 .iter()
                 .min_by_key(|&node| {
                     self.neighbors(*node)
@@ -3853,7 +3855,9 @@ impl DagNN {
                         .count()
                 })
                 .copied()
-                .unwrap();
+            else {
+                break; // Should never happen since we check !remaining.is_empty()
+            };
 
             remaining.remove(&min_node);
             ordering.push(min_node);
@@ -6421,7 +6425,9 @@ impl HebbianLearning for DagNN {
 
         // Collect all edge updates first (to avoid borrow conflicts)
         for edge_idx in self.graph.edge_indices() {
-            let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+            let Some((source, target)) = self.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
             let current_weight = self.graph[edge_idx].weight;
 
             let delta = self.compute_hebbian_delta(source, target, current_weight, config);
@@ -6497,7 +6503,9 @@ impl HebbianLearning for DagNN {
 
         // Hebbian contribution
         for edge_idx in self.graph.edge_indices() {
-            let (source, target) = self.graph.edge_endpoints(edge_idx).unwrap();
+            let Some((source, target)) = self.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
             let current_weight = self.graph[edge_idx].weight;
 
             let hebbian_delta =

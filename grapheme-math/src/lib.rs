@@ -1273,9 +1273,8 @@ impl MathBrain {
         ];
 
         for pattern in patterns {
-            if text.contains(pattern) {
+            if let Some(idx) = text.find(pattern) {
                 // Check if followed by more digits (would not be zero)
-                let idx = text.find(pattern).unwrap();
                 let after_pattern = idx + pattern.len();
                 if after_pattern >= text.len()
                     || !text

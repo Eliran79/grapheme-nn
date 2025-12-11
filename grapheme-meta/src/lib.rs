@@ -5036,7 +5036,7 @@ impl CrossBrainTransfer {
             if let Some(min_idx) = brain_patterns
                 .iter()
                 .enumerate()
-                .min_by(|(_, a), (_, b)| a.confidence.partial_cmp(&b.confidence).unwrap())
+                .min_by(|(_, a), (_, b)| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i)
             {
                 brain_patterns.remove(min_idx);

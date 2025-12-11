@@ -267,8 +267,11 @@ impl MusicGraph {
         }
 
         // Parse note name
+        let Some(first_char) = trimmed.chars().next() else {
+            return Err(MusicGraphError::InvalidNote("Empty note".to_string()));
+        };
         let (name, rest) = if trimmed.len() >= 2 && trimmed.chars().nth(1) == Some('#') {
-            let name = match trimmed.chars().next().unwrap() {
+            let name = match first_char {
                 'C' => NoteName::CSharp,
                 'D' => NoteName::DSharp,
                 'F' => NoteName::FSharp,
@@ -283,7 +286,7 @@ impl MusicGraph {
             };
             (name, &trimmed[2..])
         } else {
-            let name = match trimmed.chars().next().unwrap() {
+            let name = match first_char {
                 'C' => NoteName::C,
                 'D' => NoteName::D,
                 'E' => NoteName::E,

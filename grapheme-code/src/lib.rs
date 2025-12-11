@@ -765,7 +765,9 @@ impl TypeInferenceEngine {
     fn propagate_types(&mut self, graph: &CodeGraph) {
         // Process edges to add constraints
         for edge_idx in graph.graph.edge_indices() {
-            let (source, target) = graph.graph.edge_endpoints(edge_idx).unwrap();
+            let Some((source, target)) = graph.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
             let edge = &graph.graph[edge_idx];
 
             match edge {

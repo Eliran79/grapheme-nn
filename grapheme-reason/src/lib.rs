@@ -293,11 +293,10 @@ impl ReasoningTrace {
 
     /// Create failed trace
     pub fn failure(steps: Vec<ReasoningStep>) -> Self {
-        let conclusion = if steps.is_empty() {
-            DagNN::new()
-        } else {
-            steps.last().unwrap().result.clone_graph()
-        };
+        let conclusion = steps
+            .last()
+            .map(|s| s.result.clone_graph())
+            .unwrap_or_default();
         Self {
             steps,
             conclusion,
@@ -810,7 +809,9 @@ impl Induction for SimpleInduction {
 
         // Simplified: return the smallest example as "common"
         // Real implementation would compute actual MCS
-        let smallest = examples.iter().min_by_key(|g| g.node_count()).unwrap();
+        let Some(smallest) = examples.iter().min_by_key(|g| g.node_count()) else {
+            return Ok(DagNN::new());
+        };
 
         Ok(smallest.clone_graph())
     }
@@ -921,7 +922,7 @@ impl Analogy for SimpleAnalogy {
                     continue;
                 }
                 let sim = self.node_similarity(source, target, s_node, t_node);
-                if best_match.is_none() || sim > best_match.unwrap().1 {
+                if best_match.is_none_or(|(_, best_sim)| sim > best_sim) {
                     best_match = Some((t_node, sim));
                 }
             }

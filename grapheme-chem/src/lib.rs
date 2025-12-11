@@ -320,7 +320,9 @@ impl MolecularGraph {
             // Get count
             let mut count = 0u32;
             while i < chars.len() && chars[i].is_ascii_digit() {
-                count = count * 10 + chars[i].to_digit(10).unwrap();
+                if let Some(digit) = chars[i].to_digit(10) {
+                    count = count * 10 + digit;
+                }
                 i += 1;
             }
             if count == 0 {
