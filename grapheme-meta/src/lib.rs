@@ -6467,3 +6467,868 @@ mod causal_tests {
         assert_eq!(link_type, CausalLinkType::Direct);
     }
 }
+
+// ============================================================================
+// MemoryConsolidation: Long-term knowledge persistence across sessions
+// ============================================================================
+
+/// Represents a memory entry that can be stored/retrieved
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryEntry {
+    /// Unique identifier
+    pub id: String,
+    /// Category/type of memory
+    pub category: MemoryCategory,
+    /// The actual content/data
+    pub content: String,
+    /// Associated embedding vector for similarity search
+    pub embedding: Vec<f32>,
+    /// Importance score [0, 1]
+    pub importance: f32,
+    /// Access count (how often retrieved)
+    pub access_count: u64,
+    /// Last access timestamp
+    pub last_access: u64,
+    /// Creation timestamp
+    pub created_at: u64,
+    /// Associated tags for organization
+    pub tags: Vec<String>,
+}
+
+impl MemoryEntry {
+    /// Create a new memory entry
+    pub fn new(id: impl Into<String>, category: MemoryCategory, content: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            category,
+            content: content.into(),
+            embedding: Vec::new(),
+            importance: 0.5,
+            access_count: 0,
+            last_access: 0,
+            created_at: 0,
+            tags: Vec::new(),
+        }
+    }
+
+    /// Set embedding vector
+    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.embedding = embedding;
+        self
+    }
+
+    /// Set importance
+    pub fn with_importance(mut self, importance: f32) -> Self {
+        self.importance = importance.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set tags
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Set creation timestamp
+    pub fn with_timestamp(mut self, timestamp: u64) -> Self {
+        self.created_at = timestamp;
+        self.last_access = timestamp;
+        self
+    }
+
+    /// Record an access
+    pub fn record_access(&mut self, timestamp: u64) {
+        self.access_count += 1;
+        self.last_access = timestamp;
+    }
+
+    /// Calculate recency score based on time decay
+    pub fn recency_score(&self, current_time: u64, decay_rate: f32) -> f32 {
+        let age = current_time.saturating_sub(self.last_access) as f32;
+        (-decay_rate * age).exp()
+    }
+
+    /// Calculate relevance combining importance and recency
+    pub fn relevance(&self, current_time: u64, decay_rate: f32) -> f32 {
+        let recency = self.recency_score(current_time, decay_rate);
+        let frequency_boost = (self.access_count as f32).ln_1p() / 10.0;
+        (self.importance * 0.4 + recency * 0.4 + frequency_boost * 0.2).clamp(0.0, 1.0)
+    }
+
+    /// Compute similarity to another entry using cosine similarity
+    pub fn similarity(&self, other: &MemoryEntry) -> f32 {
+        if self.embedding.is_empty() || other.embedding.is_empty() {
+            return 0.0;
+        }
+
+        let min_len = self.embedding.len().min(other.embedding.len());
+        let dot: f32 = self.embedding.iter()
+            .zip(other.embedding.iter())
+            .take(min_len)
+            .map(|(a, b)| a * b)
+            .sum();
+
+        let mag_a: f32 = self.embedding.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+        let mag_b: f32 = other.embedding.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+
+        if mag_a == 0.0 || mag_b == 0.0 {
+            0.0
+        } else {
+            (dot / (mag_a * mag_b)).clamp(-1.0, 1.0)
+        }
+    }
+}
+
+/// Categories of memory for organization
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum MemoryCategory {
+    /// Factual knowledge
+    #[default]
+    Fact,
+    /// Procedural knowledge (how to do things)
+    Procedure,
+    /// Episodic memory (specific events/experiences)
+    Episode,
+    /// Semantic memory (concepts and meanings)
+    Semantic,
+    /// Skills and learned behaviors
+    Skill,
+    /// User preferences and context
+    Preference,
+    /// Custom category
+    Custom(String),
+}
+
+/// Result of a memory consolidation operation
+#[derive(Debug, Clone)]
+pub struct ConsolidationResult {
+    /// Memories that were consolidated
+    pub consolidated: Vec<String>,
+    /// Memories that were strengthened
+    pub strengthened: Vec<String>,
+    /// Memories that were pruned (forgotten)
+    pub pruned: Vec<String>,
+    /// New associations discovered
+    pub new_associations: usize,
+    /// Overall consolidation score
+    pub score: f32,
+}
+
+impl ConsolidationResult {
+    /// Create empty result
+    pub fn empty() -> Self {
+        Self {
+            consolidated: Vec::new(),
+            strengthened: Vec::new(),
+            pruned: Vec::new(),
+            new_associations: 0,
+            score: 0.0,
+        }
+    }
+
+    /// Total operations performed
+    pub fn total_operations(&self) -> usize {
+        self.consolidated.len() + self.strengthened.len() + self.pruned.len()
+    }
+}
+
+/// Configuration for memory consolidation
+#[derive(Debug, Clone)]
+pub struct ConsolidationConfig {
+    /// Maximum number of memories to store
+    pub max_memories: usize,
+    /// Minimum importance to keep during pruning
+    pub min_importance: f32,
+    /// Time decay rate for recency
+    pub decay_rate: f32,
+    /// Similarity threshold for consolidation
+    pub similarity_threshold: f32,
+    /// How many recent memories to always keep
+    pub recent_buffer: usize,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            max_memories: 10000,
+            min_importance: 0.1,
+            decay_rate: 0.001,
+            similarity_threshold: 0.8,
+            recent_buffer: 100,
+        }
+    }
+}
+
+/// Statistics for memory operations
+#[derive(Debug, Clone, Default)]
+pub struct MemoryStats {
+    /// Total memories stored
+    pub total_stored: u64,
+    /// Total retrievals
+    pub total_retrievals: u64,
+    /// Successful retrievals
+    pub successful_retrievals: u64,
+    /// Consolidations performed
+    pub consolidations: u64,
+    /// Memories pruned
+    pub memories_pruned: u64,
+    /// Average retrieval similarity
+    pub avg_retrieval_similarity: f32,
+}
+
+impl MemoryStats {
+    /// Record a retrieval
+    pub fn record_retrieval(&mut self, found: bool, similarity: f32) {
+        self.total_retrievals += 1;
+        if found {
+            self.successful_retrievals += 1;
+            // Update running average
+            let n = self.successful_retrievals as f32;
+            self.avg_retrieval_similarity =
+                ((n - 1.0) * self.avg_retrieval_similarity + similarity) / n;
+        }
+    }
+
+    /// Retrieval success rate
+    pub fn retrieval_rate(&self) -> f32 {
+        if self.total_retrievals == 0 {
+            0.0
+        } else {
+            self.successful_retrievals as f32 / self.total_retrievals as f32
+        }
+    }
+}
+
+/// Main memory consolidation system
+/// Manages long-term knowledge storage with consolidation and pruning
+#[derive(Debug)]
+pub struct MemoryConsolidation {
+    /// Configuration
+    pub config: ConsolidationConfig,
+    /// Stored memories by ID
+    memories: std::collections::HashMap<String, MemoryEntry>,
+    /// Index by category
+    category_index: std::collections::HashMap<String, Vec<String>>,
+    /// Index by tag
+    tag_index: std::collections::HashMap<String, Vec<String>>,
+    /// Current timestamp (simulation time)
+    current_time: u64,
+    /// Statistics
+    pub stats: MemoryStats,
+    /// Next memory ID
+    next_id: u64,
+}
+
+impl MemoryConsolidation {
+    /// Create a new memory consolidation system
+    pub fn new() -> Self {
+        Self {
+            config: ConsolidationConfig::default(),
+            memories: std::collections::HashMap::new(),
+            category_index: std::collections::HashMap::new(),
+            tag_index: std::collections::HashMap::new(),
+            current_time: 0,
+            stats: MemoryStats::default(),
+            next_id: 1,
+        }
+    }
+
+    /// Create with custom config
+    pub fn with_config(config: ConsolidationConfig) -> Self {
+        Self {
+            config,
+            memories: std::collections::HashMap::new(),
+            category_index: std::collections::HashMap::new(),
+            tag_index: std::collections::HashMap::new(),
+            current_time: 0,
+            stats: MemoryStats::default(),
+            next_id: 1,
+        }
+    }
+
+    /// Advance simulation time
+    pub fn tick(&mut self, delta: u64) {
+        self.current_time += delta;
+    }
+
+    /// Set current time
+    pub fn set_time(&mut self, time: u64) {
+        self.current_time = time;
+    }
+
+    /// Store a new memory
+    pub fn store(&mut self, mut entry: MemoryEntry) -> String {
+        // Assign ID if not set
+        if entry.id.is_empty() {
+            entry.id = format!("mem_{}", self.next_id);
+            self.next_id += 1;
+        }
+
+        // Set timestamp if not set
+        if entry.created_at == 0 {
+            entry.created_at = self.current_time;
+            entry.last_access = self.current_time;
+        }
+
+        let id = entry.id.clone();
+
+        // Update category index
+        let category_key = format!("{:?}", entry.category);
+        self.category_index
+            .entry(category_key)
+            .or_default()
+            .push(id.clone());
+
+        // Update tag index
+        for tag in &entry.tags {
+            self.tag_index
+                .entry(tag.clone())
+                .or_default()
+                .push(id.clone());
+        }
+
+        self.memories.insert(id.clone(), entry);
+        self.stats.total_stored += 1;
+
+        id
+    }
+
+    /// Retrieve a memory by ID
+    pub fn retrieve(&mut self, id: &str) -> Option<&MemoryEntry> {
+        if let Some(entry) = self.memories.get_mut(id) {
+            entry.record_access(self.current_time);
+            self.stats.record_retrieval(true, 1.0);
+            // Return immutable reference
+            self.memories.get(id)
+        } else {
+            self.stats.record_retrieval(false, 0.0);
+            None
+        }
+    }
+
+    /// Retrieve a memory by ID (immutable, no access recording)
+    pub fn peek(&self, id: &str) -> Option<&MemoryEntry> {
+        self.memories.get(id)
+    }
+
+    /// Search memories by similarity to a query embedding (P-time: O(n))
+    pub fn search_similar(&mut self, query_embedding: &[f32], top_k: usize) -> Vec<(&MemoryEntry, f32)> {
+        let mut scored: Vec<_> = self.memories.values()
+            .filter_map(|entry| {
+                if entry.embedding.is_empty() {
+                    return None;
+                }
+
+                let min_len = query_embedding.len().min(entry.embedding.len());
+                let dot: f32 = query_embedding.iter()
+                    .zip(entry.embedding.iter())
+                    .take(min_len)
+                    .map(|(a, b)| a * b)
+                    .sum();
+
+                let mag_q: f32 = query_embedding.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+                let mag_e: f32 = entry.embedding.iter().take(min_len).map(|x| x * x).sum::<f32>().sqrt();
+
+                if mag_q == 0.0 || mag_e == 0.0 {
+                    None
+                } else {
+                    let sim = dot / (mag_q * mag_e);
+                    Some((entry, sim))
+                }
+            })
+            .collect();
+
+        // Sort by similarity descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Take top K
+        let results: Vec<_> = scored.into_iter().take(top_k).collect();
+
+        // Record stats
+        if let Some((_, sim)) = results.first() {
+            self.stats.record_retrieval(true, *sim);
+        } else {
+            self.stats.record_retrieval(false, 0.0);
+        }
+
+        results
+    }
+
+    /// Search by category
+    pub fn search_by_category(&self, category: &MemoryCategory) -> Vec<&MemoryEntry> {
+        let key = format!("{:?}", category);
+        self.category_index
+            .get(&key)
+            .map(|ids| ids.iter().filter_map(|id| self.memories.get(id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Search by tag
+    pub fn search_by_tag(&self, tag: &str) -> Vec<&MemoryEntry> {
+        self.tag_index
+            .get(tag)
+            .map(|ids| ids.iter().filter_map(|id| self.memories.get(id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Consolidate similar memories (P-time: O(n^2) but bounded by config)
+    pub fn consolidate(&mut self) -> ConsolidationResult {
+        let mut result = ConsolidationResult::empty();
+
+        // Get all memory IDs sorted by relevance
+        let mut sorted_ids: Vec<_> = self.memories.keys().cloned().collect();
+        sorted_ids.sort_by(|a, b| {
+            let rel_a = self.memories.get(a).map(|m| m.relevance(self.current_time, self.config.decay_rate)).unwrap_or(0.0);
+            let rel_b = self.memories.get(b).map(|m| m.relevance(self.current_time, self.config.decay_rate)).unwrap_or(0.0);
+            rel_b.partial_cmp(&rel_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Find similar pairs and mark for consolidation
+        let mut to_merge: Vec<(String, String)> = Vec::new();
+        let max_check = sorted_ids.len().min(500);
+
+        for (i, id_a) in sorted_ids.iter().enumerate().take(max_check) {
+            let mem_a = match self.memories.get(id_a) {
+                Some(m) => m,
+                None => continue,
+            };
+
+            for id_b in sorted_ids.iter().skip(i + 1).take(max_check - i - 1) {
+                let mem_b = match self.memories.get(id_b) {
+                    Some(m) => m,
+                    None => continue,
+                };
+
+                let sim = mem_a.similarity(mem_b);
+                if sim >= self.config.similarity_threshold {
+                    to_merge.push((id_a.clone(), id_b.clone()));
+                    result.new_associations += 1;
+                }
+            }
+        }
+
+        // Perform merges (keep the more important one, strengthen it)
+        for (id_a, id_b) in to_merge {
+            if let (Some(mem_a), Some(mem_b)) = (self.memories.get(&id_a), self.memories.get(&id_b)) {
+                let keep_a = mem_a.importance >= mem_b.importance;
+                let (keep_id, remove_id) = if keep_a { (id_a.clone(), id_b.clone()) } else { (id_b.clone(), id_a.clone()) };
+
+                // Strengthen the kept memory
+                if let Some(mem) = self.memories.get_mut(&keep_id) {
+                    mem.importance = (mem.importance + 0.1).min(1.0);
+                    mem.access_count += 1;
+                    result.strengthened.push(keep_id.clone());
+                }
+
+                // Remove the duplicate
+                self.memories.remove(&remove_id);
+                result.consolidated.push(remove_id);
+            }
+        }
+
+        self.stats.consolidations += 1;
+        result.score = if result.total_operations() > 0 { 1.0 } else { 0.0 };
+        result
+    }
+
+    /// Prune old/unimportant memories to stay within limits (P-time: O(n log n))
+    pub fn prune(&mut self) -> Vec<String> {
+        let mut pruned = Vec::new();
+
+        if self.memories.len() <= self.config.max_memories {
+            return pruned;
+        }
+
+        // Calculate scores for all memories
+        let mut scored: Vec<_> = self.memories.iter()
+            .map(|(id, mem)| {
+                let score = mem.relevance(self.current_time, self.config.decay_rate);
+                (id.clone(), score)
+            })
+            .collect();
+
+        // Sort by score ascending (lowest first)
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Remove lowest scoring until under limit
+        let to_remove = self.memories.len() - self.config.max_memories;
+        for (id, score) in scored.into_iter().take(to_remove) {
+            // Keep recent buffer
+            if let Some(mem) = self.memories.get(&id) {
+                if mem.access_count > 0 && score >= self.config.min_importance {
+                    continue;
+                }
+            }
+
+            self.memories.remove(&id);
+            pruned.push(id);
+            self.stats.memories_pruned += 1;
+        }
+
+        pruned
+    }
+
+    /// Get top K most relevant memories
+    pub fn top_relevant(&self, k: usize) -> Vec<&MemoryEntry> {
+        let mut scored: Vec<_> = self.memories.values()
+            .map(|m| (m, m.relevance(self.current_time, self.config.decay_rate)))
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        scored.into_iter().take(k).map(|(m, _)| m).collect()
+    }
+
+    /// Get memory count
+    pub fn count(&self) -> usize {
+        self.memories.len()
+    }
+
+    /// Check if memory exists
+    pub fn contains(&self, id: &str) -> bool {
+        self.memories.contains_key(id)
+    }
+
+    /// Remove a specific memory
+    pub fn forget(&mut self, id: &str) -> bool {
+        self.memories.remove(id).is_some()
+    }
+
+    /// Clear all memories
+    pub fn clear(&mut self) {
+        self.memories.clear();
+        self.category_index.clear();
+        self.tag_index.clear();
+        self.stats = MemoryStats::default();
+    }
+
+    /// Get all memory IDs
+    pub fn all_ids(&self) -> Vec<&str> {
+        self.memories.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Export memories for persistence (serializable format)
+    pub fn export(&self) -> Vec<MemoryEntry> {
+        self.memories.values().cloned().collect()
+    }
+
+    /// Import memories from external source
+    pub fn import(&mut self, entries: Vec<MemoryEntry>) {
+        for entry in entries {
+            self.store(entry);
+        }
+    }
+}
+
+impl Default for MemoryConsolidation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Factory function for creating MemoryConsolidation
+pub fn create_memory_consolidation() -> MemoryConsolidation {
+    MemoryConsolidation::new()
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn test_memory_entry_creation() {
+        let entry = MemoryEntry::new("m1", MemoryCategory::Fact, "Test content")
+            .with_importance(0.8)
+            .with_embedding(vec![1.0, 0.0])
+            .with_tags(vec!["test".to_string()])
+            .with_timestamp(100);
+
+        assert_eq!(entry.id, "m1");
+        assert_eq!(entry.importance, 0.8);
+        assert_eq!(entry.embedding.len(), 2);
+        assert_eq!(entry.tags.len(), 1);
+        assert_eq!(entry.created_at, 100);
+    }
+
+    #[test]
+    fn test_memory_entry_record_access() {
+        let mut entry = MemoryEntry::new("m1", MemoryCategory::Fact, "Content");
+        entry.record_access(50);
+        entry.record_access(100);
+
+        assert_eq!(entry.access_count, 2);
+        assert_eq!(entry.last_access, 100);
+    }
+
+    #[test]
+    fn test_memory_recency_score() {
+        let mut entry = MemoryEntry::new("m1", MemoryCategory::Fact, "Content");
+        entry.last_access = 0;
+
+        let score_recent = entry.recency_score(0, 0.01);
+        let score_old = entry.recency_score(1000, 0.01);
+
+        assert!(score_recent > score_old);
+        assert_eq!(score_recent, 1.0);
+    }
+
+    #[test]
+    fn test_memory_similarity() {
+        let entry1 = MemoryEntry::new("m1", MemoryCategory::Fact, "A")
+            .with_embedding(vec![1.0, 0.0, 0.0]);
+        let entry2 = MemoryEntry::new("m2", MemoryCategory::Fact, "B")
+            .with_embedding(vec![1.0, 0.0, 0.0]);
+        let entry3 = MemoryEntry::new("m3", MemoryCategory::Fact, "C")
+            .with_embedding(vec![0.0, 1.0, 0.0]);
+
+        assert_eq!(entry1.similarity(&entry2), 1.0);
+        assert_eq!(entry1.similarity(&entry3), 0.0);
+    }
+
+    #[test]
+    fn test_memory_category_default() {
+        let cat = MemoryCategory::default();
+        assert_eq!(cat, MemoryCategory::Fact);
+    }
+
+    #[test]
+    fn test_consolidation_result() {
+        let mut result = ConsolidationResult::empty();
+        result.consolidated.push("m1".to_string());
+        result.strengthened.push("m2".to_string());
+
+        assert_eq!(result.total_operations(), 2);
+    }
+
+    #[test]
+    fn test_memory_consolidation_creation() {
+        let mem = MemoryConsolidation::new();
+        assert_eq!(mem.count(), 0);
+    }
+
+    #[test]
+    fn test_store_memory() {
+        let mut mem = MemoryConsolidation::new();
+        let entry = MemoryEntry::new("m1", MemoryCategory::Fact, "Test");
+
+        let id = mem.store(entry);
+
+        assert_eq!(id, "m1");
+        assert_eq!(mem.count(), 1);
+    }
+
+    #[test]
+    fn test_store_auto_id() {
+        let mut mem = MemoryConsolidation::new();
+        let entry = MemoryEntry::new("", MemoryCategory::Fact, "Test");
+
+        let id = mem.store(entry);
+
+        assert!(id.starts_with("mem_"));
+        assert_eq!(mem.count(), 1);
+    }
+
+    #[test]
+    fn test_retrieve_memory() {
+        let mut mem = MemoryConsolidation::new();
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "Content"));
+
+        let entry = mem.retrieve("m1");
+
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().content, "Content");
+    }
+
+    #[test]
+    fn test_retrieve_not_found() {
+        let mut mem = MemoryConsolidation::new();
+
+        let entry = mem.retrieve("nonexistent");
+
+        assert!(entry.is_none());
+    }
+
+    #[test]
+    fn test_peek_memory() {
+        let mut mem = MemoryConsolidation::new();
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "Content"));
+
+        let entry = mem.peek("m1");
+
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().access_count, 0); // Peek doesn't increment
+    }
+
+    #[test]
+    fn test_search_similar() {
+        let mut mem = MemoryConsolidation::new();
+
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A")
+            .with_embedding(vec![1.0, 0.0, 0.0]));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B")
+            .with_embedding(vec![0.9, 0.1, 0.0]));
+        mem.store(MemoryEntry::new("m3", MemoryCategory::Fact, "C")
+            .with_embedding(vec![0.0, 1.0, 0.0]));
+
+        let results = mem.search_similar(&[1.0, 0.0, 0.0], 2);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0.id, "m1");
+    }
+
+    #[test]
+    fn test_search_by_category() {
+        let mut mem = MemoryConsolidation::new();
+
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A"));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Procedure, "B"));
+        mem.store(MemoryEntry::new("m3", MemoryCategory::Fact, "C"));
+
+        let facts = mem.search_by_category(&MemoryCategory::Fact);
+
+        assert_eq!(facts.len(), 2);
+    }
+
+    #[test]
+    fn test_search_by_tag() {
+        let mut mem = MemoryConsolidation::new();
+
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A")
+            .with_tags(vec!["important".to_string()]));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B")
+            .with_tags(vec!["important".to_string(), "urgent".to_string()]));
+
+        let important = mem.search_by_tag("important");
+
+        assert_eq!(important.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate() {
+        let mut mem = MemoryConsolidation::new();
+
+        // Create two similar memories
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A")
+            .with_embedding(vec![1.0, 0.0, 0.0])
+            .with_importance(0.8));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "A similar")
+            .with_embedding(vec![1.0, 0.0, 0.0])
+            .with_importance(0.6));
+
+        let result = mem.consolidate();
+
+        assert!(!result.consolidated.is_empty() || !result.strengthened.is_empty());
+    }
+
+    #[test]
+    fn test_prune() {
+        let mut mem = MemoryConsolidation::with_config(ConsolidationConfig {
+            max_memories: 2,
+            ..Default::default()
+        });
+
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A").with_importance(0.9));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B").with_importance(0.5));
+        mem.store(MemoryEntry::new("m3", MemoryCategory::Fact, "C").with_importance(0.1));
+
+        let pruned = mem.prune();
+
+        assert!(!pruned.is_empty());
+        assert!(mem.count() <= 2);
+    }
+
+    #[test]
+    fn test_top_relevant() {
+        let mut mem = MemoryConsolidation::new();
+
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A").with_importance(0.9));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B").with_importance(0.3));
+        mem.store(MemoryEntry::new("m3", MemoryCategory::Fact, "C").with_importance(0.7));
+
+        let top = mem.top_relevant(2);
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].id, "m1");
+    }
+
+    #[test]
+    fn test_forget() {
+        let mut mem = MemoryConsolidation::new();
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A"));
+
+        assert!(mem.forget("m1"));
+        assert!(!mem.contains("m1"));
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut mem = MemoryConsolidation::new();
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A"));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B"));
+
+        mem.clear();
+
+        assert_eq!(mem.count(), 0);
+    }
+
+    #[test]
+    fn test_export_import() {
+        let mut mem1 = MemoryConsolidation::new();
+        mem1.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A"));
+        mem1.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B"));
+
+        let exported = mem1.export();
+
+        let mut mem2 = MemoryConsolidation::new();
+        mem2.import(exported);
+
+        assert_eq!(mem2.count(), 2);
+    }
+
+    #[test]
+    fn test_tick() {
+        let mut mem = MemoryConsolidation::new();
+        mem.tick(100);
+
+        assert_eq!(mem.current_time, 100);
+
+        mem.tick(50);
+        assert_eq!(mem.current_time, 150);
+    }
+
+    #[test]
+    fn test_memory_stats() {
+        let mut stats = MemoryStats::default();
+
+        stats.record_retrieval(true, 0.9);
+        stats.record_retrieval(true, 0.8);
+        stats.record_retrieval(false, 0.0);
+
+        assert_eq!(stats.total_retrievals, 3);
+        assert_eq!(stats.successful_retrievals, 2);
+        assert!((stats.retrieval_rate() - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_all_ids() {
+        let mut mem = MemoryConsolidation::new();
+        mem.store(MemoryEntry::new("m1", MemoryCategory::Fact, "A"));
+        mem.store(MemoryEntry::new("m2", MemoryCategory::Fact, "B"));
+
+        let ids = mem.all_ids();
+
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_create_memory_consolidation_factory() {
+        let mem = create_memory_consolidation();
+        assert_eq!(mem.count(), 0);
+    }
+
+    #[test]
+    fn test_consolidation_config_default() {
+        let config = ConsolidationConfig::default();
+        assert_eq!(config.max_memories, 10000);
+    }
+}

@@ -1,7 +1,7 @@
 ---
 id: backend-155
 title: 'Implement MemoryConsolidation: Long-term knowledge persistence across sessions'
-status: todo
+status: done
 priority: high
 tags:
 - backend
