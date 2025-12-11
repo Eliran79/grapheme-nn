@@ -1,7 +1,7 @@
 ---
 id: backend-156
 title: 'Implement CrossBrainTransfer: Share learned patterns between domain brains'
-status: todo
+status: done
 priority: high
 tags:
 - backend

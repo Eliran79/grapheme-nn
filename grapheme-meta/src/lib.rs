@@ -4736,3 +4736,724 @@ mod self_aware_tests {
         assert_eq!(AwarenessLevel::default(), AwarenessLevel::Partial);
     }
 }
+
+// ============================================================================
+// CrossBrainTransfer: Share Learned Patterns Between Domain Brains
+// ============================================================================
+
+/// A transferable pattern that can be shared between brains
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferablePattern {
+    /// Unique pattern identifier
+    pub id: String,
+    /// Source brain that learned this pattern
+    pub source_brain: String,
+    /// Pattern type/category
+    pub pattern_type: PatternType,
+    /// Pattern data (serialized representation)
+    pub data: Vec<f32>,
+    /// Confidence score of the pattern
+    pub confidence: f32,
+    /// Number of times this pattern was successfully used
+    pub usage_count: u64,
+    /// Timestamp when pattern was created
+    pub created_at: u64,
+}
+
+impl TransferablePattern {
+    /// Create a new transferable pattern
+    pub fn new(
+        id: impl Into<String>,
+        source_brain: impl Into<String>,
+        pattern_type: PatternType,
+        data: Vec<f32>,
+        confidence: f32,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source_brain: source_brain.into(),
+            pattern_type,
+            data,
+            confidence,
+            usage_count: 0,
+            created_at: 0,
+        }
+    }
+
+    /// Check if pattern is reliable (high confidence and usage)
+    pub fn is_reliable(&self) -> bool {
+        self.confidence > 0.7 && self.usage_count >= 3
+    }
+
+    /// Compute similarity to another pattern - O(n)
+    pub fn similarity(&self, other: &TransferablePattern) -> f32 {
+        if self.data.len() != other.data.len() || self.data.is_empty() {
+            return 0.0;
+        }
+
+        // Cosine similarity
+        let dot: f32 = self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum();
+        let mag_a: f32 = self.data.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mag_b: f32 = other.data.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        if mag_a == 0.0 || mag_b == 0.0 {
+            0.0
+        } else {
+            (dot / (mag_a * mag_b)).clamp(-1.0, 1.0)
+        }
+    }
+}
+
+/// Types of patterns that can be transferred
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PatternType {
+    /// Structural pattern (graph topology)
+    Structural,
+    /// Sequential pattern (order relationships)
+    Sequential,
+    /// Compositional pattern (part-whole relationships)
+    Compositional,
+    /// Transformation pattern (input-output mapping)
+    Transformation,
+    /// Abstract concept
+    Concept(String),
+}
+
+/// Result of a transfer attempt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferResult {
+    /// Whether transfer was successful
+    pub success: bool,
+    /// Pattern that was transferred
+    pub pattern_id: String,
+    /// Source brain
+    pub from_brain: String,
+    /// Target brain
+    pub to_brain: String,
+    /// Adaptation score (how well pattern adapted)
+    pub adaptation_score: f32,
+    /// Any issues encountered
+    pub issues: Vec<String>,
+}
+
+impl TransferResult {
+    /// Create a successful transfer result
+    pub fn success(pattern_id: &str, from: &str, to: &str, score: f32) -> Self {
+        Self {
+            success: true,
+            pattern_id: pattern_id.to_string(),
+            from_brain: from.to_string(),
+            to_brain: to.to_string(),
+            adaptation_score: score,
+            issues: Vec::new(),
+        }
+    }
+
+    /// Create a failed transfer result
+    pub fn failure(pattern_id: &str, from: &str, to: &str, reason: &str) -> Self {
+        Self {
+            success: false,
+            pattern_id: pattern_id.to_string(),
+            from_brain: from.to_string(),
+            to_brain: to.to_string(),
+            adaptation_score: 0.0,
+            issues: vec![reason.to_string()],
+        }
+    }
+}
+
+/// Configuration for cross-brain transfer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferConfig {
+    /// Minimum confidence for a pattern to be transferable
+    pub min_confidence: f32,
+    /// Minimum usage count for transfer eligibility
+    pub min_usage_count: u64,
+    /// Maximum patterns to store per brain
+    pub max_patterns_per_brain: usize,
+    /// Similarity threshold for pattern deduplication
+    pub similarity_threshold: f32,
+    /// Enable automatic pattern discovery
+    pub auto_discover: bool,
+}
+
+impl Default for TransferConfig {
+    fn default() -> Self {
+        Self {
+            min_confidence: 0.6,
+            min_usage_count: 2,
+            max_patterns_per_brain: 100,
+            similarity_threshold: 0.9,
+            auto_discover: true,
+        }
+    }
+}
+
+/// Statistics for cross-brain transfer
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TransferStats {
+    /// Total patterns discovered
+    pub patterns_discovered: u64,
+    /// Total transfer attempts
+    pub transfer_attempts: u64,
+    /// Successful transfers
+    pub successful_transfers: u64,
+    /// Failed transfers
+    pub failed_transfers: u64,
+    /// Average adaptation score
+    pub avg_adaptation_score: f32,
+}
+
+impl TransferStats {
+    /// Record a transfer attempt
+    pub fn record_transfer(&mut self, success: bool, adaptation_score: f32) {
+        self.transfer_attempts += 1;
+        if success {
+            self.successful_transfers += 1;
+            // Update running average
+            let n = self.successful_transfers as f32;
+            self.avg_adaptation_score = ((self.avg_adaptation_score * (n - 1.0)) + adaptation_score) / n;
+        } else {
+            self.failed_transfers += 1;
+        }
+    }
+
+    /// Get transfer success rate - O(1)
+    pub fn success_rate(&self) -> f32 {
+        if self.transfer_attempts == 0 {
+            0.0
+        } else {
+            self.successful_transfers as f32 / self.transfer_attempts as f32
+        }
+    }
+}
+
+/// CrossBrainTransfer: Enables sharing of learned patterns between brains
+///
+/// This module allows domain brains to share knowledge:
+/// - MathBrain can share algebraic patterns with CodeBrain
+/// - VisionBrain can share spatial patterns with MusicBrain
+/// - Pattern adaptation ensures compatibility
+///
+/// # Architecture
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────┐
+/// │                      CrossBrainTransfer                                  │
+/// │                                                                          │
+/// │  ┌─────────────┐    discover()    ┌─────────────────────────────────┐  │
+/// │  │  MathBrain  │ ──────────────► │     Pattern Repository          │  │
+/// │  └─────────────┘                  │  [Structural, Sequential, ...]  │  │
+/// │                                   └─────────────────────────────────┘  │
+/// │  ┌─────────────┐    transfer()           │                            │
+/// │  │  CodeBrain  │ ◄───────────────────────┘                            │
+/// │  └─────────────┘                                                       │
+/// │                                                                          │
+/// │  Pattern Flow: Source → Repository → Adapt → Target                    │
+/// └─────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Time Complexity
+/// - discover_pattern(): O(n) for similarity check
+/// - transfer(): O(1) lookup + O(n) adaptation
+/// - find_similar(): O(n * m) where n = patterns, m = pattern size
+#[derive(Debug, Clone)]
+pub struct CrossBrainTransfer {
+    /// Configuration
+    pub config: TransferConfig,
+    /// Pattern repository (brain_id -> patterns)
+    patterns: std::collections::HashMap<String, Vec<TransferablePattern>>,
+    /// Transfer history (recent transfers)
+    history: Vec<TransferResult>,
+    /// Statistics
+    pub stats: TransferStats,
+    /// Next pattern ID
+    next_pattern_id: u64,
+}
+
+impl Default for CrossBrainTransfer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CrossBrainTransfer {
+    /// Create a new cross-brain transfer system
+    pub fn new() -> Self {
+        Self {
+            config: TransferConfig::default(),
+            patterns: std::collections::HashMap::new(),
+            history: Vec::new(),
+            stats: TransferStats::default(),
+            next_pattern_id: 1,
+        }
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(config: TransferConfig) -> Self {
+        let mut transfer = Self::new();
+        transfer.config = config;
+        transfer
+    }
+
+    /// Discover and register a new pattern from a brain - O(n)
+    pub fn discover_pattern(
+        &mut self,
+        source_brain: &str,
+        pattern_type: PatternType,
+        data: Vec<f32>,
+        confidence: f32,
+    ) -> Option<String> {
+        // Check confidence threshold
+        if confidence < self.config.min_confidence {
+            return None;
+        }
+
+        // Check for similar existing patterns
+        let brain_patterns = self.patterns.entry(source_brain.to_string()).or_default();
+
+        // Create candidate pattern
+        let pattern_id = format!("pattern_{}", self.next_pattern_id);
+        let candidate = TransferablePattern::new(
+            &pattern_id,
+            source_brain,
+            pattern_type.clone(),
+            data,
+            confidence,
+        );
+
+        // Check for duplicates
+        for existing in brain_patterns.iter() {
+            if existing.pattern_type == pattern_type
+                && candidate.similarity(existing) > self.config.similarity_threshold
+            {
+                return None; // Too similar to existing
+            }
+        }
+
+        // Check capacity
+        if brain_patterns.len() >= self.config.max_patterns_per_brain {
+            // Remove least confident pattern
+            if let Some(min_idx) = brain_patterns
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.confidence.partial_cmp(&b.confidence).unwrap())
+                .map(|(i, _)| i)
+            {
+                brain_patterns.remove(min_idx);
+            }
+        }
+
+        // Add pattern
+        brain_patterns.push(candidate);
+        self.next_pattern_id += 1;
+        self.stats.patterns_discovered += 1;
+
+        Some(pattern_id)
+    }
+
+    /// Transfer a pattern from one brain to another - O(n)
+    pub fn transfer(
+        &mut self,
+        pattern_id: &str,
+        from_brain: &str,
+        to_brain: &str,
+    ) -> TransferResult {
+        // Find the pattern
+        let pattern = self.patterns
+            .get(from_brain)
+            .and_then(|patterns| patterns.iter().find(|p| p.id == pattern_id))
+            .cloned();
+
+        let result = match pattern {
+            Some(mut pattern) => {
+                // Check if pattern is reliable enough
+                if pattern.confidence < self.config.min_confidence {
+                    TransferResult::failure(pattern_id, from_brain, to_brain, "Pattern confidence too low")
+                } else {
+                    // Adapt pattern for target brain
+                    let adaptation_score = self.adapt_pattern(&mut pattern, to_brain);
+
+                    if adaptation_score > 0.5 {
+                        // Register in target brain
+                        pattern.source_brain = format!("{}→{}", from_brain, to_brain);
+                        pattern.confidence *= adaptation_score; // Reduce confidence after transfer
+
+                        let target_patterns = self.patterns.entry(to_brain.to_string()).or_default();
+
+                        // Check capacity
+                        if target_patterns.len() < self.config.max_patterns_per_brain {
+                            target_patterns.push(pattern);
+                            TransferResult::success(pattern_id, from_brain, to_brain, adaptation_score)
+                        } else {
+                            TransferResult::failure(pattern_id, from_brain, to_brain, "Target brain at capacity")
+                        }
+                    } else {
+                        TransferResult::failure(pattern_id, from_brain, to_brain, "Adaptation score too low")
+                    }
+                }
+            }
+            None => TransferResult::failure(pattern_id, from_brain, to_brain, "Pattern not found"),
+        };
+
+        // Record statistics
+        self.stats.record_transfer(result.success, result.adaptation_score);
+
+        // Store in history
+        self.history.push(result.clone());
+        if self.history.len() > 100 {
+            self.history.remove(0);
+        }
+
+        result
+    }
+
+    /// Adapt a pattern for a target brain - O(n)
+    fn adapt_pattern(&self, pattern: &mut TransferablePattern, target_brain: &str) -> f32 {
+        // Simple adaptation: scale data based on brain compatibility
+        let compatibility = self.brain_compatibility(&pattern.source_brain, target_brain);
+
+        // Apply slight noise to adapted pattern (simulating adaptation)
+        for value in &mut pattern.data {
+            *value *= compatibility;
+        }
+
+        compatibility
+    }
+
+    /// Compute compatibility between two brains - O(1)
+    fn brain_compatibility(&self, source: &str, target: &str) -> f32 {
+        // Define brain compatibility matrix (simplified)
+        let source_lower = source.to_lowercase();
+        let target_lower = target.to_lowercase();
+
+        // Same brain type = perfect compatibility
+        if source_lower == target_lower {
+            return 1.0;
+        }
+
+        // Domain-specific compatibility scores
+        match (source_lower.as_str(), target_lower.as_str()) {
+            // Math and Code are highly compatible
+            (s, t) if (s.contains("math") && t.contains("code"))
+                || (s.contains("code") && t.contains("math")) => 0.8,
+            // Vision and Music share spatial/temporal patterns
+            (s, t) if (s.contains("vision") && t.contains("music"))
+                || (s.contains("music") && t.contains("vision")) => 0.6,
+            // Text is somewhat compatible with everything
+            (s, _) if s.contains("text") => 0.5,
+            (_, t) if t.contains("text") => 0.5,
+            // Default compatibility
+            _ => 0.4,
+        }
+    }
+
+    /// Find similar patterns across all brains - O(n * m)
+    pub fn find_similar(&self, pattern: &TransferablePattern, threshold: f32) -> Vec<(String, String, f32)> {
+        let mut similar = Vec::new();
+
+        for (brain_id, patterns) in &self.patterns {
+            for p in patterns {
+                if p.id != pattern.id {
+                    let sim = pattern.similarity(p);
+                    if sim >= threshold {
+                        similar.push((brain_id.clone(), p.id.clone(), sim));
+                    }
+                }
+            }
+        }
+
+        // Sort by similarity descending
+        similar.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        similar
+    }
+
+    /// Get patterns for a specific brain - O(1)
+    pub fn get_patterns(&self, brain_id: &str) -> Option<&Vec<TransferablePattern>> {
+        self.patterns.get(brain_id)
+    }
+
+    /// Get all pattern IDs - O(n)
+    pub fn all_pattern_ids(&self) -> Vec<(String, String)> {
+        self.patterns
+            .iter()
+            .flat_map(|(brain, patterns)| {
+                patterns.iter().map(move |p| (brain.clone(), p.id.clone()))
+            })
+            .collect()
+    }
+
+    /// Get transfer history
+    pub fn history(&self) -> &[TransferResult] {
+        &self.history
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &TransferStats {
+        &self.stats
+    }
+
+    /// Clear all patterns (reset)
+    pub fn clear(&mut self) {
+        self.patterns.clear();
+        self.history.clear();
+        self.stats = TransferStats::default();
+        self.next_pattern_id = 1;
+    }
+
+    /// Get total pattern count - O(n)
+    pub fn total_patterns(&self) -> usize {
+        self.patterns.values().map(|v| v.len()).sum()
+    }
+}
+
+/// Factory function to create a cross-brain transfer system
+pub fn create_cross_brain_transfer() -> CrossBrainTransfer {
+    CrossBrainTransfer::new()
+}
+
+// ============================================================================
+// CrossBrainTransfer Tests
+// ============================================================================
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+
+    #[test]
+    fn test_cross_brain_transfer_creation() {
+        let transfer = CrossBrainTransfer::new();
+        assert_eq!(transfer.total_patterns(), 0);
+        assert_eq!(transfer.stats.transfer_attempts, 0);
+    }
+
+    #[test]
+    fn test_discover_pattern() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        let pattern_id = transfer.discover_pattern(
+            "MathBrain",
+            PatternType::Structural,
+            vec![1.0, 2.0, 3.0],
+            0.8,
+        );
+
+        assert!(pattern_id.is_some());
+        assert_eq!(transfer.total_patterns(), 1);
+        assert_eq!(transfer.stats.patterns_discovered, 1);
+    }
+
+    #[test]
+    fn test_discover_pattern_low_confidence() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        let pattern_id = transfer.discover_pattern(
+            "MathBrain",
+            PatternType::Structural,
+            vec![1.0, 2.0, 3.0],
+            0.3, // Below threshold
+        );
+
+        assert!(pattern_id.is_none());
+        assert_eq!(transfer.total_patterns(), 0);
+    }
+
+    #[test]
+    fn test_discover_pattern_deduplication() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        // First pattern
+        let id1 = transfer.discover_pattern(
+            "MathBrain",
+            PatternType::Structural,
+            vec![1.0, 0.0, 0.0],
+            0.8,
+        );
+        assert!(id1.is_some());
+
+        // Nearly identical pattern - should be rejected
+        let id2 = transfer.discover_pattern(
+            "MathBrain",
+            PatternType::Structural,
+            vec![1.0, 0.0, 0.0],
+            0.9,
+        );
+        assert!(id2.is_none());
+
+        assert_eq!(transfer.total_patterns(), 1);
+    }
+
+    #[test]
+    fn test_transfer_pattern() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        // Discover a pattern
+        let pattern_id = transfer.discover_pattern(
+            "MathBrain",
+            PatternType::Transformation,
+            vec![1.0, 2.0, 3.0],
+            0.9,
+        ).unwrap();
+
+        // Transfer to CodeBrain
+        let result = transfer.transfer(&pattern_id, "MathBrain", "CodeBrain");
+
+        assert!(result.success);
+        assert!(result.adaptation_score > 0.5);
+        assert_eq!(transfer.stats.successful_transfers, 1);
+    }
+
+    #[test]
+    fn test_transfer_pattern_not_found() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        let result = transfer.transfer("nonexistent", "MathBrain", "CodeBrain");
+
+        assert!(!result.success);
+        assert!(result.issues.iter().any(|i| i.contains("not found")));
+    }
+
+    #[test]
+    fn test_brain_compatibility() {
+        let transfer = CrossBrainTransfer::new();
+
+        // Math and Code are highly compatible
+        let compat = transfer.brain_compatibility("MathBrain", "CodeBrain");
+        assert!(compat >= 0.7);
+
+        // Same brain = perfect
+        let same = transfer.brain_compatibility("MathBrain", "MathBrain");
+        assert!((same - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pattern_similarity() {
+        let p1 = TransferablePattern::new(
+            "p1", "Brain1", PatternType::Structural,
+            vec![1.0, 0.0, 0.0], 0.9,
+        );
+        let p2 = TransferablePattern::new(
+            "p2", "Brain2", PatternType::Structural,
+            vec![1.0, 0.0, 0.0], 0.9,
+        );
+        let p3 = TransferablePattern::new(
+            "p3", "Brain3", PatternType::Structural,
+            vec![0.0, 1.0, 0.0], 0.9,
+        );
+
+        // Identical vectors
+        assert!((p1.similarity(&p2) - 1.0).abs() < 0.01);
+
+        // Orthogonal vectors
+        assert!(p1.similarity(&p3).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_find_similar_patterns() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        // Add patterns to different brains
+        transfer.discover_pattern("BrainA", PatternType::Structural, vec![1.0, 0.0, 0.0], 0.8);
+        transfer.discover_pattern("BrainB", PatternType::Structural, vec![0.9, 0.1, 0.0], 0.8);
+        transfer.discover_pattern("BrainC", PatternType::Structural, vec![0.0, 1.0, 0.0], 0.8);
+
+        let query = TransferablePattern::new(
+            "query", "Query", PatternType::Structural,
+            vec![1.0, 0.0, 0.0], 0.9,
+        );
+
+        let similar = transfer.find_similar(&query, 0.8);
+
+        // Should find at least BrainA's pattern as highly similar
+        assert!(!similar.is_empty());
+    }
+
+    #[test]
+    fn test_transfer_stats() {
+        let mut stats = TransferStats::default();
+
+        stats.record_transfer(true, 0.8);
+        stats.record_transfer(true, 0.9);
+        stats.record_transfer(false, 0.0);
+
+        assert_eq!(stats.transfer_attempts, 3);
+        assert_eq!(stats.successful_transfers, 2);
+        assert_eq!(stats.failed_transfers, 1);
+        assert!((stats.success_rate() - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pattern_is_reliable() {
+        let mut pattern = TransferablePattern::new(
+            "p1", "Brain", PatternType::Structural,
+            vec![1.0], 0.8,
+        );
+
+        // Low usage - not reliable
+        pattern.usage_count = 1;
+        assert!(!pattern.is_reliable());
+
+        // High usage - reliable
+        pattern.usage_count = 5;
+        assert!(pattern.is_reliable());
+
+        // Low confidence - not reliable
+        pattern.confidence = 0.5;
+        assert!(!pattern.is_reliable());
+    }
+
+    #[test]
+    fn test_transfer_config() {
+        let config = TransferConfig {
+            min_confidence: 0.8,
+            min_usage_count: 5,
+            ..Default::default()
+        };
+
+        let transfer = CrossBrainTransfer::with_config(config);
+
+        assert_eq!(transfer.config.min_confidence, 0.8);
+        assert_eq!(transfer.config.min_usage_count, 5);
+    }
+
+    #[test]
+    fn test_transfer_clear() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        transfer.discover_pattern("Brain", PatternType::Structural, vec![1.0], 0.9);
+        assert_eq!(transfer.total_patterns(), 1);
+
+        transfer.clear();
+
+        assert_eq!(transfer.total_patterns(), 0);
+        assert_eq!(transfer.stats.patterns_discovered, 0);
+    }
+
+    #[test]
+    fn test_create_cross_brain_transfer_factory() {
+        let transfer = create_cross_brain_transfer();
+        assert_eq!(transfer.total_patterns(), 0);
+    }
+
+    #[test]
+    fn test_transfer_result_constructors() {
+        let success = TransferResult::success("p1", "A", "B", 0.8);
+        assert!(success.success);
+        assert!(success.issues.is_empty());
+
+        let failure = TransferResult::failure("p1", "A", "B", "reason");
+        assert!(!failure.success);
+        assert!(!failure.issues.is_empty());
+    }
+
+    #[test]
+    fn test_all_pattern_ids() {
+        let mut transfer = CrossBrainTransfer::new();
+
+        transfer.discover_pattern("BrainA", PatternType::Structural, vec![1.0], 0.8);
+        transfer.discover_pattern("BrainB", PatternType::Sequential, vec![2.0], 0.8);
+
+        let ids = transfer.all_pattern_ids();
+
+        assert_eq!(ids.len(), 2);
+    }
+}
