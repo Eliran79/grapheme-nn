@@ -1,12 +1,17 @@
 //! CortexMesh - Auto-Discovery and Parallel Processing for ALL GRAPHEME Components
 //!
 //! This module provides compile-time auto-discovery of all brains, modules, and
-//! cognitive components. Just call `CortexMesh::discover()` to get everything
+//! cognitive systems. Just call `CortexMesh::discover()` to get everything
 //! meshed and ready for parallel processing.
 //!
 //! ## PARALLEL BY DEFAULT
 //! All operations use Rayon for automatic CPU parallelization.
 //! Call `init_parallel()` at program start to configure thread pool.
+//!
+//! ## Auto-Discovered Components
+//! - **Domain Brains** (8): math, code, vision, classification, law, music, chem, time
+//! - **Router Modules** (4): text, math, timeseries, vision
+//! - **Cognitive Systems** (8): reasoning, metacognition, memory, safety, world, grounding, agency, multimodal
 //!
 //! ## Usage
 //! ```rust,ignore
@@ -17,16 +22,17 @@
 //!
 //! // Auto-discover and mesh ALL components
 //! let mut mesh = CortexMesh::discover();
-//! println!("Discovered {} brains", mesh.brain_count());
+//! println!("Discovered {} brains, {} cognitive systems", mesh.brain_count(), mesh.cognitive_system_count());
 //!
 //! // Process with ALL brains in parallel (default)
 //! let result = mesh.process_parallel("def fibonacci(n): ...");
 //! println!("Active brains: {:?}", result.active_brains);
 //! ```
 //!
-//! ## Adding New Brains
-//! To add a new brain, just add it to the `BRAIN_FACTORIES` array below.
-//! The mesh will automatically discover and use it.
+//! ## Adding New Components
+//! - Add new brains to `BRAIN_FACTORIES`
+//! - Add new modules to `MODULE_FACTORIES`
+//! - Add new cognitive systems to `COGNITIVE_SYSTEM_FACTORIES`
 
 use grapheme_chem::ChemBrain;
 use grapheme_code::CodeBrain;
@@ -37,6 +43,17 @@ use grapheme_music::MusicBrain;
 use grapheme_router::{CognitiveModule, CognitiveRouter, MathModule, TextModule, TimeSeriesModule, VisionModule as RouterVisionModule};
 use grapheme_time::TimeBrain;
 use grapheme_vision::{ClassificationBrain, ClassificationConfig, VisionBrain};
+
+// Cognitive Systems imports
+use grapheme_reason::{ReasoningEngine, create_default_reasoning_engine};
+use grapheme_meta::{SimpleMetaCognition, create_default_metacognition, SelfModel, create_self_model, AttentionMechanism, create_attention_mechanism};
+use grapheme_memory::{MemorySystem, create_default_memory_system};
+use grapheme_safety::{SafetyGuard, SafetyGate};
+use grapheme_world::{SimpleWorldModel, create_default_world_model};
+use grapheme_ground::{SimpleGroundedGraph, SimpleEmbodiedAgent, create_default_grounded_graph, create_default_embodied_agent};
+use grapheme_agent::{SimpleAgency, GoalStack, create_default_agent, create_goal_stack};
+use grapheme_multimodal::{SimpleMultiModal, create_default_multimodal};
+
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Once;
@@ -122,6 +139,89 @@ const MODULE_FACTORIES: &[(&str, fn() -> Box<dyn CognitiveModule>)] = &[
 ];
 
 // ============================================================================
+// Cognitive Systems Factory - Add new cognitive systems here for auto-discovery
+// ============================================================================
+
+/// Cognitive system names for auto-discovery
+pub const COGNITIVE_SYSTEM_NAMES: &[&str] = &[
+    "reasoning",
+    "metacognition",
+    "memory",
+    "safety",
+    "world",
+    "grounding",
+    "agency",
+    "multimodal",
+];
+
+/// All cognitive systems auto-discovered - holds the actual instances
+pub struct CognitiveSystems {
+    /// Reasoning engine for deduction, induction, abduction, analogy
+    pub reasoning: ReasoningEngine,
+    /// Metacognition for self-monitoring and uncertainty estimation
+    pub metacognition: SimpleMetaCognition,
+    /// Self-model for introspection
+    pub self_model: SelfModel,
+    /// Attention mechanism for brain allocation
+    pub attention: AttentionMechanism,
+    /// Memory system (episodic, semantic, procedural, working)
+    pub memory: MemorySystem,
+    /// Safety guard for action filtering
+    pub safety_guard: SafetyGuard,
+    /// Safety gate for input/output filtering
+    pub safety_gate: SafetyGate,
+    /// World model for prediction and planning
+    pub world: SimpleWorldModel,
+    /// Grounded graph for symbol grounding
+    pub grounding: SimpleGroundedGraph,
+    /// Embodied agent for sensorimotor integration
+    pub embodied: SimpleEmbodiedAgent,
+    /// Agency for goal management and planning
+    pub agency: SimpleAgency,
+    /// Goal stack for hierarchical goal tracking
+    pub goal_stack: GoalStack,
+    /// Multimodal integration
+    pub multimodal: SimpleMultiModal,
+}
+
+impl CognitiveSystems {
+    /// Auto-discover and create all cognitive systems
+    pub fn discover() -> Self {
+        Self {
+            reasoning: create_default_reasoning_engine(),
+            metacognition: create_default_metacognition(),
+            self_model: create_self_model(),
+            attention: create_attention_mechanism(),
+            memory: create_default_memory_system(),
+            safety_guard: SafetyGuard::default(),
+            safety_gate: SafetyGate::default(),
+            world: create_default_world_model(),
+            grounding: create_default_grounded_graph(),
+            embodied: create_default_embodied_agent(),
+            agency: create_default_agent(),
+            goal_stack: create_goal_stack(),
+            multimodal: create_default_multimodal(),
+        }
+    }
+
+    /// Get count of cognitive system categories
+    pub fn count() -> usize {
+        COGNITIVE_SYSTEM_NAMES.len()
+    }
+
+    /// List all cognitive system names
+    pub fn list() -> Vec<&'static str> {
+        COGNITIVE_SYSTEM_NAMES.to_vec()
+    }
+}
+
+impl Default for CognitiveSystems {
+    fn default() -> Self {
+        Self::discover()
+    }
+}
+
+// ============================================================================
 // CortexMesh - The Full AGI Mesh
 // ============================================================================
 
@@ -132,6 +232,9 @@ pub struct CortexMesh {
 
     /// Cognitive router with all modules
     pub router: CognitiveRouter,
+
+    /// All cognitive systems (auto-discovered)
+    pub cognitive_systems: CognitiveSystems,
 
     /// Core neural network model
     pub model: GraphTransformNet,
@@ -247,6 +350,14 @@ impl CortexMesh {
         }
         println!("  Total: {} modules\n", MODULE_FACTORIES.len());
 
+        // Discover cognitive systems
+        println!("Discovering cognitive systems...");
+        let cognitive_systems = CognitiveSystems::discover();
+        for name in COGNITIVE_SYSTEM_NAMES {
+            println!("  [+] {}", name);
+        }
+        println!("  Total: {} cognitive systems\n", CognitiveSystems::count());
+
         // Create model with proper 4-argument constructor
         println!("Initializing neural network...");
         let model = GraphTransformNet::new(
@@ -261,11 +372,13 @@ impl CortexMesh {
         println!("CortexMesh ready!");
         println!("  Brains: {}", brains.len());
         println!("  Modules: {}", MODULE_FACTORIES.len());
+        println!("  Cognitive Systems: {}", CognitiveSystems::count());
         println!("  Parallel: {}\n", config.parallel);
 
         Self {
             brains,
             router,
+            cognitive_systems,
             model,
             stats: MeshStats::default(),
             config,
@@ -286,6 +399,16 @@ impl CortexMesh {
     /// List all brain IDs
     pub fn brain_ids(&self) -> Vec<String> {
         self.brains.domains().to_vec()
+    }
+
+    /// Get number of cognitive systems
+    pub fn cognitive_system_count(&self) -> usize {
+        CognitiveSystems::count()
+    }
+
+    /// List all cognitive system names
+    pub fn cognitive_system_names(&self) -> Vec<&'static str> {
+        CognitiveSystems::list()
     }
 
     /// Process input through ALL brains in PARALLEL (default)
@@ -447,6 +570,16 @@ pub fn module_count() -> usize {
     MODULE_FACTORIES.len()
 }
 
+/// List all discoverable cognitive systems (compile-time)
+pub fn list_all_cognitive_systems() -> Vec<&'static str> {
+    CognitiveSystems::list()
+}
+
+/// Count of all discoverable cognitive systems
+pub fn cognitive_system_count() -> usize {
+    CognitiveSystems::count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,10 +602,25 @@ mod tests {
     }
 
     #[test]
+    fn test_list_cognitive_systems() {
+        let systems = list_all_cognitive_systems();
+        assert_eq!(systems.len(), 8);
+        assert!(systems.contains(&"reasoning"));
+        assert!(systems.contains(&"metacognition"));
+        assert!(systems.contains(&"memory"));
+        assert!(systems.contains(&"safety"));
+        assert!(systems.contains(&"world"));
+        assert!(systems.contains(&"grounding"));
+        assert!(systems.contains(&"agency"));
+        assert!(systems.contains(&"multimodal"));
+    }
+
+    #[test]
     fn test_mesh_discovery() {
         let mesh = CortexMesh::discover();
         assert_eq!(mesh.brain_count(), BRAIN_FACTORIES.len());
         assert_eq!(mesh.module_count(), MODULE_FACTORIES.len());
+        assert_eq!(mesh.cognitive_system_count(), 8);
     }
 
     #[test]

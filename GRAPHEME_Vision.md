@@ -1030,14 +1030,15 @@ cargo run --release -p grapheme-train --bin train_online -- \
 
 ### CortexMesh - Full AGI Training with Auto-Discovery
 
-CortexMesh provides a unified architecture for training with ALL cognitive components meshed together with automatic parallel processing. It auto-discovers all registered brains and router modules at compile time.
+CortexMesh provides a unified architecture for training with ALL cognitive components meshed together with automatic parallel processing. It auto-discovers all registered brains, router modules, and cognitive systems at compile time.
 
 ```rust
 use grapheme_train::cortex_mesh::{CortexMesh, MeshConfig, init_parallel};
 
 // Auto-discover and mesh ALL components (parallel init is automatic)
 let mut mesh = CortexMesh::discover();
-println!("Discovered {} brains", mesh.brain_count());
+println!("Discovered {} brains, {} cognitive systems",
+    mesh.brain_count(), mesh.cognitive_system_count());
 
 // Or with custom configuration
 let config = MeshConfig {
@@ -1068,6 +1069,16 @@ let loss = mesh.train_step("input", "target", learning_rate);
 - `music` - MusicBrain for musical notation
 - `chem` - ChemBrain for chemistry
 - `time` - TimeBrain for time series
+
+**Auto-Discovered Cognitive Systems** (compile-time):
+- `reasoning` - ReasoningEngine with deduction, induction, abduction, analogy
+- `metacognition` - Self-monitoring and uncertainty estimation
+- `memory` - MemorySystem (episodic, semantic, procedural, working)
+- `safety` - SafetyGuard and SafetyGate for input/output filtering
+- `world` - WorldModel for prediction and planning
+- `grounding` - Symbol grounding with EmbodiedAgent
+- `agency` - GoalStack and planning for autonomous behavior
+- `multimodal` - Cross-modal integration (text, vision, audio)
 
 **Parallel Processing**:
 ```rust
