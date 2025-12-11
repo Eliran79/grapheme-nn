@@ -258,6 +258,156 @@ pub enum NodeType {
     /// Generic feature input node (index in feature vector) - backend-140
     /// Used for AGI-ready modular inputs that don't have spatial coordinates
     Feature(usize),
+
+    // =========================================================================
+    // Semantic Code Nodes - GRAPHEME Vision for Code Generation
+    // These represent AST-level constructs, NOT characters
+    // =========================================================================
+
+    /// Keyword node (def, if, else, for, while, return, class, etc.)
+    Keyword(String),
+    /// Variable/Identifier reference
+    Variable(String),
+    /// Integer literal
+    Int(i64),
+    /// Float literal
+    Float(String), // String to preserve precision and avoid Eq issues
+    /// String literal
+    Str(String),
+    /// Boolean literal
+    Bool(bool),
+    /// Operator (+, -, *, /, ==, !=, <, >, <=, >=, and, or, not)
+    Op(String),
+    /// Function call with name
+    Call(String),
+    /// Punctuation (colon, comma, parentheses, brackets, braces)
+    Punct(char),
+    /// Whitespace (space, newline, indent)
+    Space(SpaceType),
+    /// Type annotation
+    TypeAnnot(String),
+    /// Comment
+    Comment(String),
+    /// End of sequence marker
+    EndSeq,
+}
+
+/// Types of whitespace in semantic code representation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpaceType {
+    /// Single space
+    Space,
+    /// Newline
+    Newline,
+    /// Indent (4 spaces)
+    Indent,
+    /// Dedent (decrease indent level)
+    Dedent,
+}
+
+impl NodeType {
+    /// Convert a semantic node type to its text representation.
+    /// This is the key method for graph-to-code decoding.
+    ///
+    /// Example: `NodeType::Keyword("if".into())` -> `"if"`
+    pub fn to_code_text(&self) -> String {
+        match self {
+            // Character-level nodes (legacy)
+            NodeType::Input(ch) => ch.to_string(),
+            NodeType::Hidden | NodeType::Output => String::new(),
+            NodeType::Clique(_) | NodeType::Pattern(_) | NodeType::Compressed(_) => String::new(),
+            NodeType::Pixel { .. } | NodeType::ClassOutput(_) | NodeType::Feature(_) => String::new(),
+
+            // Semantic code nodes - convert to Python code text
+            NodeType::Keyword(kw) => kw.clone(),
+            NodeType::Variable(name) => name.clone(),
+            NodeType::Int(val) => val.to_string(),
+            NodeType::Float(val) => val.clone(),
+            NodeType::Str(val) => format!("\"{}\"", val),
+            NodeType::Bool(val) => if *val { "True".to_string() } else { "False".to_string() },
+            NodeType::Op(op) => op.clone(),
+            NodeType::Call(name) => name.clone(),
+            NodeType::Punct(ch) => ch.to_string(),
+            NodeType::Space(space_type) => match space_type {
+                SpaceType::Space => " ".to_string(),
+                SpaceType::Newline => "\n".to_string(),
+                SpaceType::Indent => "    ".to_string(),
+                SpaceType::Dedent => String::new(), // Dedent is structural, no text
+            },
+            NodeType::TypeAnnot(ty) => ty.clone(),
+            NodeType::Comment(text) => format!("# {}", text),
+            NodeType::EndSeq => String::new(),
+        }
+    }
+
+    /// Check if this is a semantic code node (not character-level)
+    pub fn is_semantic(&self) -> bool {
+        matches!(
+            self,
+            NodeType::Keyword(_)
+                | NodeType::Variable(_)
+                | NodeType::Int(_)
+                | NodeType::Float(_)
+                | NodeType::Str(_)
+                | NodeType::Bool(_)
+                | NodeType::Op(_)
+                | NodeType::Call(_)
+                | NodeType::Punct(_)
+                | NodeType::Space(_)
+                | NodeType::TypeAnnot(_)
+                | NodeType::Comment(_)
+                | NodeType::EndSeq
+        )
+    }
+
+    /// Get a unique index for this node type (for embedding lookup)
+    /// Returns (category_id, variant_id) where:
+    /// - category_id identifies the node category (0-15)
+    /// - variant_id is for the specific value (hash or index)
+    pub fn semantic_index(&self) -> (usize, usize) {
+        match self {
+            NodeType::Input(ch) => (0, *ch as usize),
+            NodeType::Hidden => (1, 0),
+            NodeType::Output => (2, 0),
+            NodeType::Clique(v) => (3, v.len()),
+            NodeType::Pattern(p) => (4, p.len()),
+            NodeType::Compressed(_) => (5, 0),
+            NodeType::Pixel { row, col } => (6, row * 1000 + col),
+            NodeType::ClassOutput(idx) => (7, *idx),
+            NodeType::Feature(idx) => (8, *idx),
+            // Semantic code nodes
+            NodeType::Keyword(kw) => (9, Self::hash_str(kw) % 1000),
+            NodeType::Variable(name) => (10, Self::hash_str(name) % 10000),
+            NodeType::Int(val) => (11, (*val as usize) % 10000),
+            NodeType::Float(val) => (11, Self::hash_str(val) % 10000),
+            NodeType::Str(val) => (12, Self::hash_str(val) % 10000),
+            NodeType::Bool(val) => (13, if *val { 1 } else { 0 }),
+            NodeType::Op(op) => (14, Self::op_index(op)),
+            NodeType::Call(name) => (15, Self::hash_str(name) % 10000),
+            NodeType::Punct(ch) => (16, *ch as usize),
+            NodeType::Space(st) => (17, *st as usize),
+            NodeType::TypeAnnot(ty) => (18, Self::hash_str(ty) % 1000),
+            NodeType::Comment(_) => (19, 0),
+            NodeType::EndSeq => (20, 0),
+        }
+    }
+
+    /// Simple string hash for indexing
+    fn hash_str(s: &str) -> usize {
+        s.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize))
+    }
+
+    /// Map operator to unique index
+    fn op_index(op: &str) -> usize {
+        match op {
+            "+" => 0, "-" => 1, "*" => 2, "/" => 3, "//" => 4, "%" => 5, "**" => 6,
+            "==" => 10, "!=" => 11, "<" => 12, ">" => 13, "<=" => 14, ">=" => 15,
+            "and" => 20, "or" => 21, "not" => 22,
+            "in" => 30, "is" => 31, "is not" => 32, "not in" => 33,
+            "=" => 40, "+=" => 41, "-=" => 42, "*=" => 43, "/=" => 44,
+            _ => 99,
+        }
+    }
 }
 
 /// A node in the GRAPHEME graph (matching GRAPHEME_Vision.md)
@@ -414,6 +564,142 @@ impl Node {
             node_type: NodeType::Feature(index),
             position: Some(index),
             activation_fn: ActivationFn::Linear, // Input nodes pass through unchanged
+        }
+    }
+
+    // =========================================================================
+    // Semantic Code Node Constructors - GRAPHEME Vision
+    // =========================================================================
+
+    /// Create a keyword node (def, if, else, for, while, return, class, etc.)
+    pub fn keyword(kw: &str, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Keyword(kw.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a variable/identifier node
+    pub fn variable(name: &str, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Variable(name.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create an integer literal node
+    pub fn int_lit(val: i64, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Int(val),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a float literal node
+    pub fn float_lit(val: f64, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Float(val.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a string literal node
+    pub fn str_lit(val: &str, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Str(val.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a boolean literal node
+    pub fn bool_lit(val: bool, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Bool(val),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create an operator node (+, -, *, /, ==, <, >, etc.)
+    pub fn op(op_str: &str, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Op(op_str.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a function call node
+    pub fn call(func_name: &str, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Call(func_name.to_string()),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a punctuation node (colon, comma, parens, etc.)
+    pub fn punct(ch: char, position: usize) -> Self {
+        Self {
+            value: Some(ch as u8),
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Punct(ch),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create a space/whitespace node
+    pub fn space(space_type: SpaceType, position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::Space(space_type),
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
+        }
+    }
+
+    /// Create an end-of-sequence marker node
+    pub fn end_seq(position: usize) -> Self {
+        Self {
+            value: None,
+            activation: 1.0,
+            pre_activation: 1.0,
+            node_type: NodeType::EndSeq,
+            position: Some(position),
+            activation_fn: ActivationFn::Linear,
         }
     }
 
@@ -2277,6 +2563,247 @@ impl GraphemeGraph {
                 }
             })
             .collect()
+    }
+
+    /// Convert semantic graph back to code text.
+    /// This is the key decoding method for graph-to-code generation.
+    /// Iterates through nodes in position order and converts each semantic node to text.
+    pub fn to_code(&self) -> String {
+        // Sort nodes by position
+        let mut nodes_with_pos: Vec<_> = self.input_nodes
+            .iter()
+            .filter_map(|&idx| {
+                let node = &self.graph[idx];
+                node.position.map(|pos| (pos, &node.node_type))
+            })
+            .collect();
+        nodes_with_pos.sort_by_key(|(pos, _)| *pos);
+
+        // Convert each node to text
+        nodes_with_pos
+            .iter()
+            .map(|(_, node_type)| node_type.to_code_text())
+            .collect()
+    }
+
+    /// Build a semantic code graph from Python code.
+    /// This tokenizes the code into semantic units (keywords, variables, operators, etc.)
+    /// instead of individual characters.
+    ///
+    /// Example:
+    /// ```text
+    /// "if x > 2:" -> [Keyword("if"), Space, Variable("x"), Space, Op(">"), Space, Int(2), Punct(':')]
+    /// ```
+    pub fn from_code(code: &str) -> Self {
+        let mut graph = Self::new();
+        let tokens = Self::tokenize_python(code);
+
+        let mut prev_node: Option<NodeIndex> = None;
+        for (position, node_type) in tokens.into_iter().enumerate() {
+            let node = Node {
+                value: None,
+                activation: 1.0,
+                pre_activation: 1.0,
+                node_type,
+                position: Some(position),
+                activation_fn: ActivationFn::Linear,
+            };
+            let idx = graph.graph.add_node(node);
+            graph.input_nodes.push(idx);
+
+            if let Some(prev) = prev_node {
+                graph.graph.add_edge(prev, idx, Edge::sequential());
+            }
+            prev_node = Some(idx);
+        }
+
+        graph
+    }
+
+    /// Tokenize Python code into semantic node types.
+    /// This is the key method for converting code to semantic graph representation.
+    fn tokenize_python(code: &str) -> Vec<NodeType> {
+        let mut tokens = Vec::new();
+        let mut chars: Vec<char> = code.chars().collect();
+        let mut i = 0;
+
+        // Python keywords
+        let keywords = [
+            "def", "if", "else", "elif", "for", "while", "return", "class",
+            "import", "from", "as", "try", "except", "finally", "with",
+            "lambda", "yield", "raise", "pass", "break", "continue",
+            "global", "nonlocal", "assert", "del", "in", "is", "not",
+            "and", "or", "None", "True", "False", "async", "await",
+        ];
+
+        // Operators (longer first for greedy matching)
+        let operators = [
+            "**=", "//=", ">>=", "<<=", "==", "!=", "<=", ">=", "+=", "-=",
+            "*=", "/=", "%=", "&=", "|=", "^=", "**", "//", ">>", "<<",
+            "->", "=>", "+", "-", "*", "/", "%", "&", "|", "^", "~",
+            "<", ">", "=", "@",
+        ];
+
+        while i < chars.len() {
+            let ch = chars[i];
+
+            // Skip and record whitespace
+            if ch == ' ' {
+                tokens.push(NodeType::Space(SpaceType::Space));
+                i += 1;
+                continue;
+            }
+            if ch == '\n' {
+                tokens.push(NodeType::Space(SpaceType::Newline));
+                i += 1;
+                // Check for indent after newline
+                let mut spaces = 0;
+                while i < chars.len() && chars[i] == ' ' {
+                    spaces += 1;
+                    i += 1;
+                }
+                // Add indent tokens (4 spaces = 1 indent)
+                for _ in 0..(spaces / 4) {
+                    tokens.push(NodeType::Space(SpaceType::Indent));
+                }
+                continue;
+            }
+            if ch == '\t' {
+                tokens.push(NodeType::Space(SpaceType::Indent));
+                i += 1;
+                continue;
+            }
+
+            // String literals
+            if ch == '"' || ch == '\'' {
+                let quote = ch;
+                let mut s = String::new();
+                i += 1;
+                // Check for triple quotes
+                let triple = i + 1 < chars.len() && chars[i] == quote && chars[i + 1] == quote;
+                if triple {
+                    i += 2;
+                    while i + 2 < chars.len() {
+                        if chars[i] == quote && chars[i + 1] == quote && chars[i + 2] == quote {
+                            i += 3;
+                            break;
+                        }
+                        s.push(chars[i]);
+                        i += 1;
+                    }
+                } else {
+                    while i < chars.len() && chars[i] != quote {
+                        if chars[i] == '\\' && i + 1 < chars.len() {
+                            s.push(chars[i + 1]);
+                            i += 2;
+                        } else {
+                            s.push(chars[i]);
+                            i += 1;
+                        }
+                    }
+                    if i < chars.len() {
+                        i += 1; // Skip closing quote
+                    }
+                }
+                tokens.push(NodeType::Str(s));
+                continue;
+            }
+
+            // Comments
+            if ch == '#' {
+                let mut comment = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != '\n' {
+                    comment.push(chars[i]);
+                    i += 1;
+                }
+                tokens.push(NodeType::Comment(comment.trim().to_string()));
+                continue;
+            }
+
+            // Numbers
+            if ch.is_ascii_digit() || (ch == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) {
+                let mut num_str = String::new();
+                let mut has_dot = false;
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '_' || chars[i] == 'e' || chars[i] == 'E') {
+                    if chars[i] == '.' {
+                        if has_dot { break; }
+                        has_dot = true;
+                    }
+                    num_str.push(chars[i]);
+                    i += 1;
+                }
+                if has_dot || num_str.contains('e') || num_str.contains('E') {
+                    tokens.push(NodeType::Float(num_str));
+                } else if let Ok(val) = num_str.replace('_', "").parse::<i64>() {
+                    tokens.push(NodeType::Int(val));
+                } else {
+                    tokens.push(NodeType::Float(num_str));
+                }
+                continue;
+            }
+
+            // Identifiers and keywords
+            if ch.is_alphabetic() || ch == '_' {
+                let mut ident = String::new();
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    ident.push(chars[i]);
+                    i += 1;
+                }
+
+                // Check if it's a keyword
+                if keywords.contains(&ident.as_str()) {
+                    // Special handling for True/False/None
+                    if ident == "True" {
+                        tokens.push(NodeType::Bool(true));
+                    } else if ident == "False" {
+                        tokens.push(NodeType::Bool(false));
+                    } else if ident == "and" || ident == "or" || ident == "not" || ident == "in" || ident == "is" {
+                        tokens.push(NodeType::Op(ident));
+                    } else {
+                        tokens.push(NodeType::Keyword(ident));
+                    }
+                } else {
+                    // Check if it's a function call
+                    let mut j = i;
+                    while j < chars.len() && chars[j] == ' ' { j += 1; }
+                    if j < chars.len() && chars[j] == '(' {
+                        tokens.push(NodeType::Call(ident));
+                    } else {
+                        tokens.push(NodeType::Variable(ident));
+                    }
+                }
+                continue;
+            }
+
+            // Operators (try longest match first)
+            let remaining: String = chars[i..].iter().collect();
+            let mut found_op = false;
+            for op in &operators {
+                if remaining.starts_with(op) {
+                    tokens.push(NodeType::Op(op.to_string()));
+                    i += op.len();
+                    found_op = true;
+                    break;
+                }
+            }
+            if found_op { continue; }
+
+            // Punctuation
+            if "()[]{}:;,.".contains(ch) {
+                tokens.push(NodeType::Punct(ch));
+                i += 1;
+                continue;
+            }
+
+            // Unknown character - treat as punctuation
+            tokens.push(NodeType::Punct(ch));
+            i += 1;
+        }
+
+        // Add end sequence marker
+        tokens.push(NodeType::EndSeq);
+        tokens
     }
 
     /// Compute processing depth based on character complexity
@@ -7000,6 +7527,14 @@ pub struct MessagePassingLayer {
     pub input_dim: usize,
     /// Output dimension
     pub output_dim: usize,
+    /// Activation function (default: LeakyReLU to prevent dying neurons)
+    #[serde(default = "default_mp_activation")]
+    pub activation: ActivationFn,
+}
+
+/// Default activation for MessagePassingLayer: LeakyReLU prevents dying neurons
+fn default_mp_activation() -> ActivationFn {
+    ActivationFn::LeakyReLU
 }
 
 impl MessagePassingLayer {
@@ -7020,7 +7555,15 @@ impl MessagePassingLayer {
             bias_grad: None,
             input_dim,
             output_dim,
+            activation: ActivationFn::LeakyReLU,
         }
+    }
+
+    /// Create a new message passing layer with custom activation function
+    pub fn with_activation(input_dim: usize, output_dim: usize, activation: ActivationFn) -> Self {
+        let mut layer = Self::new(input_dim, output_dim);
+        layer.activation = activation;
+        layer
     }
 
     /// Forward pass: aggregate neighbor features and transform
@@ -7050,8 +7593,14 @@ impl MessagePassingLayer {
             output[i] = val;
         }
 
-        // ReLU activation
-        output.mapv_inplace(|x| x.max(0.0));
+        // Apply configurable activation (LeakyReLU by default prevents dying neurons)
+        output.mapv_inplace(|x| match self.activation {
+            ActivationFn::Linear => x,
+            ActivationFn::ReLU => x.max(0.0),
+            ActivationFn::Sigmoid => 1.0 / (1.0 + (-x).exp()),
+            ActivationFn::Tanh => x.tanh(),
+            ActivationFn::LeakyReLU => if x > 0.0 { x } else { 0.01 * x },
+        });
         output
     }
 

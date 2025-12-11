@@ -360,14 +360,20 @@ impl CortexMesh {
 
         // Create model with proper 4-argument constructor
         println!("Initializing neural network...");
-        let model = GraphTransformNet::new(
+        let mut model = GraphTransformNet::new(
             config.vocab_size,
             config.embed_dim,
             config.hidden_dim,
             config.num_layers,
         );
-        println!("  Vocab: {}, Embed: {}, Hidden: {}, Layers: {}\n",
+
+        // Add Sabag pooling for code generation (expand to 512 output clusters)
+        // This is CRITICAL for learning - without it, the model can't produce enough output nodes
+        let output_clusters = 512;
+        model.sabag_pooling = Some(grapheme_core::SabagPooling::new(output_clusters, config.embed_dim));
+        println!("  Vocab: {}, Embed: {}, Hidden: {}, Layers: {}",
             config.vocab_size, config.embed_dim, config.hidden_dim, config.num_layers);
+        println!("  Sabag pooling: {} output clusters\n", output_clusters);
 
         println!("CortexMesh ready!");
         println!("  Brains: {}", brains.len());
@@ -490,27 +496,203 @@ impl CortexMesh {
         }
     }
 
-    /// Train step with structural loss
+    /// Train step with structural loss only (legacy)
     pub fn train_step(&mut self, input: &str, target: &str, lr: f32) -> f32 {
-        // Forward pass
+        // Use unified training with structural loss weight = 1.0, char loss weight = 0.0
+        let (total_loss, _, _) = self.train_step_unified(input, target, lr, 1.0, 0.0);
+        total_loss
+    }
+
+    /// Unified training step: structural loss + character-level cross-entropy
+    ///
+    /// This trains BOTH:
+    /// 1. Graph structure (node/edge topology matching target)
+    /// 2. Character prediction (cross-entropy on decoded text)
+    ///
+    /// NOTE: This method calls step() internally, making it suitable for single-sample
+    /// training. For batch training, use backward_unified() + step() separately.
+    ///
+    /// # Arguments
+    /// * `input` - Input text (e.g., docstring/prompt)
+    /// * `target` - Target text (e.g., code solution)
+    /// * `lr` - Learning rate
+    /// * `struct_weight` - Weight for structural loss (α)
+    /// * `char_weight` - Weight for character cross-entropy loss (β)
+    ///
+    /// # Returns
+    /// (total_loss, structural_loss, char_loss)
+    pub fn train_step_unified(
+        &mut self,
+        input: &str,
+        target: &str,
+        lr: f32,
+        struct_weight: f32,
+        char_weight: f32,
+    ) -> (f32, f32, f32) {
+        self.model.zero_grad();
+        let result = self.backward_unified(input, target, char_weight);
+        self.step(lr, struct_weight, char_weight);
+        result
+    }
+
+    /// Zero all gradients in the model (call at start of batch)
+    pub fn zero_grad(&mut self) {
+        self.model.zero_grad();
+    }
+
+    /// Forward + backward pass, accumulating gradients WITHOUT applying them
+    ///
+    /// Use this for proper batch training:
+    /// ```ignore
+    /// mesh.zero_grad();
+    /// for sample in batch {
+    ///     mesh.backward_unified(&sample.input, &sample.output, char_weight);
+    /// }
+    /// mesh.step(lr / batch_size, struct_weight, char_weight);
+    /// ```
+    pub fn backward_unified(
+        &mut self,
+        input: &str,
+        target: &str,
+        char_weight: f32,
+    ) -> (f32, f32, f32) {
+        // Forward pass through model
         let input_graph = GraphemeGraph::from_text(input);
         let target_graph = GraphemeGraph::from_text(target);
         let (output_graph, pooling) = self.model.forward(&input_graph);
 
-        // Compute structural loss
+        // 1. Structural loss (graph topology)
         let loss_result = compute_structural_loss(&output_graph, &target_graph, &self.loss_config);
+        let structural_loss = loss_result.total_loss;
 
-        // Backward pass
+        // 2. Character-level cross-entropy loss
+        let char_loss = if char_weight > 0.0 {
+            self.compute_char_loss(&pooling, target)
+        } else {
+            0.0
+        };
+
+        // Combined loss (for reporting only - weights applied in step())
+        let total_loss = structural_loss + char_loss;
+
+        // Backward pass - accumulate gradients
         self.model.backward(&input_graph, &pooling, &loss_result.activation_gradients, self.config.embed_dim);
 
-        // Update weights
-        self.model.step(lr);
+        // Also accumulate decoder gradients (but don't apply)
+        if char_weight > 0.0 {
+            self.accumulate_decoder_gradients(&pooling, target);
+        }
 
         // Update stats
         self.stats.total_processed += 1;
 
-        // Return loss
-        loss_result.total_loss
+        (total_loss, structural_loss, char_loss)
+    }
+
+    /// Apply accumulated gradients (call once per batch)
+    pub fn step(&mut self, lr: f32, struct_weight: f32, char_weight: f32) {
+        // Apply model gradients with structural weight
+        self.model.step(lr * struct_weight);
+
+        // Apply decoder gradients with char weight
+        if char_weight > 0.0 {
+            self.apply_decoder_gradients(lr * char_weight);
+        }
+    }
+
+    /// Accumulate decoder gradients without applying them
+    fn accumulate_decoder_gradients(&mut self, pooling: &grapheme_core::PoolingResult, target: &str) {
+        let features = &pooling.features;
+        let target_chars: Vec<u8> = target.bytes().collect();
+        let vocab_size = self.config.vocab_size;
+
+        if let Some(ref mut sabag) = self.model.sabag_pooling {
+            let (num_clusters, embed_dim) = features.dim();
+            let seq_len = num_clusters.min(target_chars.len());
+            let query_ncols = sabag.query_matrix.ncols();
+
+            let (grad_nrows, grad_ncols) = if let Some(ref qg) = sabag.query_grad {
+                (qg.nrows(), qg.ncols())
+            } else {
+                (0, 0)
+            };
+
+            for i in 0..seq_len {
+                let target_idx = target_chars[i] as usize;
+                if target_idx >= vocab_size {
+                    continue;
+                }
+
+                let feat = features.row(i);
+
+                // Accumulate gradients (no learning rate - that's applied in step())
+                for j in 0..embed_dim.min(query_ncols) {
+                    let char_signal = if j == target_idx % embed_dim { 1.0 } else { -0.01 };
+                    let grad = feat[j % feat.len()] * char_signal / (seq_len as f32);
+
+                    if let Some(ref mut query_grad) = sabag.query_grad {
+                        let row_idx = i % grad_nrows.max(1);
+                        if row_idx < grad_nrows && j < grad_ncols {
+                            query_grad[[row_idx, j]] += grad;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply accumulated decoder gradients
+    fn apply_decoder_gradients(&mut self, lr: f32) {
+        if let Some(ref mut sabag) = self.model.sabag_pooling {
+            // Apply gradients: w = w - lr * grad
+            if let Some(ref grad) = sabag.query_grad {
+                let grad_clone = grad.clone();
+                ndarray::Zip::from(&mut sabag.query_matrix).and(&grad_clone).for_each(|w, &g| {
+                    *w -= lr * g;
+                });
+            }
+            // Zero decoder gradients after applying
+            if let Some(ref mut qg) = sabag.query_grad {
+                qg.fill(0.0);
+            }
+        }
+    }
+
+    /// Compute character-level cross-entropy loss
+    fn compute_char_loss(&self, pooling: &grapheme_core::PoolingResult, target: &str) -> f32 {
+        let decoded = self.model.decode(pooling);
+        let target_chars: Vec<u8> = target.bytes().collect();
+        let decoded_chars: Vec<u8> = decoded.bytes().collect();
+
+        let vocab_size = self.config.vocab_size;
+        let seq_len = target_chars.len().min(decoded_chars.len()).max(1);
+
+        let mut total_loss = 0.0f32;
+
+        // Cross-entropy: -log(p[target_char])
+        // Using softmax approximation from activation values
+        for i in 0..seq_len {
+            let target_idx = target_chars.get(i).copied().unwrap_or(0) as usize;
+            let pred_idx = decoded_chars.get(i).copied().unwrap_or(0) as usize;
+
+            // Simple cross-entropy approximation
+            // If prediction matches, low loss; otherwise high loss
+            if target_idx == pred_idx {
+                total_loss += 0.1; // Small loss for correct
+            } else {
+                // Distance-based loss
+                let dist = (target_idx as i32 - pred_idx as i32).abs() as f32;
+                total_loss += (1.0 + dist / vocab_size as f32).ln();
+            }
+        }
+
+        // Add length penalty if decoded is shorter
+        if decoded_chars.len() < target_chars.len() {
+            let missing = target_chars.len() - decoded_chars.len();
+            total_loss += missing as f32 * 2.0; // Penalty per missing char
+        }
+
+        total_loss / seq_len as f32
     }
 
     /// Get statistics summary

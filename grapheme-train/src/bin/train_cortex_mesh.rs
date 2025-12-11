@@ -134,27 +134,7 @@ fn load_training_data(data_dir: &PathBuf) -> Result<Vec<TrainingSample>> {
     Ok(samples)
 }
 
-/// Compute character-level similarity (Jaccard-like)
-fn similarity(a: &str, b: &str) -> f32 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-
-    let a_chars: std::collections::HashSet<char> = a.chars().collect();
-    let b_chars: std::collections::HashSet<char> = b.chars().collect();
-
-    let intersection = a_chars.intersection(&b_chars).count();
-    let union = a_chars.union(&b_chars).count();
-
-    if union == 0 {
-        0.0
-    } else {
-        intersection as f32 / union as f32
-    }
-}
+// NOTE: Character-level similarity REMOVED - semantic node accuracy is the proper metric
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -255,22 +235,43 @@ fn main() -> Result<()> {
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
             .unwrap());
 
-        // Process batches
-        for batch in train_samples.chunks(args.batch_size) {
-            let batch_loss: f32 = batch.iter()
-                .map(|sample| mesh.train_step(&sample.input, &sample.output, current_lr))
-                .sum();
+        // Process batches with PROPER BATCH TRAINING
+        // Critical: zero_grad → accumulate gradients → step (once per batch)
+        let mut train_struct_loss = 0.0;
+        let mut train_char_loss = 0.0;
+        let struct_weight = 1.0;  // Structural loss weight
+        let char_weight = 0.5;    // Character loss weight
 
-            train_loss += batch_loss;
+        for batch in train_samples.chunks(args.batch_size) {
+            // 1. Zero gradients at start of batch
+            mesh.zero_grad();
+
+            // 2. Accumulate gradients across all samples in batch
+            for sample in batch {
+                let (total, struct_loss, char_loss) = mesh.backward_unified(
+                    &sample.input,
+                    &sample.output,
+                    char_weight,
+                );
+                train_loss += total;
+                train_struct_loss += struct_loss;
+                train_char_loss += char_loss;
+            }
+
+            // 3. Apply accumulated gradients ONCE per batch (with batch-averaged LR)
+            mesh.step(current_lr / batch.len() as f32, struct_weight, char_weight);
+
             pb.inc(batch.len() as u64);
         }
         pb.finish_and_clear();
 
-        train_loss /= train_samples.len() as f32;
+        let n = train_samples.len() as f32;
+        train_loss /= n;
+        train_struct_loss /= n;
+        train_char_loss /= n;
 
-        // Validation
+        // Validation (structural loss only - no character similarity)
         let mut val_loss = 0.0;
-        let mut val_similarity = 0.0;
         let loss_config = StructuralLossConfig::default();
 
         for sample in val_samples {
@@ -279,14 +280,9 @@ fn main() -> Result<()> {
 
             let loss_result = compute_structural_loss(&result.output_graph, &target_graph, &loss_config);
             val_loss += loss_result.total_loss;
-
-            // Character similarity
-            let sim = similarity(&result.decoded, &sample.output);
-            val_similarity += sim;
         }
 
         val_loss /= val_samples.len() as f32;
-        val_similarity /= val_samples.len() as f32;
 
         let epoch_time = epoch_start.elapsed();
 
@@ -298,9 +294,10 @@ fn main() -> Result<()> {
             mesh.save(&best_path)?;
         }
 
-        // Print progress
-        print!("Epoch {}/{}: train_loss={:.4}, val_loss={:.4}, sim={:.1}%",
-            epoch + 1, args.epochs, train_loss, val_loss, val_similarity * 100.0);
+        // Print progress (structural loss only)
+        print!("Epoch {}/{}: loss={:.4} (struct={:.2}, char={:.2}), val={:.4}",
+            epoch + 1, args.epochs, train_loss, train_struct_loss, train_char_loss,
+            val_loss);
 
         if is_best {
             print!(" [BEST]");

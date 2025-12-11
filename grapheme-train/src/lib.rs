@@ -1368,6 +1368,58 @@ impl WeisfeilerLehmanKernel {
                 "Feature".hash(&mut hasher);
                 idx.hash(&mut hasher);
             }
+            // Semantic Code Nodes
+            NodeType::Keyword(kw) => {
+                "Keyword".hash(&mut hasher);
+                kw.hash(&mut hasher);
+            }
+            NodeType::Variable(var) => {
+                "Variable".hash(&mut hasher);
+                var.hash(&mut hasher);
+            }
+            NodeType::Int(i) => {
+                "Int".hash(&mut hasher);
+                i.hash(&mut hasher);
+            }
+            NodeType::Float(f) => {
+                "Float".hash(&mut hasher);
+                f.hash(&mut hasher);
+            }
+            NodeType::Str(s) => {
+                "Str".hash(&mut hasher);
+                s.hash(&mut hasher);
+            }
+            NodeType::Bool(b) => {
+                "Bool".hash(&mut hasher);
+                b.hash(&mut hasher);
+            }
+            NodeType::Op(op) => {
+                "Op".hash(&mut hasher);
+                op.hash(&mut hasher);
+            }
+            NodeType::Call(name) => {
+                "Call".hash(&mut hasher);
+                name.hash(&mut hasher);
+            }
+            NodeType::Punct(ch) => {
+                "Punct".hash(&mut hasher);
+                ch.hash(&mut hasher);
+            }
+            NodeType::Space(space_type) => {
+                "Space".hash(&mut hasher);
+                format!("{:?}", space_type).hash(&mut hasher);
+            }
+            NodeType::TypeAnnot(ty) => {
+                "TypeAnnot".hash(&mut hasher);
+                ty.hash(&mut hasher);
+            }
+            NodeType::Comment(c) => {
+                "Comment".hash(&mut hasher);
+                c.hash(&mut hasher);
+            }
+            NodeType::EndSeq => {
+                "EndSeq".hash(&mut hasher);
+            }
         }
         hasher.finish()
     }

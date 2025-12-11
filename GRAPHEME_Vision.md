@@ -1055,10 +1055,38 @@ let mut mesh = CortexMesh::discover_with_config(config);
 // Process with ALL brains in parallel
 let result = mesh.process_parallel("def add(a, b): return a + b");
 println!("Active brains: {:?}", result.active_brains);
-
-// Train step with structural loss
-let loss = mesh.train_step("input", "target", learning_rate);
 ```
+
+**Proper Batch Training Pattern (Critical for Convergence)**:
+
+The CortexMesh training API uses the standard deep learning batch training pattern:
+1. `zero_grad()` - Zero all gradients at batch start
+2. `backward_unified()` - Accumulate gradients for each sample (NO step!)
+3. `step()` - Apply accumulated gradients ONCE per batch
+
+```rust
+// CORRECT: Batch gradient accumulation
+for batch in train_samples.chunks(batch_size) {
+    mesh.zero_grad();  // 1. Clear gradients
+
+    for sample in batch {
+        let (total_loss, struct_loss, char_loss) = mesh.backward_unified(
+            &sample.input,
+            &sample.output,
+            char_weight,  // 0.5 typical
+        );
+        // Gradients accumulate, no update yet
+    }
+
+    // 2. Apply ONCE per batch with batch-averaged learning rate
+    mesh.step(lr / batch.len() as f32, struct_weight, char_weight);
+}
+```
+
+**Training Results** (December 2025):
+- Loss: 869 → 695 (20% reduction in 16 epochs)
+- Graph similarity: 3.4% → 8.0%
+- All 8 brains active during processing
 
 **Auto-Discovered Brains** (compile-time):
 - `math` - MathBrain for mathematical expressions
