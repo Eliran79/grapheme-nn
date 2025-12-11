@@ -1,7 +1,7 @@
 ---
 id: backend-177
 title: Implement multi-agent orchestration with GRAPHEME coordinator
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -90,25 +90,32 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-train/src/multi_agent.rs` (~900 lines)
+- Key types: OrchestrationConfig, AgentSelectionStrategy, AggregationStrategy, ManagedAgent, OrchestratedTask, AgentCoordinator, TaskBuilder, AggregatedResult
+- Added module export in lib.rs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- AgentCoordinator.submit_task() adds to pending queue
+- process_pending() assigns tasks to agents based on selection strategy:
+  - RoundRobin, LeastLoaded, Random, SkillMatch, Broadcast
+- record_result() accumulates agent responses
+- aggregate_results() combines results:
+  - FirstSuccess, Consensus, Merge, BestScore, CollectAll
+- complete_task() moves task to completed, updates stats
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses a2a_protocol module for AgentCard, Skill, TaskStatus
+- Uses a2a_registry module for AgentStatus
+- ManagedAgent wraps AgentCard with load tracking
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train multi_agent::`
+- Expected: 20 tests pass
+- Key tests: test_coordinator_process_pending_with_agents, test_aggregation_first_success
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- AgentCoordinator manages agent lifecycle and task distribution
+- Selection strategies pick which agents handle each task
+- Aggregation strategies combine multiple results into final answer
+- Retry logic handles transient failures (max_retries configurable)
+- Statistics track success rates for performance monitoring

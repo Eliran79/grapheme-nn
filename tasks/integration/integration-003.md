@@ -1,7 +1,7 @@
 ---
 id: integration-003
 title: Implement DagNN graph to LLM prompt translation
-status: todo
+status: done
 priority: high
 tags:
 - integration

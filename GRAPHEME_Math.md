@@ -152,14 +152,52 @@ See [GRAPHEME_Math_Dataset.md](./GRAPHEME_Math_Dataset.md) for:
 - [x] NL layer handles ambiguity via confidence scoring
 - [x] End-to-end: English → verified numeric/symbolic result
 - [x] Router-to-training integration (TrainingPair generation)
+- [x] Production training: gradient clipping, metrics dashboard, checkpoint compression, gradient accumulation
+- [x] Safety-aware training with Asimov's Laws validation
+- [x] **Online Continuous Learning** (backend-200 to backend-205):
+  - OnlineLearner trait with grapheme-memory integration
+  - Experience replay (5 strategies: Uniform, PrioritizedLoss, PrioritizedRecency, Mixed, DomainBalanced)
+  - ConsolidationScheduler (5 triggers: ExampleCount, BatchCount, BufferThreshold, LossThreshold, Manual)
+  - CurriculumConfig with 7-level progression (math → text → sequences → logic → multi-domain)
+  - EWC (Elastic Weight Consolidation) for catastrophic forgetting prevention
 
 **Crates Implemented:**
-- `grapheme-engine`: 100% symbolic rules coverage
-- `grapheme-polish`: Full S-expression parser and graph conversion
-- `grapheme-math`: Typed math nodes with expression simplification
-- `grapheme-core`: Character-level processing with DagNN
-- `grapheme-train`: Curriculum learning with structural loss
-- `grapheme-router`: AGI cognitive routing with training graph generation
+- `grapheme-engine`: Symbolic rules and execution
+- `grapheme-polish`: S-expression parser and graph conversion
+- `grapheme-math`: Typed math nodes
+- `grapheme-core`: Character-level DagNN
+- `grapheme-train`: Training infrastructure + online learning module
+- `grapheme-router`: AGI cognitive routing
+- `grapheme-safety`: Asimov's Laws (57 tests)
+- `grapheme-memory`: Episodic memory for experience replay
+
+---
+
+## Online Learning for Math
+
+The `train_online` binary supports continuous math learning with curriculum progression:
+
+```bash
+# Start from level 1 (basic arithmetic) and progress to level 7 (multi-domain)
+cargo run --release -p grapheme-train --bin train_online -- \
+    --examples 10000 \
+    --start-level 1 \
+    --max-level 7 \
+    --replay-strategy mixed
+```
+
+**Curriculum Levels:**
+| Level | Description | Example |
+|-------|-------------|---------|
+| 1 | Basic arithmetic | `2 + 3 = 5` |
+| 2 | Multi-digit operations | `123 + 456 = 579` |
+| 3 | Fractions/decimals | `0.5 * 4 = 2.0` |
+| 4 | Variables | `x + 3 = 7, x = 4` |
+| 5 | Functions | `sin(0) = 0` |
+| 6 | Calculus | `derivative of x² = 2x` |
+| 7 | Multi-domain | Math + Text + Vision |
+
+**EWC prevents forgetting**: When learning new levels, important weights from earlier levels are protected via Fisher Information regularization.
 
 ---
 

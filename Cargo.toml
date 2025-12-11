@@ -23,6 +23,7 @@ members = [
     "grapheme-router",
     "grapheme-tests",
     "grapheme-brain-common",
+    "grapheme-safety",
 ]
 
 [workspace.package]

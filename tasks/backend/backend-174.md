@@ -1,7 +1,7 @@
 ---
 id: backend-174
 title: Implement web crawler with rate limiting and robots.txt support
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -89,25 +89,33 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-train/src/web_crawler.rs` (~800 lines)
+- Key types: CrawlerConfig, RobotsTxt, RateLimiter, UrlQueue, QueuedUrl, WebCrawler, CrawledPage, CrawlError
+- Added module export in lib.rs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- WebCrawler.add_seeds() initializes URL queue
+- crawl_next() processes one URL:
+  1. Check depth/pattern/robots.txt limits
+  2. Wait for rate limit (per-domain delay)
+  3. Fetch page via WebFetcher
+  4. Extract links and add to queue
+- crawl_all() processes entire queue up to max_pages
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses web_fetcher module for HTTP requests
+- RobotsTxt.parse() extracts directives from robots.txt
+- RateLimiter tracks per-domain request timing
+- UrlQueue deduplicates and limits per-domain
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train web_crawler::`
+- Expected: 23 tests pass
+- Key tests: test_robots_txt_parse_simple, test_rate_limiter_delay, test_url_queue_dedup
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- CrawlerConfig::gentle() for respectful crawling (2s delay)
+- CrawlerConfig::aggressive() for faster crawling (500ms delay)
+- robots.txt crawl-delay directive updates rate limiter
+- Block patterns exclude common non-content URLs (images, admin, etc.)
+- Link extraction is regex-based (simple href= parsing)

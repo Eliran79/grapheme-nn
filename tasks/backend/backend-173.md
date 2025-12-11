@@ -1,7 +1,7 @@
 ---
 id: backend-173
 title: Implement knowledge graph extraction from text (entities, relations)
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -40,9 +40,20 @@ Brief description of what needs to be done and why.
 - Success criteria
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create Entity struct with id, text, entity_type, confidence, metadata
+- [x] Create EntityType enum (Person, Location, Organization, DateTime, Number, Concept, Custom)
+- [x] Create Relation struct with subject/object ids, predicate, confidence
+- [x] Create KnowledgeGraph struct with entities/relations HashMaps
+- [x] Implement entity operations (add, get, filter by type)
+- [x] Implement relation operations (add, filter by entity)
+- [x] Create to_grapheme_graph() conversion method
+- [x] Create KnowledgeExtractor with regex-based entity extraction
+- [x] Implement extract_entities() method
+- [x] Implement extract_relations() method
+- [x] Create ExtractionConfig for confidence thresholds
+- [x] Add ExtractorBuilder with custom patterns
+- [x] Write 17 unit tests
+- [x] Export module from lib.rs
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -89,25 +100,30 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-train/src/knowledge_extraction.rs` (~800 lines)
+- Key types: Entity, EntityType, Relation, KnowledgeGraph, KnowledgeExtractor, ExtractionConfig, ExtractorBuilder
+- Added `regex = "1.10"` dependency to Cargo.toml
+- Added module export in lib.rs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- KnowledgeGraph accumulates entities/relations via add methods
+- extract() returns KnowledgeGraph with entities and inferred relations
+- to_grapheme_graph() converts KnowledgeGraph to GraphemeGraph:
+  - Each entity → Node::input(first_char, index)
+  - Each relation → Edge::new(confidence, EdgeType::Semantic)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses grapheme_core::{GraphemeGraph, Node, Edge, EdgeType}
+- Entity extraction uses regex patterns for capitalized words, numbers, dates
+- Relation inference based on co-occurrence in text
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train knowledge_extraction::`
+- Expected: 17 tests pass
+- Key tests: test_to_grapheme_graph, test_extract_simple_entities, test_extract_relations
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- ExtractorBuilder allows adding custom regex patterns: `.add_pattern("KEYWORD", r"regex")`
+- EntityType::Custom(String) for user-defined entity types
+- Location extraction uses country/city keywords (New York, London, etc.)
+- Relation extraction is basic co-occurrence - can be enhanced with NLP

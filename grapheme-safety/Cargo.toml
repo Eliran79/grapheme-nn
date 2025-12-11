@@ -1,0 +1,20 @@
+[package]
+name = "grapheme-safety"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Asimov Laws Safety Module - Non-overridable safety constraints for GRAPHEME AGI"
+
+[dependencies]
+grapheme-core = { path = "../grapheme-core" }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "safety_bench"
+harness = false

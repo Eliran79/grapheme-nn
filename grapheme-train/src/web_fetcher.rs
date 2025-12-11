@@ -2,6 +2,8 @@
 //!
 //! Fetches training content from HTTP/HTTPS URLs.
 //! Backend-170: Web content fetcher for training.
+//!
+//! Uses ureq for HTTP/HTTPS with native-tls support.
 
 use std::io::Read;
 use std::time::Duration;
@@ -25,7 +27,7 @@ impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             timeout_secs: 30,
-            user_agent: "GRAPHEME-Train/1.0".to_string(),
+            user_agent: "GRAPHEME-Train/1.0 (+https://github.com/grapheme-nn)".to_string(),
             max_size: 10 * 1024 * 1024, // 10MB
             follow_redirects: true,
             max_redirects: 5,
@@ -78,33 +80,85 @@ impl WebContent {
     }
 }
 
-/// Web content fetcher
+/// Web content fetcher using ureq with HTTPS support
 pub struct WebFetcher {
     config: FetchConfig,
+    agent: ureq::Agent,
 }
 
 impl WebFetcher {
     /// Create a new web fetcher with default config
     pub fn new() -> Self {
-        Self {
-            config: FetchConfig::default(),
-        }
+        Self::with_config(FetchConfig::default())
     }
 
     /// Create with custom config
     pub fn with_config(config: FetchConfig) -> Self {
-        Self { config }
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .user_agent(&config.user_agent)
+            .redirects(if config.follow_redirects { config.max_redirects } else { 0 })
+            .build();
+
+        Self { config, agent }
     }
 
-    /// Fetch content from a URL using pure Rust (no external dependencies)
-    /// This is a minimal implementation - for production use, consider ureq or reqwest
+    /// Fetch content from a URL (supports both HTTP and HTTPS)
     pub fn fetch(&self, url: &str) -> Result<WebContent, String> {
-        // Parse URL
-        let parsed = self.parse_url(url)?;
+        let url = url.trim();
 
-        // For now, we implement a simple HTTP/1.1 client
-        // In production, you'd want to use ureq, reqwest, or similar
-        self.fetch_http(&parsed, url, 0)
+        // Validate URL scheme
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("URL must start with http:// or https://".to_string());
+        }
+
+        // Make the request
+        let response = self.agent
+            .get(url)
+            .call()
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let status_code = response.status();
+        let content_type = response.header("content-type").map(|s| s.to_string());
+        let final_url = response.get_url().to_string();
+
+        // Read response body with size limit
+        let mut content = Vec::new();
+        let mut reader = response.into_reader();
+
+        // Read in chunks to enforce size limit
+        let mut buffer = [0u8; 8192];
+        loop {
+            let bytes_read = reader.read(&mut buffer)
+                .map_err(|e| format!("Read failed: {}", e))?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            content.extend_from_slice(&buffer[..bytes_read]);
+
+            if content.len() > self.config.max_size {
+                return Err(format!(
+                    "Content too large: exceeded {} bytes limit",
+                    self.config.max_size
+                ));
+            }
+        }
+
+        // Try to decode as UTF-8
+        let text = String::from_utf8(content.clone()).ok();
+        let content_length = content.len();
+
+        Ok(WebContent {
+            url: url.to_string(),
+            final_url,
+            status_code,
+            content_type,
+            content,
+            text,
+            content_length,
+        })
     }
 
     /// Fetch multiple URLs
@@ -112,170 +166,20 @@ impl WebFetcher {
         urls.iter().map(|url| self.fetch(url)).collect()
     }
 
-    // Internal URL parsing
-    fn parse_url(&self, url: &str) -> Result<ParsedUrl, String> {
-        let url = url.trim();
+    /// Fetch JSON content and parse it
+    pub fn fetch_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, String> {
+        let content = self.fetch(url)?;
 
-        let (scheme, rest) = if url.starts_with("https://") {
-            ("https", &url[8..])
-        } else if url.starts_with("http://") {
-            ("http", &url[7..])
-        } else {
-            return Err("URL must start with http:// or https://".to_string());
-        };
+        let text = content.text
+            .ok_or("Response is not valid UTF-8")?;
 
-        let (host_port, path) = match rest.find('/') {
-            Some(i) => (&rest[..i], &rest[i..]),
-            None => (rest, "/"),
-        };
-
-        let (host, port) = match host_port.find(':') {
-            Some(i) => {
-                let port_str = &host_port[i+1..];
-                let port = port_str.parse::<u16>()
-                    .map_err(|_| format!("Invalid port: {}", port_str))?;
-                (&host_port[..i], port)
-            }
-            None => {
-                let default_port = if scheme == "https" { 443 } else { 80 };
-                (host_port, default_port)
-            }
-        };
-
-        Ok(ParsedUrl {
-            scheme: scheme.to_string(),
-            host: host.to_string(),
-            port,
-            path: path.to_string(),
-        })
+        serde_json::from_str(&text)
+            .map_err(|e| format!("JSON parse error: {}", e))
     }
 
-    // Simple HTTP fetch implementation
-    fn fetch_http(&self, parsed: &ParsedUrl, original_url: &str, redirect_count: u32) -> Result<WebContent, String> {
-        if redirect_count > self.config.max_redirects {
-            return Err("Too many redirects".to_string());
-        }
-
-        use std::net::TcpStream;
-
-        // Connect with timeout
-        let addr = format!("{}:{}", parsed.host, parsed.port);
-        let mut stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
-            Duration::from_secs(self.config.timeout_secs),
-        ).map_err(|e| format!("Connection failed: {}", e))?;
-
-        stream.set_read_timeout(Some(Duration::from_secs(self.config.timeout_secs)))
-            .map_err(|e| format!("Failed to set timeout: {}", e))?;
-
-        // For HTTPS, we need TLS - for now, only support HTTP
-        if parsed.scheme == "https" {
-            return Err("HTTPS requires TLS support. Use the http_client feature or add native-tls/rustls dependency.".to_string());
-        }
-
-        // Send HTTP request
-        let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nConnection: close\r\n\r\n",
-            parsed.path,
-            parsed.host,
-            self.config.user_agent
-        );
-
-        use std::io::Write;
-        stream.write_all(request.as_bytes())
-            .map_err(|e| format!("Write failed: {}", e))?;
-
-        // Read response
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response)
-            .map_err(|e| format!("Read failed: {}", e))?;
-
-        // Parse response
-        self.parse_http_response(&response, original_url, parsed, redirect_count)
-    }
-
-    fn parse_http_response(
-        &self,
-        response: &[u8],
-        original_url: &str,
-        parsed: &ParsedUrl,
-        redirect_count: u32,
-    ) -> Result<WebContent, String> {
-        // Find header/body separator
-        let header_end = response.windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or("Invalid HTTP response: no header terminator")?;
-
-        let header_bytes = &response[..header_end];
-        let body = &response[header_end + 4..];
-
-        // Parse header
-        let header_str = String::from_utf8_lossy(header_bytes);
-        let lines: Vec<&str> = header_str.lines().collect();
-
-        if lines.is_empty() {
-            return Err("Empty HTTP response".to_string());
-        }
-
-        // Parse status line
-        let status_parts: Vec<&str> = lines[0].splitn(3, ' ').collect();
-        if status_parts.len() < 2 {
-            return Err("Invalid HTTP status line".to_string());
-        }
-
-        let status_code: u16 = status_parts[1]
-            .parse()
-            .map_err(|_| "Invalid status code")?;
-
-        // Parse headers
-        let mut content_type = None;
-        let mut location = None;
-
-        for line in &lines[1..] {
-            let parts: Vec<&str> = line.splitn(2, ':').collect();
-            if parts.len() == 2 {
-                let key = parts[0].trim().to_lowercase();
-                let value = parts[1].trim();
-                match key.as_str() {
-                    "content-type" => content_type = Some(value.to_string()),
-                    "location" => location = Some(value.to_string()),
-                    _ => {}
-                }
-            }
-        }
-
-        // Handle redirects
-        if self.config.follow_redirects && (status_code == 301 || status_code == 302 || status_code == 307 || status_code == 308) {
-            if let Some(loc) = location {
-                let redirect_url = if loc.starts_with("http") {
-                    loc
-                } else if loc.starts_with('/') {
-                    format!("{}://{}:{}{}", parsed.scheme, parsed.host, parsed.port, loc)
-                } else {
-                    return Err(format!("Invalid redirect location: {}", loc));
-                };
-                let new_parsed = self.parse_url(&redirect_url)?;
-                return self.fetch_http(&new_parsed, original_url, redirect_count + 1);
-            }
-        }
-
-        // Check size limit
-        if body.len() > self.config.max_size {
-            return Err(format!("Content too large: {} bytes (max {})", body.len(), self.config.max_size));
-        }
-
-        // Try to decode as UTF-8
-        let text = String::from_utf8(body.to_vec()).ok();
-
-        Ok(WebContent {
-            url: original_url.to_string(),
-            final_url: format!("{}://{}:{}{}", parsed.scheme, parsed.host, parsed.port, parsed.path),
-            status_code,
-            content_type,
-            content: body.to_vec(),
-            text,
-            content_length: body.len(),
-        })
+    /// Get configuration
+    pub fn config(&self) -> &FetchConfig {
+        &self.config
     }
 }
 
@@ -285,61 +189,9 @@ impl Default for WebFetcher {
     }
 }
 
-/// Parsed URL components
-#[derive(Debug)]
-struct ParsedUrl {
-    scheme: String,
-    host: String,
-    port: u16,
-    path: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_url_http() {
-        let fetcher = WebFetcher::new();
-        let parsed = fetcher.parse_url("http://example.com/path").unwrap();
-        assert_eq!(parsed.scheme, "http");
-        assert_eq!(parsed.host, "example.com");
-        assert_eq!(parsed.port, 80);
-        assert_eq!(parsed.path, "/path");
-    }
-
-    #[test]
-    fn test_parse_url_https() {
-        let fetcher = WebFetcher::new();
-        let parsed = fetcher.parse_url("https://example.com/").unwrap();
-        assert_eq!(parsed.scheme, "https");
-        assert_eq!(parsed.host, "example.com");
-        assert_eq!(parsed.port, 443);
-        assert_eq!(parsed.path, "/");
-    }
-
-    #[test]
-    fn test_parse_url_with_port() {
-        let fetcher = WebFetcher::new();
-        let parsed = fetcher.parse_url("http://localhost:8080/api/data").unwrap();
-        assert_eq!(parsed.host, "localhost");
-        assert_eq!(parsed.port, 8080);
-        assert_eq!(parsed.path, "/api/data");
-    }
-
-    #[test]
-    fn test_parse_url_no_path() {
-        let fetcher = WebFetcher::new();
-        let parsed = fetcher.parse_url("http://example.com").unwrap();
-        assert_eq!(parsed.path, "/");
-    }
-
-    #[test]
-    fn test_invalid_url() {
-        let fetcher = WebFetcher::new();
-        assert!(fetcher.parse_url("ftp://example.com").is_err());
-        assert!(fetcher.parse_url("example.com").is_err());
-    }
 
     #[test]
     fn test_fetch_config_defaults() {
@@ -363,5 +215,41 @@ mod tests {
         assert!(content.is_html());
         assert!(!content.is_json());
         assert!(!content.is_text());
+    }
+
+    #[test]
+    fn test_web_content_json_type() {
+        let content = WebContent {
+            url: "http://api.example.com".to_string(),
+            final_url: "http://api.example.com".to_string(),
+            status_code: 200,
+            content_type: Some("application/json".to_string()),
+            content: vec![],
+            text: Some("{}".to_string()),
+            content_length: 2,
+        };
+        assert!(content.is_json());
+        assert!(!content.is_html());
+    }
+
+    #[test]
+    fn test_invalid_url_scheme() {
+        let fetcher = WebFetcher::new();
+        assert!(fetcher.fetch("ftp://example.com").is_err());
+        assert!(fetcher.fetch("example.com").is_err());
+    }
+
+    #[test]
+    fn test_fetcher_config() {
+        let config = FetchConfig {
+            timeout_secs: 60,
+            user_agent: "Test/1.0".to_string(),
+            max_size: 1024,
+            follow_redirects: false,
+            max_redirects: 0,
+        };
+        let fetcher = WebFetcher::with_config(config.clone());
+        assert_eq!(fetcher.config().timeout_secs, 60);
+        assert_eq!(fetcher.config().max_size, 1024);
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: backend-179
 title: Implement knowledge distillation from LLMs to GRAPHEME graphs
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -89,25 +89,33 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-train/src/knowledge_distillation.rs` (~1200 lines)
+- Key types: DistillationConfig, DistilledKnowledge, KnowledgeType, SoftTarget, DistillationSession, KnowledgeDistiller, DistillationResult, GraphKnowledgeApplier
+- Added entities()/relations() methods to KnowledgeGraph
+- Added module export in lib.rs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- DistillationSession.process_response() extracts knowledge by type:
+  - Factual: extracts capitalized words as entities
+  - Relational: finds "X is Y", "X has Y" patterns
+  - Procedural: finds step sequences (1., First, Then, Finally)
+  - Structural: finds hierarchy patterns (contains, part of)
+  - Linguistic: extracts n-grams and co-occurrences
+- Session accumulates knowledge, then complete_session() returns all results
+- SoftTarget applies temperature scaling for soft labels
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses knowledge_extraction module for Entity, Relation, KnowledgeGraph
+- Uses llm_client module for LLMConfig
+- Converts to GraphemeGraph via KnowledgeGraph.to_grapheme_graph()
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train knowledge_distillation::`
+- Expected: 23 tests pass
+- Key tests: test_session_relational_extraction, test_distiller_distill_response
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- KnowledgeDistiller orchestrates sessions for batch distillation
+- Confidence threshold (min_confidence) filters low-quality extractions
+- GraphKnowledgeApplier merges knowledge into existing graphs
+- Temperature parameter (default 2.0) controls soft target distribution

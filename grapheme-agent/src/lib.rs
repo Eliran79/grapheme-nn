@@ -24,12 +24,29 @@
 //! - Goals bounded by values
 //! - Drives are configurable
 //! - Human oversight integration points
+//!
+//! ## Asimov Laws Integration
+//!
+//! All goal formulation and planning operations are validated against
+//! Asimov's Laws of Robotics via the `grapheme-safety` crate:
+//! - Zeroth Law: Protect humanity
+//! - First Law: Do not harm humans
+//! - Second Law: Obey humans (unless violating higher laws)
+//! - Third Law: Self-preservation (unless violating higher laws)
+//!
+//! Safety validation is NON-OVERRIDABLE and occurs at:
+//! - Goal formulation (before a goal is accepted)
+//! - Plan creation (before a plan is approved)
+//! - Action execution (before each action is taken)
 
 use grapheme_core::{
     BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
     LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_meta::UncertaintyEstimate;
+use grapheme_safety::{
+    Action as SafetyAction, ActionTarget, ActionType, AsimovLaw, SafetyCheck, SafetyGate,
+};
 use grapheme_world::WorldModeling;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -69,6 +86,11 @@ pub enum AgentError {
     GoalNotAchievable(String),
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
+    #[error("Safety violation ({law}): {description}")]
+    SafetyViolation {
+        law: AsimovLaw,
+        description: String,
+    },
 }
 
 /// Result type for agency operations
@@ -498,7 +520,11 @@ pub enum ExplorationStrategy {
 // ============================================================================
 
 /// An autonomous agent with goals, values, and drives
-#[derive(Debug)]
+///
+/// ## Safety Integration
+///
+/// The Agent includes a non-overridable SafetyGate that validates all goals
+/// and plans against Asimov's Laws before they can be pursued or executed.
 pub struct Agent {
     /// Goal hierarchy
     pub goals: GoalHierarchy,
@@ -510,10 +536,25 @@ pub struct Agent {
     pub current_plan: Option<Plan>,
     /// Planning configuration
     pub config: PlanningConfig,
+    /// Safety gate for Asimov Laws validation (NON-OVERRIDABLE)
+    safety_gate: SafetyGate,
+}
+
+impl std::fmt::Debug for Agent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Agent")
+            .field("goals", &self.goals)
+            .field("values", &self.values)
+            .field("drives", &self.drives)
+            .field("current_plan", &self.current_plan)
+            .field("config", &self.config)
+            .field("safety_gate", &"SafetyGate { ... }")
+            .finish()
+    }
 }
 
 impl Agent {
-    /// Create a new agent
+    /// Create a new agent with integrated safety validation
     pub fn new() -> Self {
         Self {
             goals: GoalHierarchy::new(),
@@ -521,6 +562,7 @@ impl Agent {
             drives: Drive::default_drives(),
             current_plan: None,
             config: PlanningConfig::default(),
+            safety_gate: SafetyGate::new(),
         }
     }
 
@@ -532,7 +574,78 @@ impl Agent {
             drives,
             current_plan: None,
             config: PlanningConfig::default(),
+            safety_gate: SafetyGate::new(),
         }
+    }
+
+    /// Validate a goal against Asimov's Laws
+    ///
+    /// This method is NON-OVERRIDABLE. All goals MUST pass safety validation
+    /// before they can be added to the goal hierarchy.
+    pub fn validate_goal(&self, goal: &Goal) -> AgentResult<()> {
+        let safety_action = SafetyAction::new(
+            ActionType::Decide,
+            ActionTarget::Unknown,
+            &goal.name,
+        );
+
+        match self.safety_gate.guard().validate(&safety_action) {
+            SafetyCheck::Safe => Ok(()),
+            SafetyCheck::Blocked(violation) => Err(AgentError::SafetyViolation {
+                law: violation.law,
+                description: violation.description,
+            }),
+            SafetyCheck::RequiresOversight { reason, .. } => {
+                // For goals requiring oversight, we block until human approval
+                Err(AgentError::SafetyViolation {
+                    law: AsimovLaw::SecondLaw,
+                    description: format!("Goal requires human oversight: {}", reason),
+                })
+            }
+        }
+    }
+
+    /// Validate a plan against Asimov's Laws
+    ///
+    /// This method is NON-OVERRIDABLE. All plans MUST pass safety validation
+    /// before they can be executed.
+    pub fn validate_plan(&self, plan: &Plan) -> AgentResult<()> {
+        // Validate each action in the plan
+        for action in &plan.actions {
+            let safety_action = SafetyAction::from_graph(
+                &action.content,
+                ActionType::Execute,
+                ActionTarget::Unknown,
+            );
+
+            match self.safety_gate.guard().validate(&safety_action) {
+                SafetyCheck::Safe => continue,
+                SafetyCheck::Blocked(violation) => {
+                    return Err(AgentError::SafetyViolation {
+                        law: violation.law,
+                        description: format!(
+                            "Plan action '{}' blocked: {}",
+                            action.id, violation.description
+                        ),
+                    });
+                }
+                SafetyCheck::RequiresOversight { reason, .. } => {
+                    return Err(AgentError::SafetyViolation {
+                        law: AsimovLaw::SecondLaw,
+                        description: format!(
+                            "Plan action '{}' requires oversight: {}",
+                            action.id, reason
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get safety violation count for auditing
+    pub fn safety_violation_count(&self) -> usize {
+        self.safety_gate.guard().violation_count()
     }
 }
 

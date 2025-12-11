@@ -1,7 +1,7 @@
 ---
 id: integration-004
 title: Implement MCP client for connecting to external tool servers
-status: todo
+status: done
 priority: medium
 tags:
 - integration
@@ -39,9 +39,17 @@ Brief description of what needs to be done and why.
 - Success criteria
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create MCPClient struct with configuration
+- [x] Implement MCPTransport trait for abstraction
+- [x] Implement StdioTransport for subprocess servers
+- [x] Implement InMemoryTransport for testing
+- [x] Add initialize/handshake protocol
+- [x] Implement tools/list discovery
+- [x] Implement tools/call invocation
+- [x] Add MCPClientBuilder for ergonomic construction
+- [x] Create MCPServerRegistry for multi-server management
+- [x] Write 13 unit tests
+- [x] Export module from lib.rs
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -88,25 +96,28 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-train/src/mcp_client.rs` (~550 lines)
+- Key types: MCPClient, MCPClientConfig, MCPTransport trait, StdioTransport, InMemoryTransport, MCPClientBuilder, MCPServerRegistry, MCPClientError
+- Added module export in lib.rs
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `connect_stdio()` spawns subprocess and performs initialize handshake
+- `call_tool()` sends JSON-RPC request and waits for response (blocking)
+- MCPServerRegistry.call_tool() routes to correct server automatically
+- StdioTransport drop handler kills subprocess
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Reuses types from mcp_server module (Tool, JsonRpcRequest, etc.)
+- Can connect to any MCP server via subprocess (stdio transport)
+- InMemoryTransport allows testing with mock servers
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train mcp_client::`
+- Expected: 13 tests pass
+- Key tests: connect_with_mock_server, call_tool_with_mock, registry_with_mock_server
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- StdioTransport.spawn() creates subprocess with piped stdin/stdout
+- InMemoryTransport is useful for unit tests (see test_connect_with_mock_server)
+- MCPServerRegistry enables multi-server tool routing
+- call_tool() checks available_tools before sending request

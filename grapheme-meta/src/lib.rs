@@ -8,6 +8,7 @@
 //! - **Error Detection**: Find contradictions
 //! - **Adaptive Computation**: Allocate resources wisely
 //! - **Limitation Recognition**: Know when to ask for help
+//! - **Safety Monitoring**: Continuous Asimov Laws compliance tracking
 //!
 //! ## Design Philosophy
 //!
@@ -16,6 +17,14 @@
 //! - Simple confidence calibration
 //! - Compute budget management
 //! - Contradiction detection hooks
+//! - Safety awareness and violation monitoring
+//!
+//! ## Asimov Laws Integration
+//!
+//! Meta-cognition continuously monitors for potential safety violations:
+//! - Tracks safety violation history
+//! - Provides safety-aware introspection
+//! - Alerts on approaching safety boundaries
 //!
 //! Real meta-cognition may require learned policies.
 
@@ -24,6 +33,7 @@ use grapheme_core::{
     LearnableParam, Persistable, PersistenceError,
 };
 use grapheme_reason::ReasoningStep;
+use grapheme_safety::{SafetyGate, SafetyCheck, Action as SafetyAction, ActionTarget, ActionType};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;
@@ -164,10 +174,14 @@ pub struct CognitiveState {
     pub steps_taken: usize,
     /// Time elapsed
     pub elapsed: Duration,
+    /// Safety violation count (for Asimov Laws monitoring)
+    pub safety_violation_count: usize,
+    /// Whether safety monitoring is active
+    pub safety_monitoring_active: bool,
 }
 
 impl CognitiveState {
-    /// Create new cognitive state
+    /// Create new cognitive state with safety monitoring enabled by default
     pub fn new() -> Self {
         Self {
             working_memory_load: 0.0,
@@ -178,6 +192,8 @@ impl CognitiveState {
             subgoals: Vec::new(),
             steps_taken: 0,
             elapsed: Duration::ZERO,
+            safety_violation_count: 0,
+            safety_monitoring_active: true, // Safety monitoring is ALWAYS active by default
         }
     }
 
@@ -195,6 +211,16 @@ impl CognitiveState {
     /// Is reasoning stuck?
     pub fn is_stuck(&self, max_depth: usize) -> bool {
         self.reasoning_depth >= max_depth
+    }
+
+    /// Check if any safety violations have occurred
+    pub fn has_safety_violations(&self) -> bool {
+        self.safety_violation_count > 0
+    }
+
+    /// Increment safety violation count (NON-OVERRIDABLE - only increases)
+    pub fn record_safety_violation(&mut self) {
+        self.safety_violation_count = self.safety_violation_count.saturating_add(1);
     }
 }
 
@@ -7029,6 +7055,98 @@ impl Default for MemoryConsolidation {
 /// Factory function for creating MemoryConsolidation
 pub fn create_memory_consolidation() -> MemoryConsolidation {
     MemoryConsolidation::new()
+}
+
+// ============================================================================
+// Safety-Aware Meta-Cognition
+// ============================================================================
+
+/// Meta-cognition with integrated Asimov Laws safety monitoring
+///
+/// This wrapper adds safety awareness to any MetaCognition implementation.
+/// It cannot be disabled or bypassed.
+pub struct SafetyAwareMetaCognition<M: MetaCognition> {
+    /// Underlying meta-cognition implementation
+    inner: M,
+    /// Safety gate for continuous monitoring
+    safety_gate: SafetyGate,
+    /// Cumulative safety state
+    state: std::sync::Mutex<CognitiveState>,
+}
+
+impl<M: MetaCognition> SafetyAwareMetaCognition<M> {
+    /// Create a new safety-aware meta-cognition wrapper
+    pub fn new(inner: M) -> Self {
+        Self {
+            inner,
+            safety_gate: SafetyGate::new(),
+            state: std::sync::Mutex::new(CognitiveState::new()),
+        }
+    }
+
+    /// Check if a cognitive action is safe
+    ///
+    /// This method validates that a proposed cognitive operation
+    /// does not violate Asimov's Laws.
+    pub fn validate_cognitive_action(&self, description: &str) -> SafetyCheck {
+        let action = SafetyAction::new(
+            ActionType::Decide,
+            ActionTarget::Unknown,
+            description,
+        );
+        let result = self.safety_gate.guard().validate(&action);
+
+        // Record violations in state
+        if let SafetyCheck::Blocked(_) = &result {
+            if let Ok(mut state) = self.state.lock() {
+                state.record_safety_violation();
+            }
+        }
+
+        result
+    }
+
+    /// Get safety-aware cognitive state
+    pub fn safety_aware_introspect(&self) -> CognitiveState {
+        let mut state = self.inner.introspect();
+
+        // Merge with safety state
+        if let Ok(safety_state) = self.state.lock() {
+            state.safety_violation_count = safety_state.safety_violation_count;
+            state.safety_monitoring_active = true;
+        }
+
+        state
+    }
+
+    /// Get total safety violation count
+    pub fn safety_violation_count(&self) -> usize {
+        self.safety_gate.guard().violation_count()
+    }
+
+    /// Check if system is in safe state
+    pub fn is_safe(&self) -> bool {
+        self.safety_gate.guard().violation_count() == 0
+    }
+
+    /// Get the underlying meta-cognition implementation
+    pub fn inner(&self) -> &M {
+        &self.inner
+    }
+}
+
+impl<M: MetaCognition + Debug> std::fmt::Debug for SafetyAwareMetaCognition<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SafetyAwareMetaCognition")
+            .field("inner", &self.inner)
+            .field("safety_violation_count", &self.safety_violation_count())
+            .finish()
+    }
+}
+
+/// Factory function for creating safety-aware meta-cognition
+pub fn create_safety_aware_metacognition() -> SafetyAwareMetaCognition<SimpleMetaCognition> {
+    SafetyAwareMetaCognition::new(SimpleMetaCognition::new())
 }
 
 #[cfg(test)]

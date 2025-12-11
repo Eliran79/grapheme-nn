@@ -1,7 +1,7 @@
 ---
 id: testing-013
 title: Integration tests for A2A protocol and MCP server/client
-status: todo
+status: done
 priority: medium
 tags:
 - testing
@@ -41,9 +41,20 @@ Brief description of what needs to be done and why.
 - Success criteria
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create integration test file (tests/integration_a2a_mcp.rs)
+- [x] Write 16 integration tests covering:
+  - A2A full lifecycle (info, create, get)
+  - A2A serialization roundtrip
+  - A2A error handling
+  - A2A multiple tasks and concurrent operations
+  - A2A agent card structure and skills availability
+  - MCP full lifecycle (initialize, list tools, call tool)
+  - MCP server info and error handling
+  - MCP graph operations
+  - Cross-protocol text processing
+  - JSON-RPC compliance
+  - Protocol version compatibility
+- [x] All tests pass
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -90,25 +101,23 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-tests/tests/integration_a2a_mcp.rs` with 16 tests
+- Added `serde_json` dependency to grapheme-tests/Cargo.toml
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- No runtime changes - these are test-only additions
+- Tests exercise A2A and MCP protocols end-to-end
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- grapheme-tests now depends on serde_json
+- Tests use A2AAgent, MCPServer, and serialization helpers
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-tests --test integration_a2a_mcp`
+- All 16 tests should pass
+- Tests cover full lifecycle, error handling, and cross-protocol scenarios
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- A2A task IDs use format "task_N" where N increments
+- MCP server fields (info, tools) are private - access via methods
+- Error handling varies: some methods return error in response.error, others in result

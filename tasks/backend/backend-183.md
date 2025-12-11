@@ -1,7 +1,7 @@
 ---
 id: backend-183
 title: Extract dataset/curriculum module
-status: todo
+status: done
 priority: medium
 tags:
 - backend

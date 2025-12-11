@@ -31,6 +31,10 @@ pub use text_ingestion::*;
 pub mod web_fetcher;
 pub use web_fetcher::*;
 
+/// Web crawler with rate limiting and robots.txt support (backend-174)
+pub mod web_crawler;
+pub use web_crawler::*;
+
 /// Text preprocessing pipeline (data-001)
 pub mod text_preprocessor;
 pub use text_preprocessor::*;
@@ -46,6 +50,68 @@ pub use g2g::*;
 /// LLM API client (integration-001)
 pub mod llm_client;
 pub use llm_client::*;
+
+/// Graph-LLM translation (integration-002, integration-003)
+pub mod graph_llm_translation;
+pub use graph_llm_translation::*;
+
+/// MCP server for GRAPHEME tools (api-017)
+pub mod mcp_server;
+pub use mcp_server::*;
+
+/// MCP client for external tool servers (integration-004)
+pub mod mcp_client;
+pub use mcp_client::*;
+
+/// A2A (Agent-to-Agent) protocol implementation (api-015)
+pub mod a2a_protocol;
+pub use a2a_protocol::*;
+
+/// A2A agent discovery and registry (api-019)
+pub mod a2a_registry;
+pub use a2a_registry::*;
+
+/// Multi-agent orchestration with GRAPHEME coordinator (backend-177)
+pub mod multi_agent;
+pub use multi_agent::*;
+
+/// Knowledge graph extraction from text (backend-173)
+pub mod knowledge_extraction;
+pub use knowledge_extraction::*;
+
+/// Knowledge distillation from LLMs to GRAPHEME graphs (backend-179)
+pub mod knowledge_distillation;
+pub use knowledge_distillation::*;
+
+/// External dataset loaders (data-004, data-005, etc.)
+pub mod datasets;
+
+/// NL augmentation pipeline for math expressions (data-009)
+pub mod math_nl_augmentation;
+pub use math_nl_augmentation::*;
+
+/// Collaborative learning from LLM interactions (backend-178)
+pub mod collaborative_learning;
+pub use collaborative_learning::*;
+
+/// Optimizer module with SGD, Adam, gradient clipping, accumulation (backend-028, backend-193, backend-197)
+pub mod optimizer;
+pub use optimizer::{
+    AccumulatedOptimizer, Adam, GradientAccumulator, GradientClipping, GradientStats,
+    LRScheduler, Optimizer, SGD, compute_gradient_norm,
+};
+
+/// Curriculum learning module (backend-183)
+pub mod curriculum;
+pub use curriculum::{DatasetFormat, LevelSpec, OutputType};
+
+/// Online continuous learning module (backend-200, backend-201, backend-203, backend-204, backend-205)
+pub mod online_learner;
+pub use online_learner::{
+    ConsolidationScheduler, ConsolidationTrigger, CurriculumConfig, CurriculumState,
+    EWCState, EWCStats, EdgeKey, MemoryOnlineLearner, OnlineExample, OnlineLearner,
+    OnlineLearnerConfig, OnlineLearnerStats, ReplayMetadata, ReplayStats, ReplayStrategy,
+};
 
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{
@@ -85,207 +151,6 @@ pub enum TrainingError {
 
 /// Result type for training operations
 pub type TrainingResult<T> = Result<T, TrainingError>;
-
-// ============================================================================
-// Output Types and Level Specifications (per GRAPHEME_Math_Dataset.md)
-// ============================================================================
-
-/// Output type for training examples
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OutputType {
-    /// Numeric result only (e.g., 5)
-    Numeric,
-    /// Symbolic result only (e.g., (* 2 x))
-    Symbolic,
-    /// Both numeric and symbolic
-    Both,
-}
-
-/// Dataset format enumeration for auto-detection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum DatasetFormat {
-    /// Math curriculum format: input_polish, expected_symbolic/expected_result
-    #[default]
-    MathCurriculum,
-    /// Text pairs format: input, target (for QA, kindergarten, etc.)
-    TextPairs,
-}
-
-/// Specification for a curriculum level
-#[derive(Debug, Clone)]
-pub struct LevelSpec {
-    /// Level number (1-7)
-    pub level: u8,
-    /// Allowed operations
-    pub ops: Vec<MathOp>,
-    /// Allowed functions
-    pub functions: Vec<MathFn>,
-    /// Maximum expression depth
-    pub max_depth: usize,
-    /// Whether symbols are allowed
-    pub allow_symbols: bool,
-    /// Output type
-    pub output: OutputType,
-    /// Number of samples to generate
-    pub samples: usize,
-}
-
-impl LevelSpec {
-    /// Level 1: Basic arithmetic
-    pub fn level_1() -> Self {
-        Self {
-            level: 1,
-            ops: vec![MathOp::Add, MathOp::Sub],
-            functions: vec![],
-            max_depth: 1,
-            allow_symbols: false,
-            output: OutputType::Numeric,
-            samples: 10_000,
-        }
-    }
-
-    /// Level 2: Nested arithmetic
-    pub fn level_2() -> Self {
-        Self {
-            level: 2,
-            ops: vec![MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div],
-            functions: vec![],
-            max_depth: 3,
-            allow_symbols: false,
-            output: OutputType::Numeric,
-            samples: 50_000,
-        }
-    }
-
-    /// Level 3: Symbolic substitution
-    pub fn level_3() -> Self {
-        Self {
-            level: 3,
-            ops: vec![
-                MathOp::Add,
-                MathOp::Sub,
-                MathOp::Mul,
-                MathOp::Div,
-                MathOp::Pow,
-            ],
-            functions: vec![],
-            max_depth: 3,
-            allow_symbols: true,
-            output: OutputType::Numeric,
-            samples: 50_000,
-        }
-    }
-
-    /// Level 4: Functions
-    pub fn level_4() -> Self {
-        Self {
-            level: 4,
-            ops: vec![
-                MathOp::Add,
-                MathOp::Sub,
-                MathOp::Mul,
-                MathOp::Div,
-                MathOp::Pow,
-            ],
-            functions: vec![
-                MathFn::Sin,
-                MathFn::Cos,
-                MathFn::Tan,
-                MathFn::Log,
-                MathFn::Exp,
-                MathFn::Sqrt,
-            ],
-            max_depth: 3,
-            allow_symbols: true,
-            output: OutputType::Numeric,
-            samples: 100_000,
-        }
-    }
-
-    /// Level 5: Symbolic differentiation
-    pub fn level_5() -> Self {
-        Self {
-            level: 5,
-            ops: vec![
-                MathOp::Add,
-                MathOp::Sub,
-                MathOp::Mul,
-                MathOp::Div,
-                MathOp::Pow,
-            ],
-            functions: vec![MathFn::Derive],
-            max_depth: 4,
-            allow_symbols: true,
-            output: OutputType::Symbolic,
-            samples: 100_000,
-        }
-    }
-
-    /// Level 6: Integration
-    pub fn level_6() -> Self {
-        Self {
-            level: 6,
-            ops: vec![
-                MathOp::Add,
-                MathOp::Sub,
-                MathOp::Mul,
-                MathOp::Div,
-                MathOp::Pow,
-            ],
-            functions: vec![MathFn::Integrate],
-            max_depth: 4,
-            allow_symbols: true,
-            output: OutputType::Both,
-            samples: 100_000,
-        }
-    }
-
-    /// Level 7: Equation solving
-    pub fn level_7() -> Self {
-        Self {
-            level: 7,
-            ops: vec![
-                MathOp::Add,
-                MathOp::Sub,
-                MathOp::Mul,
-                MathOp::Div,
-                MathOp::Pow,
-            ],
-            functions: vec![],
-            max_depth: 4,
-            allow_symbols: true,
-            output: OutputType::Numeric,
-            samples: 100_000,
-        }
-    }
-
-    /// Get all level specs
-    pub fn all_levels() -> Vec<Self> {
-        vec![
-            Self::level_1(),
-            Self::level_2(),
-            Self::level_3(),
-            Self::level_4(),
-            Self::level_5(),
-            Self::level_6(),
-            Self::level_7(),
-        ]
-    }
-
-    /// Get a level spec by number
-    pub fn by_level(level: u8) -> Option<Self> {
-        match level {
-            1 => Some(Self::level_1()),
-            2 => Some(Self::level_2()),
-            3 => Some(Self::level_3()),
-            4 => Some(Self::level_4()),
-            5 => Some(Self::level_5()),
-            6 => Some(Self::level_6()),
-            7 => Some(Self::level_7()),
-            _ => None,
-        }
-    }
-}
 
 // ============================================================================
 // Training Example
@@ -4324,290 +4189,6 @@ impl Trainer {
 }
 
 // ============================================================================
-// Optimizers (backend-028)
-// ============================================================================
-
-use ndarray::Array2;
-
-/// Trait for optimizers that update parameters
-pub trait Optimizer {
-    /// Perform a single optimization step
-    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>);
-
-    /// Zero out gradients (called at start of each iteration)
-    fn zero_grad(&mut self);
-
-    /// Get current learning rate
-    fn get_lr(&self) -> f32;
-
-    /// Set learning rate
-    fn set_lr(&mut self, lr: f32);
-}
-
-/// Stochastic Gradient Descent with optional momentum
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SGD {
-    /// Learning rate
-    pub lr: f32,
-    /// Momentum coefficient (0 = no momentum)
-    pub momentum: f32,
-    /// Weight decay (L2 regularization)
-    pub weight_decay: f32,
-    /// Velocity buffer for momentum
-    velocity: Option<Array2<f32>>,
-}
-
-impl SGD {
-    /// Create a new SGD optimizer
-    pub fn new(lr: f32) -> Self {
-        Self {
-            lr,
-            momentum: 0.0,
-            weight_decay: 0.0,
-            velocity: None,
-        }
-    }
-
-    /// Add momentum to the optimizer
-    pub fn with_momentum(mut self, momentum: f32) -> Self {
-        self.momentum = momentum;
-        self
-    }
-
-    /// Add weight decay (L2 regularization)
-    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
-        self.weight_decay = weight_decay;
-        self
-    }
-}
-
-impl Optimizer for SGD {
-    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>) {
-        // Apply weight decay
-        let mut adjusted_grads = if self.weight_decay > 0.0 {
-            grads + &(params.clone() * self.weight_decay)
-        } else {
-            grads.clone()
-        };
-
-        // Apply momentum if enabled
-        if self.momentum > 0.0 {
-            if self.velocity.is_none() {
-                self.velocity = Some(Array2::zeros(params.dim()));
-            }
-
-            if let Some(ref mut v) = self.velocity {
-                *v = &*v * self.momentum + &adjusted_grads;
-                adjusted_grads = v.clone();
-            }
-        }
-
-        // Update parameters: params -= lr * grads
-        *params = &*params - &(&adjusted_grads * self.lr);
-    }
-
-    fn zero_grad(&mut self) {
-        // SGD doesn't need to zero anything, momentum is preserved
-    }
-
-    fn get_lr(&self) -> f32 {
-        self.lr
-    }
-
-    fn set_lr(&mut self, lr: f32) {
-        self.lr = lr;
-    }
-}
-
-/// Adam optimizer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Adam {
-    /// Learning rate
-    pub lr: f32,
-    /// Beta1 (exponential decay rate for first moment)
-    pub beta1: f32,
-    /// Beta2 (exponential decay rate for second moment)
-    pub beta2: f32,
-    /// Epsilon for numerical stability
-    pub epsilon: f32,
-    /// Weight decay
-    pub weight_decay: f32,
-    /// First moment estimate
-    m: Option<Array2<f32>>,
-    /// Second moment estimate
-    v: Option<Array2<f32>>,
-    /// Timestep
-    t: usize,
-}
-
-impl Adam {
-    /// Create a new Adam optimizer with default parameters
-    pub fn new(lr: f32) -> Self {
-        Self {
-            lr,
-            beta1: 0.9,
-            beta2: 0.999,
-            epsilon: 1e-8,
-            weight_decay: 0.0,
-            m: None,
-            v: None,
-            t: 0,
-        }
-    }
-
-    /// Set beta1
-    pub fn with_beta1(mut self, beta1: f32) -> Self {
-        self.beta1 = beta1;
-        self
-    }
-
-    /// Set beta2
-    pub fn with_beta2(mut self, beta2: f32) -> Self {
-        self.beta2 = beta2;
-        self
-    }
-
-    /// Add weight decay
-    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
-        self.weight_decay = weight_decay;
-        self
-    }
-
-    /// Get the current timestep (number of optimizer steps taken)
-    pub fn timestep(&self) -> usize {
-        self.t
-    }
-}
-
-impl Optimizer for Adam {
-    fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>) {
-        self.t += 1;
-
-        // Initialize moment estimates if needed
-        if self.m.is_none() {
-            self.m = Some(Array2::zeros(params.dim()));
-        }
-        if self.v.is_none() {
-            self.v = Some(Array2::zeros(params.dim()));
-        }
-
-        // Apply weight decay (decoupled, as in AdamW)
-        if self.weight_decay > 0.0 {
-            *params = &*params - &(params.clone() * (self.lr * self.weight_decay));
-        }
-
-        // Update biased first moment estimate
-        if let Some(ref mut m) = self.m {
-            *m = &*m * self.beta1 + &(grads * (1.0 - self.beta1));
-        }
-
-        // Update biased second moment estimate
-        if let Some(ref mut v) = self.v {
-            let grads_sq = grads.mapv(|x| x * x);
-            *v = &*v * self.beta2 + &(grads_sq * (1.0 - self.beta2));
-        }
-
-        // Compute bias-corrected estimates
-        let bias_correction1 = 1.0 - self.beta1.powi(self.t as i32);
-        let bias_correction2 = 1.0 - self.beta2.powi(self.t as i32);
-
-        if let (Some(ref m), Some(ref v)) = (&self.m, &self.v) {
-            let m_hat = m / bias_correction1;
-            let v_hat = v / bias_correction2;
-
-            // Update parameters
-            let denom = v_hat.mapv(|x| x.sqrt() + self.epsilon);
-            let update = m_hat / denom;
-            *params = &*params - &(update * self.lr);
-        }
-    }
-
-    fn zero_grad(&mut self) {
-        // Adam keeps momentum, but this resets for fresh training
-    }
-
-    fn get_lr(&self) -> f32 {
-        self.lr
-    }
-
-    fn set_lr(&mut self, lr: f32) {
-        self.lr = lr;
-    }
-}
-
-// ============================================================================
-// Learning Rate Schedulers
-// ============================================================================
-
-/// Learning rate scheduler types
-#[derive(Debug, Clone)]
-pub enum LRScheduler {
-    /// Constant learning rate (no decay)
-    Constant,
-    /// Step decay: lr = lr * gamma every step_size epochs
-    StepLR { step_size: usize, gamma: f32 },
-    /// Exponential decay: lr = lr * gamma^epoch
-    ExponentialLR { gamma: f32 },
-    /// Cosine annealing: lr oscillates from max to min
-    CosineAnnealingLR { t_max: usize, eta_min: f32 },
-    /// Linear warmup: lr increases linearly for warmup_steps, then constant
-    WarmupLR { warmup_steps: usize },
-    /// Warmup then cosine decay
-    WarmupCosineDecay {
-        warmup_steps: usize,
-        total_steps: usize,
-        eta_min: f32,
-    },
-}
-
-impl LRScheduler {
-    /// Compute learning rate for given epoch
-    pub fn get_lr(&self, base_lr: f32, epoch: usize) -> f32 {
-        match self {
-            LRScheduler::Constant => base_lr,
-
-            LRScheduler::StepLR { step_size, gamma } => {
-                let num_decays = epoch / step_size;
-                base_lr * gamma.powi(num_decays as i32)
-            }
-
-            LRScheduler::ExponentialLR { gamma } => base_lr * gamma.powi(epoch as i32),
-
-            LRScheduler::CosineAnnealingLR { t_max, eta_min } => {
-                let t = (epoch % t_max) as f32;
-                let t_max = *t_max as f32;
-                eta_min
-                    + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos()) / 2.0
-            }
-
-            LRScheduler::WarmupLR { warmup_steps } => {
-                if epoch < *warmup_steps {
-                    base_lr * (epoch + 1) as f32 / *warmup_steps as f32
-                } else {
-                    base_lr
-                }
-            }
-
-            LRScheduler::WarmupCosineDecay {
-                warmup_steps,
-                total_steps,
-                eta_min,
-            } => {
-                if epoch < *warmup_steps {
-                    base_lr * (epoch + 1) as f32 / *warmup_steps as f32
-                } else {
-                    let t = (epoch - warmup_steps) as f32;
-                    let t_max = (total_steps - warmup_steps) as f32;
-                    eta_min
-                        + (base_lr - eta_min) * (1.0 + (std::f32::consts::PI * t / t_max).cos())
-                            / 2.0
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
 // Training Loop
 // ============================================================================
 
@@ -4726,59 +4307,6 @@ impl Persistable for TrainingMetrics {
 
     fn persist_version() -> u32 {
         1
-    }
-}
-
-impl Persistable for SGD {
-    fn persist_type_id() -> &'static str {
-        "SGD"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        if self.lr < 0.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Learning rate cannot be negative".to_string(),
-            ));
-        }
-        if self.momentum < 0.0 || self.momentum > 1.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Momentum must be in [0, 1]".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl Persistable for Adam {
-    fn persist_type_id() -> &'static str {
-        "Adam"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        if self.lr < 0.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Learning rate cannot be negative".to_string(),
-            ));
-        }
-        if self.beta1 < 0.0 || self.beta1 >= 1.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Beta1 must be in [0, 1)".to_string(),
-            ));
-        }
-        if self.beta2 < 0.0 || self.beta2 >= 1.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Beta2 must be in [0, 1)".to_string(),
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -5599,6 +5127,1075 @@ pub fn quick_symbolic(input: &str) -> Option<String> {
         .symbolic_result
         .or_else(|| result.numeric_result.map(|n| format!("{}", n)))
 }
+
+// ============================================================================
+// SAFETY-AWARE TRAINING (backend-194)
+// ============================================================================
+
+/// Safety-aware training configuration and metrics
+/// Integrates Asimov's Laws safety validation into the training loop
+pub mod safety_training {
+    use grapheme_core::DagNN;
+    use grapheme_safety::{ActionTarget, AsimovLaw, HarmCategory, SafetyCheck, SafetyGate};
+    use serde::{Deserialize, Serialize};
+
+    /// Safety-aware training configuration
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SafetyTrainingConfig {
+        /// Enable safety validation of training outputs
+        pub validate_outputs: bool,
+        /// Enable safety validation of training goals
+        pub validate_goals: bool,
+        /// Maximum allowed harm score for training outputs
+        pub max_harm_threshold: f32,
+        /// Log safety violations
+        pub log_violations: bool,
+        /// Stop training on safety violation
+        pub stop_on_violation: bool,
+    }
+
+    impl Default for SafetyTrainingConfig {
+        fn default() -> Self {
+            Self {
+                validate_outputs: true,
+                validate_goals: true,
+                max_harm_threshold: 0.01,
+                log_violations: true,
+                stop_on_violation: false,
+            }
+        }
+    }
+
+    /// Safety metrics collected during training
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct SafetyMetrics {
+        /// Total outputs validated
+        pub outputs_validated: usize,
+        /// Outputs that passed safety checks
+        pub outputs_safe: usize,
+        /// Outputs that were blocked
+        pub outputs_blocked: usize,
+        /// Outputs requiring oversight
+        pub outputs_requiring_oversight: usize,
+        /// Violations by law
+        pub zeroth_law_violations: usize,
+        pub first_law_violations: usize,
+        pub second_law_violations: usize,
+        pub third_law_violations: usize,
+        /// Violations by harm category
+        pub physical_harm_violations: usize,
+        pub psychological_harm_violations: usize,
+        pub privacy_violations: usize,
+        pub deception_violations: usize,
+    }
+
+    impl SafetyMetrics {
+        /// Safety compliance rate (0.0 to 1.0)
+        pub fn compliance_rate(&self) -> f32 {
+            if self.outputs_validated == 0 {
+                1.0
+            } else {
+                self.outputs_safe as f32 / self.outputs_validated as f32
+            }
+        }
+
+        /// Total violations
+        pub fn total_violations(&self) -> usize {
+            self.outputs_blocked + self.outputs_requiring_oversight
+        }
+
+        /// Record a safety check result
+        pub fn record(&mut self, result: &SafetyCheck) {
+            self.outputs_validated += 1;
+            match result {
+                SafetyCheck::Safe => {
+                    self.outputs_safe += 1;
+                }
+                SafetyCheck::Blocked(violation) => {
+                    self.outputs_blocked += 1;
+                    // Record by law
+                    match violation.law {
+                        AsimovLaw::ZerothLaw => self.zeroth_law_violations += 1,
+                        AsimovLaw::FirstLaw => self.first_law_violations += 1,
+                        AsimovLaw::SecondLaw => self.second_law_violations += 1,
+                        AsimovLaw::ThirdLaw => self.third_law_violations += 1,
+                    }
+                    // Record by category
+                    match violation.category {
+                        HarmCategory::Physical => self.physical_harm_violations += 1,
+                        HarmCategory::Psychological => self.psychological_harm_violations += 1,
+                        HarmCategory::Privacy => self.privacy_violations += 1,
+                        HarmCategory::Deception => self.deception_violations += 1,
+                        _ => {}
+                    }
+                }
+                SafetyCheck::RequiresOversight { .. } => {
+                    self.outputs_requiring_oversight += 1;
+                }
+            }
+        }
+    }
+
+    /// Safety-aware training wrapper
+    /// Validates model outputs against Asimov's Laws during training
+    pub struct SafetyAwareTrainer {
+        /// Safety gate for validation
+        safety_gate: SafetyGate,
+        /// Configuration
+        pub config: SafetyTrainingConfig,
+        /// Collected metrics
+        pub metrics: SafetyMetrics,
+    }
+
+    impl Default for SafetyAwareTrainer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl SafetyAwareTrainer {
+        /// Create a new safety-aware trainer
+        pub fn new() -> Self {
+            Self {
+                safety_gate: SafetyGate::new(),
+                config: SafetyTrainingConfig::default(),
+                metrics: SafetyMetrics::default(),
+            }
+        }
+
+        /// Create with custom configuration
+        pub fn with_config(config: SafetyTrainingConfig) -> Self {
+            Self {
+                safety_gate: SafetyGate::new(),
+                config,
+                metrics: SafetyMetrics::default(),
+            }
+        }
+
+        /// Validate a training output (model prediction)
+        pub fn validate_output(&mut self, output: &DagNN) -> SafetyCheck {
+            if !self.config.validate_outputs {
+                return SafetyCheck::Safe;
+            }
+
+            let result = self
+                .safety_gate
+                .validate_graph_transform(&DagNN::new(), output, ActionTarget::Data);
+            self.metrics.record(&result);
+
+            if self.config.log_violations {
+                if let SafetyCheck::Blocked(ref violation) = result {
+                    eprintln!(
+                        "[SAFETY] Training output blocked: {} - {}",
+                        violation.law, violation.description
+                    );
+                }
+            }
+
+            result
+        }
+
+        /// Validate a training output as text
+        pub fn validate_output_text(&mut self, output: &str) -> SafetyCheck {
+            if !self.config.validate_outputs {
+                return SafetyCheck::Safe;
+            }
+
+            let result = self.safety_gate.validate_output(output, false);
+            self.metrics.record(&result);
+
+            if self.config.log_violations {
+                if let SafetyCheck::Blocked(ref violation) = result {
+                    eprintln!(
+                        "[SAFETY] Training output blocked: {} - {}",
+                        violation.law, violation.description
+                    );
+                }
+            }
+
+            result
+        }
+
+        /// Validate a training goal/objective
+        pub fn validate_goal(&mut self, goal_description: &str) -> SafetyCheck {
+            if !self.config.validate_goals {
+                return SafetyCheck::Safe;
+            }
+
+            let result = self
+                .safety_gate
+                .validate_goal(goal_description, ActionTarget::Data);
+            self.metrics.record(&result);
+
+            result
+        }
+
+        /// Get current safety compliance rate
+        pub fn compliance_rate(&self) -> f32 {
+            self.metrics.compliance_rate()
+        }
+
+        /// Get total violation count
+        pub fn violation_count(&self) -> usize {
+            self.safety_gate.guard().violation_count()
+        }
+
+        /// Check if training should stop due to safety violations
+        pub fn should_stop(&self) -> bool {
+            self.config.stop_on_violation && self.metrics.total_violations() > 0
+        }
+
+        /// Reset metrics for new training run
+        pub fn reset_metrics(&mut self) {
+            self.metrics = SafetyMetrics::default();
+        }
+
+        /// Get a report of safety metrics
+        pub fn safety_report(&self) -> String {
+            format!(
+                "Safety Report:\n\
+                 - Outputs validated: {}\n\
+                 - Compliance rate: {:.2}%\n\
+                 - Safe outputs: {}\n\
+                 - Blocked outputs: {}\n\
+                 - Requiring oversight: {}\n\
+                 Law violations:\n\
+                 - Zeroth Law: {}\n\
+                 - First Law: {}\n\
+                 - Second Law: {}\n\
+                 - Third Law: {}\n\
+                 Harm categories:\n\
+                 - Physical: {}\n\
+                 - Psychological: {}\n\
+                 - Privacy: {}\n\
+                 - Deception: {}",
+                self.metrics.outputs_validated,
+                self.metrics.compliance_rate() * 100.0,
+                self.metrics.outputs_safe,
+                self.metrics.outputs_blocked,
+                self.metrics.outputs_requiring_oversight,
+                self.metrics.zeroth_law_violations,
+                self.metrics.first_law_violations,
+                self.metrics.second_law_violations,
+                self.metrics.third_law_violations,
+                self.metrics.physical_harm_violations,
+                self.metrics.psychological_harm_violations,
+                self.metrics.privacy_violations,
+                self.metrics.deception_violations,
+            )
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_safety_aware_trainer_creation() {
+            let trainer = SafetyAwareTrainer::new();
+            assert_eq!(trainer.metrics.outputs_validated, 0);
+            assert_eq!(trainer.compliance_rate(), 1.0);
+        }
+
+        #[test]
+        fn test_safety_metrics_default() {
+            let metrics = SafetyMetrics::default();
+            assert_eq!(metrics.compliance_rate(), 1.0);
+            assert_eq!(metrics.total_violations(), 0);
+        }
+
+        #[test]
+        fn test_safety_training_config_default() {
+            let config = SafetyTrainingConfig::default();
+            assert!(config.validate_outputs);
+            assert!(config.validate_goals);
+            assert!(!config.stop_on_violation);
+        }
+
+        #[test]
+        fn test_validate_safe_output() {
+            let mut trainer = SafetyAwareTrainer::new();
+            let safe_graph = DagNN::from_text("hello world").unwrap();
+
+            let result = trainer.validate_output(&safe_graph);
+            assert!(result.is_safe());
+            assert_eq!(trainer.metrics.outputs_validated, 1);
+            assert_eq!(trainer.metrics.outputs_safe, 1);
+        }
+
+        #[test]
+        fn test_validate_safe_text() {
+            let mut trainer = SafetyAwareTrainer::new();
+
+            let result = trainer.validate_output_text("Here is a helpful response");
+            assert!(result.is_safe());
+            assert_eq!(trainer.metrics.outputs_validated, 1);
+        }
+
+        #[test]
+        fn test_validate_goal() {
+            let mut trainer = SafetyAwareTrainer::new();
+
+            let result = trainer.validate_goal("Learn mathematical operations");
+            assert!(result.is_safe());
+        }
+
+        #[test]
+        fn test_safety_report() {
+            let trainer = SafetyAwareTrainer::new();
+            let report = trainer.safety_report();
+
+            assert!(report.contains("Safety Report"));
+            assert!(report.contains("Compliance rate"));
+        }
+
+        #[test]
+        fn test_should_stop_disabled_by_default() {
+            let trainer = SafetyAwareTrainer::new();
+            assert!(!trainer.should_stop());
+        }
+
+        #[test]
+        fn test_reset_metrics() {
+            let mut trainer = SafetyAwareTrainer::new();
+            let safe_graph = DagNN::from_text("test").unwrap();
+            trainer.validate_output(&safe_graph);
+
+            assert_eq!(trainer.metrics.outputs_validated, 1);
+
+            trainer.reset_metrics();
+            assert_eq!(trainer.metrics.outputs_validated, 0);
+        }
+    }
+}
+
+pub use safety_training::{SafetyAwareTrainer, SafetyMetrics, SafetyTrainingConfig};
+
+// ============================================================================
+// Training Dashboard and Logging (backend-195)
+// ============================================================================
+
+/// Comprehensive training metrics dashboard with logging capabilities
+/// Provides real-time monitoring of training progress, gradient health, and safety
+pub mod training_dashboard {
+    use crate::optimizer::GradientStats;
+    use serde::{Deserialize, Serialize};
+    use std::time::{Duration, Instant};
+
+    /// Configuration for training dashboard
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DashboardConfig {
+        /// Log progress every N batches
+        pub log_interval: usize,
+        /// Show gradient statistics
+        pub show_gradient_stats: bool,
+        /// Show timing information
+        pub show_timing: bool,
+        /// Show memory usage estimates
+        pub show_memory: bool,
+        /// Show safety metrics
+        pub show_safety: bool,
+        /// Enable verbose output
+        pub verbose: bool,
+        /// Export metrics to JSON
+        pub export_json: bool,
+        /// JSON export path
+        pub export_path: Option<String>,
+    }
+
+    impl Default for DashboardConfig {
+        fn default() -> Self {
+            Self {
+                log_interval: 10,
+                show_gradient_stats: true,
+                show_timing: true,
+                show_memory: false,
+                show_safety: true,
+                verbose: false,
+                export_json: false,
+                export_path: None,
+            }
+        }
+    }
+
+    /// Timing metrics for a single batch
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct BatchTiming {
+        /// Forward pass duration in milliseconds
+        pub forward_ms: f64,
+        /// Backward pass duration in milliseconds
+        pub backward_ms: f64,
+        /// Optimizer step duration in milliseconds
+        pub optimizer_ms: f64,
+        /// Total batch duration in milliseconds
+        pub total_ms: f64,
+    }
+
+    /// Timing metrics for an epoch
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct EpochTiming {
+        /// Total epoch duration in seconds
+        pub duration_secs: f64,
+        /// Average batch time in milliseconds
+        pub avg_batch_ms: f64,
+        /// Examples processed per second (throughput)
+        pub examples_per_sec: f64,
+        /// Batches processed per second
+        pub batches_per_sec: f64,
+    }
+
+    /// Comprehensive metrics for a training epoch
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct DetailedEpochMetrics {
+        /// Epoch number
+        pub epoch: usize,
+        /// Average loss
+        pub avg_loss: f32,
+        /// Minimum loss in epoch
+        pub min_loss: f32,
+        /// Maximum loss in epoch
+        pub max_loss: f32,
+        /// Loss standard deviation
+        pub loss_std: f32,
+        /// Validation loss (if computed)
+        pub val_loss: Option<f32>,
+        /// Validation accuracy (if computed)
+        pub val_accuracy: Option<f32>,
+        /// Current learning rate
+        pub learning_rate: f32,
+        /// Average gradient norm
+        pub avg_gradient_norm: f32,
+        /// Maximum gradient norm
+        pub max_gradient_norm: f32,
+        /// Number of gradient clipping events
+        pub gradient_clips: usize,
+        /// Timing metrics
+        pub timing: EpochTiming,
+        /// Number of batches processed
+        pub batches_processed: usize,
+        /// Number of examples processed
+        pub examples_processed: usize,
+        /// Safety compliance rate (if safety enabled)
+        pub safety_compliance: Option<f32>,
+        /// Memory usage estimate in MB (if available)
+        pub memory_mb: Option<f64>,
+    }
+
+    /// Aggregated gradient statistics for an epoch
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct EpochGradientStats {
+        /// Sum of gradient norms
+        pub total_norm: f64,
+        /// Maximum norm seen
+        pub max_norm: f32,
+        /// Minimum norm seen
+        pub min_norm: f32,
+        /// Number of clipping events
+        pub clips: usize,
+        /// Number of gradient updates
+        pub updates: usize,
+    }
+
+    impl EpochGradientStats {
+        /// Record a gradient stats observation
+        pub fn record(&mut self, stats: &GradientStats) {
+            self.total_norm += stats.norm as f64;
+            if self.updates == 0 {
+                self.max_norm = stats.norm;
+                self.min_norm = stats.norm;
+            } else {
+                self.max_norm = self.max_norm.max(stats.norm);
+                self.min_norm = self.min_norm.min(stats.norm);
+            }
+            if stats.was_clipped {
+                self.clips += 1;
+            }
+            self.updates += 1;
+        }
+
+        /// Get average gradient norm
+        pub fn avg_norm(&self) -> f32 {
+            if self.updates == 0 {
+                0.0
+            } else {
+                (self.total_norm / self.updates as f64) as f32
+            }
+        }
+    }
+
+    /// Training dashboard for monitoring and logging
+    #[derive(Debug)]
+    pub struct TrainingDashboard {
+        pub config: DashboardConfig,
+        /// Current epoch metrics accumulator
+        current_epoch: usize,
+        batch_losses: Vec<f32>,
+        gradient_stats: EpochGradientStats,
+        epoch_start: Option<Instant>,
+        batch_timings: Vec<BatchTiming>,
+        /// Historical metrics
+        pub history: Vec<DetailedEpochMetrics>,
+        /// Safety compliance values
+        safety_values: Vec<f32>,
+    }
+
+    impl TrainingDashboard {
+        /// Create a new training dashboard
+        pub fn new() -> Self {
+            Self::with_config(DashboardConfig::default())
+        }
+
+        /// Create with custom config
+        pub fn with_config(config: DashboardConfig) -> Self {
+            Self {
+                config,
+                current_epoch: 0,
+                batch_losses: Vec::new(),
+                gradient_stats: EpochGradientStats::default(),
+                epoch_start: None,
+                batch_timings: Vec::new(),
+                history: Vec::new(),
+                safety_values: Vec::new(),
+            }
+        }
+
+        /// Start a new epoch
+        pub fn start_epoch(&mut self, epoch: usize) {
+            self.current_epoch = epoch;
+            self.batch_losses.clear();
+            self.gradient_stats = EpochGradientStats::default();
+            self.batch_timings.clear();
+            self.safety_values.clear();
+            self.epoch_start = Some(Instant::now());
+
+            if self.config.verbose {
+                println!("\n{} Epoch {} {}", "=".repeat(30), epoch, "=".repeat(30));
+            }
+        }
+
+        /// Record batch metrics
+        pub fn record_batch(
+            &mut self,
+            batch_idx: usize,
+            loss: f32,
+            grad_stats: Option<&GradientStats>,
+            timing: Option<BatchTiming>,
+        ) {
+            self.batch_losses.push(loss);
+
+            if let Some(stats) = grad_stats {
+                self.gradient_stats.record(stats);
+            }
+
+            if let Some(t) = timing {
+                self.batch_timings.push(t);
+            }
+
+            // Log if at interval
+            if self.config.verbose
+                && self.config.log_interval > 0
+                && batch_idx % self.config.log_interval == 0
+            {
+                self.log_batch(batch_idx, loss, grad_stats);
+            }
+        }
+
+        /// Record safety compliance value
+        pub fn record_safety(&mut self, compliance: f32) {
+            self.safety_values.push(compliance);
+        }
+
+        /// Log batch progress
+        fn log_batch(&self, batch_idx: usize, loss: f32, grad_stats: Option<&GradientStats>) {
+            let mut parts = vec![format!("Batch {}: loss={:.6}", batch_idx, loss)];
+
+            if self.config.show_gradient_stats {
+                if let Some(stats) = grad_stats {
+                    parts.push(format!(
+                        "grad_norm={:.4}{}",
+                        stats.norm,
+                        if stats.was_clipped { " [CLIPPED]" } else { "" }
+                    ));
+                }
+            }
+
+            if self.config.show_timing && !self.batch_timings.is_empty() {
+                if let Some(timing) = self.batch_timings.last() {
+                    parts.push(format!("{:.1}ms/batch", timing.total_ms));
+                }
+            }
+
+            println!("  {}", parts.join(" | "));
+        }
+
+        /// Finish epoch and generate metrics
+        pub fn finish_epoch(
+            &mut self,
+            val_loss: Option<f32>,
+            val_accuracy: Option<f32>,
+            learning_rate: f32,
+            examples_processed: usize,
+        ) -> DetailedEpochMetrics {
+            let duration = self
+                .epoch_start
+                .map(|s| s.elapsed())
+                .unwrap_or(Duration::ZERO);
+
+            let (avg_loss, min_loss, max_loss, loss_std) = self.compute_loss_stats();
+
+            let timing = EpochTiming {
+                duration_secs: duration.as_secs_f64(),
+                avg_batch_ms: if self.batch_timings.is_empty() {
+                    0.0
+                } else {
+                    self.batch_timings.iter().map(|t| t.total_ms).sum::<f64>()
+                        / self.batch_timings.len() as f64
+                },
+                examples_per_sec: if duration.as_secs_f64() > 0.0 {
+                    examples_processed as f64 / duration.as_secs_f64()
+                } else {
+                    0.0
+                },
+                batches_per_sec: if duration.as_secs_f64() > 0.0 {
+                    self.batch_losses.len() as f64 / duration.as_secs_f64()
+                } else {
+                    0.0
+                },
+            };
+
+            let safety_compliance = if self.safety_values.is_empty() {
+                None
+            } else {
+                Some(self.safety_values.iter().sum::<f32>() / self.safety_values.len() as f32)
+            };
+
+            let metrics = DetailedEpochMetrics {
+                epoch: self.current_epoch,
+                avg_loss,
+                min_loss,
+                max_loss,
+                loss_std,
+                val_loss,
+                val_accuracy,
+                learning_rate,
+                avg_gradient_norm: self.gradient_stats.avg_norm(),
+                max_gradient_norm: self.gradient_stats.max_norm,
+                gradient_clips: self.gradient_stats.clips,
+                timing,
+                batches_processed: self.batch_losses.len(),
+                examples_processed,
+                safety_compliance,
+                memory_mb: None,
+            };
+
+            // Log epoch summary
+            if self.config.verbose {
+                self.log_epoch_summary(&metrics);
+            }
+
+            self.history.push(metrics.clone());
+            metrics
+        }
+
+        /// Compute loss statistics
+        fn compute_loss_stats(&self) -> (f32, f32, f32, f32) {
+            if self.batch_losses.is_empty() {
+                return (0.0, 0.0, 0.0, 0.0);
+            }
+
+            let n = self.batch_losses.len() as f32;
+            let sum: f32 = self.batch_losses.iter().sum();
+            let avg = sum / n;
+
+            let min = self
+                .batch_losses
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            let max = self
+                .batch_losses
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+
+            let variance: f32 =
+                self.batch_losses.iter().map(|l| (l - avg).powi(2)).sum::<f32>() / n;
+            let std = variance.sqrt();
+
+            (avg, min, max, std)
+        }
+
+        /// Log epoch summary
+        fn log_epoch_summary(&self, metrics: &DetailedEpochMetrics) {
+            println!("\n--- Epoch {} Summary ---", metrics.epoch);
+            println!(
+                "Loss: avg={:.6}, min={:.6}, max={:.6}, std={:.6}",
+                metrics.avg_loss, metrics.min_loss, metrics.max_loss, metrics.loss_std
+            );
+
+            if let Some(val_loss) = metrics.val_loss {
+                print!("Validation: loss={:.6}", val_loss);
+                if let Some(acc) = metrics.val_accuracy {
+                    print!(", accuracy={:.2}%", acc * 100.0);
+                }
+                println!();
+            }
+
+            println!("Learning rate: {:.6}", metrics.learning_rate);
+
+            if self.config.show_gradient_stats && metrics.avg_gradient_norm > 0.0 {
+                println!(
+                    "Gradients: avg_norm={:.4}, max_norm={:.4}, clips={}",
+                    metrics.avg_gradient_norm, metrics.max_gradient_norm, metrics.gradient_clips
+                );
+            }
+
+            if self.config.show_timing {
+                println!(
+                    "Timing: {:.2}s total, {:.1}ms/batch, {:.1} examples/s",
+                    metrics.timing.duration_secs,
+                    metrics.timing.avg_batch_ms,
+                    metrics.timing.examples_per_sec
+                );
+            }
+
+            if self.config.show_safety {
+                if let Some(compliance) = metrics.safety_compliance {
+                    println!("Safety compliance: {:.2}%", compliance * 100.0);
+                }
+            }
+        }
+
+        /// Generate a formatted dashboard string
+        pub fn dashboard_string(&self) -> String {
+            let mut output = String::new();
+            output.push_str("\n╔══════════════════════════════════════════════════════════════╗\n");
+            output.push_str("║                    TRAINING DASHBOARD                         ║\n");
+            output.push_str("╠══════════════════════════════════════════════════════════════╣\n");
+
+            if let Some(latest) = self.history.last() {
+                output.push_str(&format!(
+                    "║ Epoch: {:>4}    Loss: {:.6}    LR: {:.6}          ║\n",
+                    latest.epoch, latest.avg_loss, latest.learning_rate
+                ));
+
+                if let Some(val_acc) = latest.val_accuracy {
+                    output.push_str(&format!(
+                        "║ Val Accuracy: {:.2}%                                        ║\n",
+                        val_acc * 100.0
+                    ));
+                }
+
+                output.push_str("╠──────────────────────────────────────────────────────────────╣\n");
+
+                if latest.avg_gradient_norm > 0.0 {
+                    output.push_str(&format!(
+                        "║ Gradient Norm: avg={:.4}, max={:.4}, clips={}         ║\n",
+                        latest.avg_gradient_norm, latest.max_gradient_norm, latest.gradient_clips
+                    ));
+                }
+
+                output.push_str(&format!(
+                    "║ Throughput: {:.1} examples/s, {:.1}ms/batch               ║\n",
+                    latest.timing.examples_per_sec, latest.timing.avg_batch_ms
+                ));
+
+                if let Some(safety) = latest.safety_compliance {
+                    output.push_str(&format!(
+                        "║ Safety Compliance: {:.2}%                                  ║\n",
+                        safety * 100.0
+                    ));
+                }
+            } else {
+                output.push_str("║ No training data yet                                          ║\n");
+            }
+
+            output.push_str("╚══════════════════════════════════════════════════════════════╝\n");
+            output
+        }
+
+        /// Export metrics to JSON
+        pub fn export_json(&self) -> Result<String, serde_json::Error> {
+            serde_json::to_string_pretty(&self.history)
+        }
+
+        /// Get training summary report
+        pub fn summary_report(&self) -> String {
+            if self.history.is_empty() {
+                return "No training history available.".to_string();
+            }
+
+            let first = &self.history[0];
+            let last = &self.history[self.history.len() - 1];
+
+            let total_time: f64 = self.history.iter().map(|m| m.timing.duration_secs).sum();
+            let total_examples: usize = self.history.iter().map(|m| m.examples_processed).sum();
+            let total_clips: usize = self.history.iter().map(|m| m.gradient_clips).sum();
+
+            let loss_improvement = if first.avg_loss > 0.0 {
+                ((first.avg_loss - last.avg_loss) / first.avg_loss) * 100.0
+            } else {
+                0.0
+            };
+
+            let best_epoch = self
+                .history
+                .iter()
+                .min_by(|a, b| a.avg_loss.partial_cmp(&b.avg_loss).unwrap())
+                .unwrap();
+
+            format!(
+                "Training Summary\n\
+                 ================\n\
+                 Epochs: {} to {}\n\
+                 Loss: {:.6} -> {:.6} ({:.1}% {})\n\
+                 Best epoch: {} (loss={:.6})\n\
+                 Total time: {:.1}s\n\
+                 Total examples: {}\n\
+                 Avg throughput: {:.1} examples/s\n\
+                 Gradient clips: {}\n\
+                 Final LR: {:.6}",
+                first.epoch,
+                last.epoch,
+                first.avg_loss,
+                last.avg_loss,
+                loss_improvement.abs(),
+                if loss_improvement > 0.0 {
+                    "improvement"
+                } else {
+                    "increase"
+                },
+                best_epoch.epoch,
+                best_epoch.avg_loss,
+                total_time,
+                total_examples,
+                total_examples as f64 / total_time.max(0.001),
+                total_clips,
+                last.learning_rate
+            )
+        }
+
+        /// Check if training is improving (based on loss trend)
+        pub fn is_improving(&self, window: usize) -> bool {
+            if self.history.len() < window + 1 {
+                return true;
+            }
+
+            let recent_avg: f32 = self.history[self.history.len() - window..]
+                .iter()
+                .map(|m| m.avg_loss)
+                .sum::<f32>()
+                / window as f32;
+
+            let prev_avg: f32 = self.history
+                [self.history.len() - window - 1..self.history.len() - 1]
+                .iter()
+                .map(|m| m.avg_loss)
+                .sum::<f32>()
+                / window as f32;
+
+            recent_avg < prev_avg
+        }
+
+        /// Get early stopping recommendation
+        pub fn should_early_stop(&self, patience: usize) -> bool {
+            if self.history.len() < patience + 1 {
+                return false;
+            }
+
+            let best_loss = self
+                .history
+                .iter()
+                .map(|m| m.avg_loss)
+                .fold(f32::INFINITY, f32::min);
+
+            let recent_best = self.history[self.history.len() - patience..]
+                .iter()
+                .map(|m| m.avg_loss)
+                .fold(f32::INFINITY, f32::min);
+
+            recent_best >= best_loss
+        }
+    }
+
+    impl Default for TrainingDashboard {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_dashboard_creation() {
+            let dashboard = TrainingDashboard::new();
+            assert!(dashboard.history.is_empty());
+            assert_eq!(dashboard.config.log_interval, 10);
+        }
+
+        #[test]
+        fn test_dashboard_config_default() {
+            let config = DashboardConfig::default();
+            assert!(config.show_gradient_stats);
+            assert!(config.show_timing);
+            assert!(!config.export_json);
+        }
+
+        #[test]
+        fn test_epoch_gradient_stats() {
+            let mut stats = EpochGradientStats::default();
+            let grad_stats = GradientStats {
+                norm: 1.5,
+                max_abs: 2.0,
+                min_abs: 0.1,
+                mean: 0.5,
+                was_clipped: false,
+            };
+
+            stats.record(&grad_stats);
+            assert_eq!(stats.updates, 1);
+            assert!((stats.avg_norm() - 1.5).abs() < 1e-6);
+
+            let clipped_stats = GradientStats {
+                norm: 2.5,
+                max_abs: 3.0,
+                min_abs: 0.1,
+                mean: 1.0,
+                was_clipped: true,
+            };
+
+            stats.record(&clipped_stats);
+            assert_eq!(stats.updates, 2);
+            assert_eq!(stats.clips, 1);
+            assert!((stats.avg_norm() - 2.0).abs() < 1e-6);
+        }
+
+        #[test]
+        fn test_batch_recording() {
+            let mut dashboard = TrainingDashboard::new();
+            dashboard.start_epoch(0);
+
+            dashboard.record_batch(0, 0.5, None, None);
+            dashboard.record_batch(1, 0.4, None, None);
+            dashboard.record_batch(2, 0.3, None, None);
+
+            let metrics = dashboard.finish_epoch(None, None, 0.001, 30);
+
+            assert_eq!(metrics.epoch, 0);
+            assert!((metrics.avg_loss - 0.4).abs() < 1e-6);
+            assert!((metrics.min_loss - 0.3).abs() < 1e-6);
+            assert!((metrics.max_loss - 0.5).abs() < 1e-6);
+            assert_eq!(metrics.batches_processed, 3);
+        }
+
+        #[test]
+        fn test_dashboard_string() {
+            let mut dashboard = TrainingDashboard::new();
+            dashboard.start_epoch(0);
+            dashboard.record_batch(0, 0.5, None, None);
+            dashboard.finish_epoch(None, Some(0.85), 0.001, 100);
+
+            let output = dashboard.dashboard_string();
+            assert!(output.contains("TRAINING DASHBOARD"));
+            assert!(output.contains("Val Accuracy"));
+        }
+
+        #[test]
+        fn test_summary_report() {
+            let mut dashboard = TrainingDashboard::new();
+
+            for epoch in 0..3 {
+                dashboard.start_epoch(epoch);
+                let loss = 1.0 - epoch as f32 * 0.2;
+                dashboard.record_batch(0, loss, None, None);
+                dashboard.finish_epoch(None, None, 0.001, 100);
+            }
+
+            let report = dashboard.summary_report();
+            assert!(report.contains("Training Summary"));
+            assert!(report.contains("Epochs: 0 to 2"));
+            assert!(report.contains("improvement"));
+        }
+
+        #[test]
+        fn test_is_improving() {
+            let mut dashboard = TrainingDashboard::new();
+
+            // Improving losses
+            for epoch in 0..5 {
+                dashboard.start_epoch(epoch);
+                dashboard.record_batch(0, 1.0 - epoch as f32 * 0.1, None, None);
+                dashboard.finish_epoch(None, None, 0.001, 100);
+            }
+
+            assert!(dashboard.is_improving(2));
+        }
+
+        #[test]
+        fn test_early_stopping() {
+            let mut dashboard = TrainingDashboard::new();
+
+            // Plateau - no improvement
+            for epoch in 0..5 {
+                dashboard.start_epoch(epoch);
+                dashboard.record_batch(0, 0.5, None, None);
+                dashboard.finish_epoch(None, None, 0.001, 100);
+            }
+
+            assert!(dashboard.should_early_stop(3));
+        }
+
+        #[test]
+        fn test_export_json() {
+            let mut dashboard = TrainingDashboard::new();
+            dashboard.start_epoch(0);
+            dashboard.record_batch(0, 0.5, None, None);
+            dashboard.finish_epoch(None, None, 0.001, 100);
+
+            let json = dashboard.export_json().unwrap();
+            assert!(json.contains("avg_loss"));
+            assert!(json.contains("0.5"));
+        }
+
+        #[test]
+        fn test_safety_recording() {
+            let mut dashboard = TrainingDashboard::new();
+            dashboard.start_epoch(0);
+            dashboard.record_batch(0, 0.5, None, None);
+            dashboard.record_safety(1.0);
+            dashboard.record_safety(0.9);
+
+            let metrics = dashboard.finish_epoch(None, None, 0.001, 100);
+            assert!(metrics.safety_compliance.is_some());
+            assert!((metrics.safety_compliance.unwrap() - 0.95).abs() < 1e-6);
+        }
+
+        #[test]
+        fn test_batch_timing() {
+            let timing = BatchTiming {
+                forward_ms: 10.0,
+                backward_ms: 15.0,
+                optimizer_ms: 5.0,
+                total_ms: 30.0,
+            };
+
+            let mut dashboard = TrainingDashboard::new();
+            dashboard.start_epoch(0);
+            dashboard.record_batch(0, 0.5, None, Some(timing.clone()));
+            dashboard.record_batch(1, 0.4, None, Some(timing));
+
+            let metrics = dashboard.finish_epoch(None, None, 0.001, 100);
+            assert!((metrics.timing.avg_batch_ms - 30.0).abs() < 1e-6);
+        }
+    }
+}
+
+pub use training_dashboard::{
+    BatchTiming, DashboardConfig, DetailedEpochMetrics, EpochGradientStats, EpochTiming,
+    TrainingDashboard,
+};
 
 // ============================================================================
 // Tests
@@ -6579,164 +7176,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Optimizer Tests (backend-028)
-    // ========================================================================
-
-    #[test]
-    fn test_sgd_basic() {
-        let mut sgd = SGD::new(0.1);
-        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
-        let grads = Array2::from_shape_vec((2, 2), vec![0.1, 0.2, 0.3, 0.4]).unwrap();
-
-        sgd.step(&mut params, &grads);
-
-        // params should decrease by lr * grads
-        assert!((params[[0, 0]] - 0.99).abs() < 1e-6); // 1.0 - 0.1 * 0.1
-        assert!((params[[0, 1]] - 1.98).abs() < 1e-6); // 2.0 - 0.1 * 0.2
-    }
-
-    #[test]
-    fn test_sgd_with_momentum() {
-        let mut sgd = SGD::new(0.1).with_momentum(0.9);
-        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
-        let grads = Array2::from_shape_vec((2, 2), vec![1.0, 1.0, 1.0, 1.0]).unwrap();
-
-        // First step
-        sgd.step(&mut params, &grads);
-        let after_first = params[[0, 0]];
-
-        // Second step with same gradient - momentum should increase update
-        sgd.step(&mut params, &grads);
-
-        // Second step should move more due to momentum
-        let diff_first = 1.0 - after_first;
-        let diff_second = after_first - params[[0, 0]];
-        assert!(diff_second > diff_first);
-    }
-
-    #[test]
-    fn test_sgd_with_weight_decay() {
-        let mut sgd = SGD::new(0.1).with_weight_decay(0.01);
-        let mut params = Array2::from_shape_vec((2, 2), vec![10.0, 10.0, 10.0, 10.0]).unwrap();
-        let grads = Array2::zeros((2, 2));
-
-        // With zero gradients, only weight decay should affect params
-        sgd.step(&mut params, &grads);
-
-        // params should shrink due to weight decay
-        assert!(params[[0, 0]] < 10.0);
-    }
-
-    #[test]
-    fn test_adam_basic() {
-        let mut adam = Adam::new(0.1);
-        let mut params = Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
-        let grads = Array2::from_shape_vec((2, 2), vec![0.5, 0.5, 0.5, 0.5]).unwrap();
-
-        adam.step(&mut params, &grads);
-
-        // Params should have changed
-        assert!(params[[0, 0]] != 1.0);
-    }
-
-    #[test]
-    fn test_adam_multiple_steps() {
-        let mut adam = Adam::new(0.01);
-        let mut params = Array2::from_shape_vec((2, 2), vec![5.0, 5.0, 5.0, 5.0]).unwrap();
-        let grads = Array2::from_shape_vec((2, 2), vec![1.0, 1.0, 1.0, 1.0]).unwrap();
-
-        let initial = params[[0, 0]];
-
-        // Run multiple steps
-        for _ in 0..10 {
-            adam.step(&mut params, &grads);
-        }
-
-        // Params should decrease with positive gradients
-        assert!(params[[0, 0]] < initial);
-    }
-
-    #[test]
-    fn test_optimizer_set_lr() {
-        let mut sgd = SGD::new(0.1);
-        assert_eq!(sgd.get_lr(), 0.1);
-
-        sgd.set_lr(0.01);
-        assert_eq!(sgd.get_lr(), 0.01);
-    }
-
-    // ========================================================================
-    // Learning Rate Scheduler Tests
-    // ========================================================================
-
-    #[test]
-    fn test_lr_scheduler_constant() {
-        let scheduler = LRScheduler::Constant;
-        assert_eq!(scheduler.get_lr(0.1, 0), 0.1);
-        assert_eq!(scheduler.get_lr(0.1, 100), 0.1);
-    }
-
-    #[test]
-    fn test_lr_scheduler_step() {
-        let scheduler = LRScheduler::StepLR {
-            step_size: 10,
-            gamma: 0.5,
-        };
-
-        assert_eq!(scheduler.get_lr(0.1, 0), 0.1);
-        assert_eq!(scheduler.get_lr(0.1, 9), 0.1);
-        assert_eq!(scheduler.get_lr(0.1, 10), 0.05);
-        assert_eq!(scheduler.get_lr(0.1, 20), 0.025);
-    }
-
-    #[test]
-    fn test_lr_scheduler_exponential() {
-        let scheduler = LRScheduler::ExponentialLR { gamma: 0.9 };
-
-        assert!((scheduler.get_lr(0.1, 0) - 0.1).abs() < 1e-6);
-        assert!((scheduler.get_lr(0.1, 1) - 0.09).abs() < 1e-6);
-        assert!((scheduler.get_lr(0.1, 2) - 0.081).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_lr_scheduler_warmup() {
-        let scheduler = LRScheduler::WarmupLR { warmup_steps: 5 };
-
-        // During warmup, lr increases linearly
-        assert!((scheduler.get_lr(0.1, 0) - 0.02).abs() < 1e-6); // 1/5
-        assert!((scheduler.get_lr(0.1, 4) - 0.1).abs() < 1e-6); // 5/5
-        assert_eq!(scheduler.get_lr(0.1, 10), 0.1); // After warmup
-    }
-
-    #[test]
-    fn test_lr_scheduler_cosine() {
-        let scheduler = LRScheduler::CosineAnnealingLR {
-            t_max: 10,
-            eta_min: 0.0,
-        };
-
-        // At epoch 0, lr should be at max
-        assert!((scheduler.get_lr(0.1, 0) - 0.1).abs() < 0.001);
-
-        // At t_max/2, lr should be at eta_min (cos(pi) = -1, so (1 + -1)/2 = 0)
-        // Actually at epoch 5: cos(pi * 5/10) = cos(pi/2) = 0, so lr = 0.05
-        let lr_at_5 = scheduler.get_lr(0.1, 5);
-        assert!(
-            (lr_at_5 - 0.05).abs() < 0.001,
-            "Expected ~0.05, got {}",
-            lr_at_5
-        );
-
-        // At t_max, lr should be back to eta_min (cos(pi) = -1)
-        let lr_at_10 = scheduler.get_lr(0.1, 10);
-        assert!(
-            (lr_at_10 - 0.1).abs() < 0.001,
-            "Expected ~0.1 (cycle restart), got {}",
-            lr_at_10
-        );
-    }
-
-    // ========================================================================
     // Training Loop Tests
     // ========================================================================
 
@@ -7315,24 +7754,6 @@ mod tests {
         };
 
         let result = state.validate();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_sgd_validation() {
-        let mut sgd = SGD::new(0.01);
-        sgd.momentum = 1.5; // Invalid
-
-        let result = sgd.validate();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_adam_validation() {
-        let mut adam = Adam::new(0.001);
-        adam.beta1 = 1.0; // Invalid (must be < 1)
-
-        let result = adam.validate();
         assert!(result.is_err());
     }
 

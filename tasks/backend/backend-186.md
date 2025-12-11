@@ -1,7 +1,7 @@
 ---
 id: backend-186
 title: Extract graph utilities module
-status: todo
+status: done
 priority: medium
 tags:
 - backend

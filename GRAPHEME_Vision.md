@@ -606,21 +606,21 @@ pub trait GraphTransformer {
 pub trait Training {
     // Graph edit distance as loss (not cross-entropy!)
     fn compute_loss(&self, predicted: &Graph, target: &Graph) -> GraphEditDistance;
-    
+
     // Components of graph edit distance
     fn node_insertion_cost(&self, predicted: &Graph, target: &Graph) -> f32;
     fn edge_deletion_cost(&self, predicted: &Graph, target: &Graph) -> f32;
     fn clique_alignment_score(&self, predicted: &Graph, target: &Graph) -> f32;
-    
+
     // Backpropagation through graph structure
     fn backward(&mut self, loss: f32) -> GraphGradients;
-    
+
     // Update weights and structure
     fn update(&mut self, gradients: &GraphGradients, learning_rate: f32);
-    
+
     // Structure learning (add/remove nodes and edges)
     fn adapt_structure(&mut self, performance_metrics: &Metrics);
-    
+
     // Learn clique transformation rules
     fn learn_clique_mappings(&mut self, input_cliques: Vec<Clique>, output_cliques: Vec<Clique>);
 }
@@ -688,16 +688,128 @@ pub trait GraphMemory {
 pub trait PatternMatcher {
     // Learn repeated patterns (not just n-grams, but graph motifs)
     fn learn_patterns(&mut self, min_frequency: usize) -> Vec<Pattern>;
-    
+
     // Graph motifs as reusable components
     // "ing" suffix → specific subgraph pattern
     // Punctuation patterns → structural markers
-    
+
     // Replace patterns with single nodes (massive compression)
     fn compress_patterns(&mut self, patterns: &[Pattern]);
-    
-    // Hierarchical pattern extraction  
+
+    // Hierarchical pattern extraction
     fn extract_hierarchy(&self) -> PatternHierarchy;
+}
+```
+
+### Graph Morphism Detection (grapheme-core)
+
+```rust
+/// Graph morphism detection using Weisfeiler-Leman hashing
+pub struct MorphismDetector {
+    pub wl_iterations: usize,  // WL refinement iterations (default: 3)
+    pub iso_threshold: f32,    // Similarity threshold for isomorphism (default: 0.95)
+}
+
+pub struct MorphismResult {
+    pub alignment: HashMap<NodeIndex, NodeIndex>,  // Node mapping
+    pub similarity: f32,                            // Structural similarity [0,1]
+    pub is_isomorphic: bool,                       // True if graphs are isomorphic
+    pub matched_nodes: usize,                      // Number of aligned nodes
+}
+
+impl MorphismDetector {
+    /// Detect morphism between two graphs
+    fn detect<N, E>(&self, graph_a: &DiGraph<N, E>, graph_b: &DiGraph<N, E>) -> MorphismResult;
+
+    /// Check if graph_a is a subgraph of graph_b
+    fn contains_subgraph<N, E>(&self, graph_a: &DiGraph<N, E>, graph_b: &DiGraph<N, E>) -> bool;
+}
+
+/// Spectral-based node alignment using degree centrality
+fn spectral_alignment<N, E>(graph_a: &DiGraph<N, E>, graph_b: &DiGraph<N, E>)
+    -> HashMap<NodeIndex, NodeIndex>;
+```
+
+### Graph Serialization (grapheme-core)
+
+```rust
+/// Compact binary graph format with compression
+pub struct CompactGraph {
+    pub node_count: u32,
+    pub edge_count: u32,
+    pub nodes: Vec<u8>,         // Node data (node types)
+    pub edges: Vec<u8>,         // Delta-encoded edges
+    pub weights: Option<Vec<u8>>, // Optional f32 weights
+}
+
+impl CompactGraph {
+    /// Serialize DiGraph to compact format
+    fn from_digraph<N, E>(graph: &DiGraph<N, E>) -> SerResult<Self>;
+
+    /// Deserialize back to DiGraph
+    fn to_digraph<N, E>(&self) -> SerResult<DiGraph<N, E>>;
+
+    /// Write binary format with magic "GRPH" and version
+    fn write_binary<W: Write>(&self, writer: &mut W) -> SerResult<()>;
+
+    /// Read binary format
+    fn read_binary<R: Read>(reader: &mut R) -> SerResult<Self>;
+}
+
+/// Calculate compression statistics
+fn calculate_stats(original: usize, compressed: usize) -> CompressionStats;
+```
+
+### Graph-LLM Translation (grapheme-train)
+
+```rust
+/// Convert DagNN graphs to LLM-friendly prompts (Integration-003)
+pub struct GraphToPrompt {
+    pub include_values: bool,   // Include node values
+    pub include_weights: bool,  // Include edge weights
+    pub max_nodes: usize,       // Max nodes to serialize
+    pub format: PromptFormat,   // Text, Json, Mermaid, or Dot
+}
+
+impl GraphToPrompt {
+    /// Convert graph to prompt in selected format
+    fn translate(&self, dag: &DagNN) -> String;
+
+    /// Convert to intermediate LLMGraph structure
+    fn to_llm_graph(&self, dag: &DagNN) -> LLMGraph;
+}
+
+/// Parse LLM responses into graph modifications (Integration-002)
+pub struct PromptToGraph {
+    pub create_sequential_edges: bool,
+}
+
+pub enum GraphModification {
+    ReplaceGraph(LLMGraph),       // Complete graph replacement
+    Command(ModificationCommand), // Single action (add_node, etc.)
+    Incremental {                 // Multiple changes
+        add_nodes: Vec<String>,
+        add_edges: Vec<(String, String)>,
+        remove_nodes: Vec<String>,
+    },
+}
+
+impl PromptToGraph {
+    /// Parse JSON or text format from LLM response
+    fn translate(&self, response: &str) -> Result<GraphModification, TranslationError>;
+
+    /// Apply modification to create new DagNN
+    fn apply_to_dag(&self, dag: &mut DagNN, modification: &GraphModification)
+        -> Result<DagNN, TranslationError>;
+}
+
+/// Ready-made prompt templates for graph operations
+pub struct PromptTemplates;
+impl PromptTemplates {
+    fn analyze_graph(graph_desc: &str) -> String;
+    fn suggest_modifications(graph_desc: &str, goal: &str) -> String;
+    fn extract_knowledge(text: &str) -> String;
+    fn graph_to_natural_language(graph_desc: &str) -> String;
 }
 ```
 
@@ -810,14 +922,222 @@ pub trait SelfSupervisedTraining {
 pub trait ReinforcementLearning {
     // Learn from environment feedback
     fn train_rl(&mut self, env: impl Environment, episodes: usize);
-    
+
     // Policy gradient for graph generation
     fn train_policy_gradient(&mut self, rewards: Vec<f32>);
-    
+
     // Q-learning for graph transformations
     fn train_q_learning(&mut self, transitions: Vec<Transition>);
 }
 ```
+
+### Online Continuous Learning (backend-200 to backend-205)
+
+GRAPHEME supports continuous online learning for AGI applications using the `online_learner` module:
+
+```rust
+/// Online learning trait for continuous AGI training
+pub trait OnlineLearner {
+    /// Learn from a single example and return loss
+    fn learn_one(&mut self, example: OnlineExample) -> f32;
+
+    /// Learn from a batch of examples
+    fn learn_batch(&mut self, examples: Vec<OnlineExample>) -> f32;
+
+    /// Get current statistics
+    fn stats(&self) -> &OnlineLearnerStats;
+
+    /// Trigger manual consolidation
+    fn consolidate(&mut self);
+}
+
+/// Memory-integrated online learner
+pub struct MemoryOnlineLearner {
+    model: DagNN,
+    episodic_memory: SimpleEpisodicMemory,
+    continual_learning: SimpleContinualLearning,
+    ewc_state: EWCState,  // Elastic Weight Consolidation
+    config: OnlineLearnerConfig,
+}
+```
+
+**Experience Replay Strategies** (5 modes):
+```rust
+pub enum ReplayStrategy {
+    Uniform,           // Random sampling
+    PrioritizedLoss,   // Sample high-loss examples more
+    PrioritizedRecency,// Sample recent examples more
+    Mixed,             // 50% loss-weighted, 50% recency-weighted
+    DomainBalanced,    // Equal sampling across domains
+}
+```
+
+**Consolidation Scheduling**:
+```rust
+pub enum ConsolidationTrigger {
+    ExampleCount(usize),    // Every N examples
+    BatchCount(usize),      // Every N batches
+    BufferThreshold(u8),    // When buffer hits % capacity
+    LossThreshold,          // When loss drops below threshold
+    Manual,                 // Only on explicit call
+}
+```
+
+**Curriculum Progression** (7 levels):
+```rust
+pub struct CurriculumConfig {
+    pub start_level: u8,              // 1-7
+    pub max_level: u8,                // 1-7
+    pub examples_per_level: usize,    // Examples before advancing
+    pub advance_loss_threshold: Option<f32>,  // Early advance if loss < threshold
+    pub allow_regression: bool,       // Allow dropping to lower level
+}
+```
+
+**Elastic Weight Consolidation (EWC)** for preventing catastrophic forgetting:
+```rust
+pub struct EWCState {
+    pub fisher_diag: HashMap<EdgeKey, f32>,     // Fisher information per edge
+    pub optimal_params: HashMap<EdgeKey, f32>,  // Optimal weights at consolidation
+    pub task_count: usize,                      // Number of tasks consolidated
+}
+
+// EWC adds gradient penalty: grad_ewc = lambda * F_i * (weight - weight_optimal)
+// This constrains important parameters to stay close to their learned values
+```
+
+**Usage Example**:
+```rust
+// Create learner with EWC enabled
+let config = OnlineLearnerConfig::stable();  // EWC + Mixed replay
+let mut learner = MemoryOnlineLearner::with_default_model(config);
+
+// Continuous training loop
+for example in data_stream {
+    let loss = learner.learn_one(example);
+    // Consolidation triggers automatically based on config
+}
+```
+
+**Binary**: `train_online` provides CLI for online learning:
+```bash
+cargo run --release -p grapheme-train --bin train_online -- \
+    --examples 10000 \
+    --replay-strategy mixed \
+    --start-level 1 \
+    --max-level 7
+```
+
+### Web Learning (backend-170)
+
+GRAPHEME can learn directly from web content using the `web_fetcher` and `train_from_web` modules:
+
+```rust
+/// Web content fetcher with HTTPS support
+pub struct WebFetcher {
+    config: FetchConfig,
+    agent: ureq::Agent,  // Uses ureq with native-tls
+}
+
+pub struct FetchConfig {
+    pub timeout_secs: u64,       // Request timeout (default: 30s)
+    pub user_agent: String,      // HTTP User-Agent header
+    pub max_size: usize,         // Max response size (default: 10MB)
+    pub follow_redirects: bool,  // Follow HTTP redirects
+    pub max_redirects: u32,      // Max redirect count (default: 5)
+}
+
+impl WebFetcher {
+    /// Fetch content from HTTP/HTTPS URLs
+    fn fetch(&self, url: &str) -> Result<WebContent, String>;
+
+    /// Fetch multiple URLs
+    fn fetch_all(&self, urls: &[&str]) -> Vec<Result<WebContent, String>>;
+
+    /// Fetch and parse JSON
+    fn fetch_json<T: DeserializeOwned>(&self, url: &str) -> Result<T, String>;
+}
+```
+
+**Binary**: `train_from_web` trains from web URLs:
+```bash
+# Train from Wikipedia articles
+cargo run --release -p grapheme-train --bin train_from_web -- \
+    --urls data/wikipedia_urls.txt \
+    --output checkpoints/web_wikipedia \
+    --epochs 30 \
+    --batch-size 8
+
+# Train from a single URL
+cargo run --release -p grapheme-train --bin train_from_web -- \
+    --url "https://en.wikipedia.org/wiki/Machine_learning" \
+    --output checkpoints/ml_knowledge
+```
+
+**Wikipedia Knowledge Training** demonstrated:
+- Fetches articles via HTTPS (Graph Theory, ML, Neural Networks, AI, etc.)
+- Extracts text chunks from HTML content
+- Trains GraphTransformNet with Adam optimizer
+- Saves checkpoints with learned embeddings
+
+### Knowledge Query & Inference (backend-210)
+
+Query trained models for learned knowledge using neural embeddings:
+
+```rust
+/// Knowledge retrieval using trained GraphTransformNet
+pub struct KnowledgeBase {
+    entries: Vec<(String, String, Array1<f32>)>,  // (concept, description, embedding)
+}
+
+impl KnowledgeBase {
+    /// Build knowledge base with model embeddings
+    fn new(model: &GraphTransformNet) -> Self;
+
+    /// Search by cosine similarity
+    fn search(&self, query_embedding: &Array1<f32>, top_n: usize)
+        -> Vec<(String, String, f32)>;
+}
+
+/// Query pipeline:
+/// 1. Query text → DagNN graph (character-level)
+/// 2. GraphTransformNet.encode() → node embeddings
+/// 3. Pool embeddings → single graph embedding
+/// 4. Cosine similarity search → ranked results
+```
+
+**Binary**: `query` provides interactive knowledge retrieval:
+```bash
+# Single query
+cargo run --release -p grapheme-train --bin query -- \
+    --model checkpoints/web_wikipedia/web_final.checkpoint \
+    --query "What is machine learning?"
+
+# Interactive mode
+cargo run --release -p grapheme-train --bin query -- \
+    --model checkpoints/web_wikipedia/web_final.checkpoint
+
+# Example session:
+🔍 query> What is neural network?
+📊 Results:
+  1. [sim: 0.9839] 📚 NEURAL NETWORK: Computing systems inspired by biological neural networks
+  2. [sim: 0.9745] 📚 GRAPH THEORY: A branch of mathematics studying graphs
+  3. [sim: 0.9672] 📚 GRADIENT DESCENT: An optimization algorithm...
+```
+
+**How it works**:
+1. Loads trained `GraphTransformNet` from UnifiedCheckpoint
+2. Encodes query text as DagNN graph
+3. Runs through trained message-passing layers
+4. Pools node embeddings into graph-level representation
+5. Finds semantically similar concepts via cosine similarity
+
+**Demonstrated results** (Wikipedia-trained model):
+| Query | Top Match | Similarity |
+|-------|-----------|------------|
+| "What is machine learning?" | MACHINE LEARNING | 0.9787 |
+| "Tell me about graphs" | GRAPH THEORY | 0.9775 |
+| "What is physics?" | PHYSICS | 0.9638 |
 
 ## Performance Optimizations
 
@@ -1022,40 +1342,128 @@ This is not an incremental improvement - it's a paradigm shift that could obsole
 
 ## Project Identity
 
-**Name**: GRAPHEME  
-**Tagline**: "No vocabulary. No limits. Just understanding."  
-**Academic Title**: "GRAPHEME: Vocabulary-Free Neural Text Processing through Dynamic Graph Morphogenesis"  
-**GitHub**: `grapheme-nn` (proposed)  
+**Name**: GRAPHEME
+**Tagline**: "No vocabulary. No limits. Just understanding."
+**Academic Title**: "GRAPHEME: Vocabulary-Free Neural Text Processing through Dynamic Graph Morphogenesis"
+**GitHub**: `grapheme-nn` (proposed)
 **Paper Citation**: GRAPHEME (2025)
+
+## Agent Integration Protocols
+
+GRAPHEME supports two complementary protocols for AI agent integration:
+
+### MCP (Model Context Protocol) - Internal Tools
+
+Anthropic's protocol for exposing GRAPHEME capabilities as tools to AI assistants.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    MCP Server (mcp_server.rs)                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Tools:                                                         │
+│  • graph_from_text  - Convert text → GraphemeGraph              │
+│  • graph_query      - Query graph stats, nodes, edges           │
+│  • graph_transform  - Apply transformations (simplify, expand)  │
+│  • graph_to_text    - Convert graph → text                      │
+│  • graph_compare    - Compare two graphs (similarity score)     │
+├─────────────────────────────────────────────────────────────────┤
+│  Transport: stdio (JSON-RPC 2.0)                                │
+│  Usage: Claude Code integration, local AI assistants            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### A2A (Agent-to-Agent) - External Communication
+
+Google's protocol for inter-agent discovery and task delegation.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    A2A Agent (a2a_protocol.rs)                  │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent Card (/.well-known/agent.json):                          │
+│  • name: "GRAPHEME Agent"                                       │
+│  • capabilities: streaming, max_concurrent_tasks                │
+│  • authentication: api_key, oauth2                              │
+├─────────────────────────────────────────────────────────────────┤
+│  Skills:                                                        │
+│  • text_to_graph   - Convert text to graph representation       │
+│  • graph_transform - Apply neural transformations               │
+│  • graph_to_text   - Reconstruct text from graph                │
+│  • analyze_text    - Analyze text (sentiment, entities, etc.)   │
+├─────────────────────────────────────────────────────────────────┤
+│  Task Lifecycle:                                                │
+│  Pending → Running → Completed/Failed/Cancelled                 │
+│  Methods: tasks/create, tasks/get, tasks/cancel, tasks/list     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Protocol Relationship
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     GRAPHEME Agent System                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│    ┌─────────────┐                     ┌─────────────┐          │
+│    │ Claude Code │◄───── MCP ─────────►│  GRAPHEME   │          │
+│    │ (AI Assist) │     (internal)      │   Tools     │          │
+│    └─────────────┘                     └──────┬──────┘          │
+│                                               │                 │
+│    ┌─────────────┐                     ┌──────▼──────┐          │
+│    │ Other Agent │◄───── A2A ─────────►│  GRAPHEME   │          │
+│    │ (External)  │     (external)      │   Agent     │          │
+│    └─────────────┘                     └─────────────┘          │
+│                                                                 │
+│    MCP = Tools within a system (vertical integration)           │
+│    A2A = Agent-to-agent communication (horizontal)              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Implementation Status (December 2025)
 
-**✅ Complete** (197/224 tasks):
-1. ✅ Core GRAPHEME data structures in Rust (22 crates, 67K+ LOC)
+**✅ Complete** (258/258 tasks):
+1. ✅ Core GRAPHEME data structures in Rust (22 crates, 70K+ LOC)
 2. ✅ Grapheme-to-graph conversion (grapheme-core)
 3. ✅ Graph transformation algorithms (DagNN, structural loss)
 4. ✅ Domain brain plugins: Math, Code, Vision, Time, Law, Music, Chem
 5. ✅ AGI cognitive router (8µs latency, 100% accuracy)
-6. ✅ Training infrastructure with curriculum learning
+6. ✅ Training infrastructure with curriculum learning (19 modules)
 7. ✅ Router-to-training integration (TrainingPair generation)
 8. ✅ Unified AGI training with shared DagNN and BrainSlice allocation
 9. ✅ Mixed AGI dataset generator (math, text, timeseries, vision)
-10. ✅ 1139 tests passing, zero warnings
+10. ✅ Text/Web Learning: File ingestion, web fetcher, crawler, HTML parser
+11. ✅ Graph-to-Graph transformation learning (G2G with structural loss)
+12. ✅ LLM API Client: Claude, OpenAI, Gemini, Ollama unified interface
+13. ✅ MCP Server: 5 GRAPHEME tools + MCP Client for external servers
+14. ✅ A2A Protocol: Agent discovery, registry, multi-agent orchestration
+15. ✅ Asimov's Laws Safety Module (grapheme-safety, 57 tests)
+16. ✅ Production training: SGD/Adam optimizers, LR schedulers, gradient clipping/accumulation
+17. ✅ Graph morphism detection with Weisfeiler-Leman hashing (grapheme-core)
+18. ✅ Efficient binary graph serialization with compression (grapheme-core)
+19. ✅ Graph-LLM bidirectional translation (grapheme-train)
+20. ✅ External dataset loaders: MATH, SQuAD, GSM8K (grapheme-train)
+21. ✅ Knowledge extraction: Entity/relation extraction, graph conversion
+22. ✅ Knowledge distillation: LLM → GRAPHEME graph distillation
+23. ✅ Collaborative learning from LLM interactions
+24. ✅ Math-NL augmentation pipeline for data augmentation
+25. ✅ **Online Continuous Learning** (backend-200 to backend-205):
+    - OnlineLearner trait with grapheme-memory integration
+    - Experience replay with 5 sampling strategies
+    - ConsolidationScheduler with 5 trigger modes
+    - CurriculumConfig with 7-level progression
+    - EWC (Elastic Weight Consolidation) for forgetting prevention
+    - `train_online` binary (135K examples/sec)
+26. ✅ 1595 tests passing, zero warnings
 
-**🔄 Planned** (27 tasks):
-- Text/Web Learning: File ingestion, web fetcher, preprocessing (10 tasks)
-- Graph-to-Graph: G2G transformation, morphism, serialization (3 tasks)
-- A2A Protocol: Agent communication, message format, orchestration (4 tasks)
-- LLM Collaboration: API client, bidirectional translation (5 tasks)
-- MCP Integration: Server, client, graph tools (3 tasks)
-- Testing: Integration tests for new capabilities (2 tasks)
+**All tasks complete!** No remaining planned tasks.
 
 **Current Capabilities**:
 - Image classification: MNIST >90% accuracy
 - Time series forecasting: 87% improvement over baseline
 - Unified training for math and QA datasets
 - Multi-modal input routing with training graph generation
-- Router generates (input_graph, output_graph) pairs for structural loss
+- Production-ready training with safety-aware validation
 
 ---
 

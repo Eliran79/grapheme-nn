@@ -19,6 +19,14 @@
 // Complex type is intentional for flexibility
 #![allow(clippy::type_complexity)]
 
+// External modules (Backend-176: Graph morphism detection)
+pub mod graph_morphism;
+pub use graph_morphism::{MorphismDetector, MorphismResult, spectral_alignment};
+
+// External modules (Backend-180: Efficient graph serialization)
+pub mod graph_serialization;
+pub use graph_serialization::{CompactGraph, SerializationError, SerResult, calculate_stats};
+
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -4526,6 +4534,106 @@ impl UnifiedCheckpoint {
         let json = std::fs::read_to_string(path)?;
         Self::load_json(&json)
     }
+
+    /// Save checkpoint to gzip-compressed file (.json.gz)
+    /// Typically achieves 5-10x compression ratio for checkpoint data
+    pub fn save_compressed(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let json = self.save_json()?;
+        let file = std::fs::File::create(path)?;
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder
+            .write_all(json.as_bytes())
+            .map_err(|e| PersistenceError::Serialization(format!("gzip write failed: {}", e)))?;
+        encoder
+            .finish()
+            .map_err(|e| PersistenceError::Serialization(format!("gzip finish failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Load checkpoint from gzip-compressed file (.json.gz)
+    pub fn load_compressed(path: &std::path::Path) -> PersistenceResult<Self> {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let file = std::fs::File::open(path)?;
+        let mut decoder = GzDecoder::new(file);
+        let mut json = String::new();
+        decoder
+            .read_to_string(&mut json)
+            .map_err(|e| PersistenceError::Deserialization(format!("gzip read failed: {}", e)))?;
+        Self::load_json(&json)
+    }
+
+    /// Save checkpoint with automatic format detection based on extension
+    /// - `.json` or `.checkpoint` -> uncompressed JSON
+    /// - `.json.gz` or `.checkpoint.gz` -> gzip compressed
+    pub fn save_auto(&self, path: &std::path::Path) -> PersistenceResult<()> {
+        let path_str = path.to_string_lossy();
+        if path_str.ends_with(".gz") {
+            self.save_compressed(path)
+        } else {
+            self.save_to_file(path)
+        }
+    }
+
+    /// Load checkpoint with automatic format detection based on extension
+    /// - `.json` or `.checkpoint` -> uncompressed JSON
+    /// - `.json.gz` or `.checkpoint.gz` -> gzip compressed
+    pub fn load_auto(path: &std::path::Path) -> PersistenceResult<Self> {
+        let path_str = path.to_string_lossy();
+        if path_str.ends_with(".gz") {
+            Self::load_compressed(path)
+        } else {
+            Self::load_from_file(path)
+        }
+    }
+
+    /// Get compressed checkpoint as bytes (for network transfer, etc.)
+    pub fn to_compressed_bytes(&self) -> PersistenceResult<Vec<u8>> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let json = self.save_json()?;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(json.as_bytes())
+            .map_err(|e| PersistenceError::Serialization(format!("gzip write failed: {}", e)))?;
+        encoder
+            .finish()
+            .map_err(|e| PersistenceError::Serialization(format!("gzip finish failed: {}", e)))
+    }
+
+    /// Load checkpoint from compressed bytes
+    pub fn from_compressed_bytes(data: &[u8]) -> PersistenceResult<Self> {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut decoder = GzDecoder::new(data);
+        let mut json = String::new();
+        decoder
+            .read_to_string(&mut json)
+            .map_err(|e| PersistenceError::Deserialization(format!("gzip read failed: {}", e)))?;
+        Self::load_json(&json)
+    }
+
+    /// Estimate the compression ratio for this checkpoint
+    /// Returns (uncompressed_size, compressed_size, ratio)
+    pub fn compression_stats(&self) -> PersistenceResult<(usize, usize, f64)> {
+        let json = self.save_json()?;
+        let uncompressed = json.len();
+        let compressed = self.to_compressed_bytes()?.len();
+        let ratio = if compressed > 0 {
+            uncompressed as f64 / compressed as f64
+        } else {
+            0.0
+        };
+        Ok((uncompressed, compressed, ratio))
+    }
 }
 
 impl Default for UnifiedCheckpoint {
@@ -4562,6 +4670,26 @@ impl Persistable for GraphTransformNet {
         if self.embedding.embed_dim != self.mp_layers[0].input_dim {
             return Err(PersistenceError::ValidationFailed(
                 "Embedding dimension mismatch with message layers".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Persistable for DagNN {
+    fn persist_type_id() -> &'static str {
+        "DagNN"
+    }
+
+    fn persist_version() -> u32 {
+        1
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Validate topological order matches graph structure
+        if self.topology.order.len() != self.graph.node_count() {
+            return Err(PersistenceError::ValidationFailed(
+                "Topological order length mismatch with node count".to_string(),
             ));
         }
         Ok(())
@@ -14221,5 +14349,127 @@ mod tests {
         // Read output
         let output = output_brain.read_outputs(&dag, &text_slice);
         assert_eq!(output, "sum:5.00"); // 10 nodes * 0.5 = 5.0
+    }
+
+    // ========================================================================
+    // Checkpoint compression tests (backend-196)
+    // ========================================================================
+
+    #[test]
+    fn test_checkpoint_compressed_roundtrip() {
+        let dag = DagNN::from_text("Hello, compression test!").unwrap();
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&dag).unwrap();
+
+        // Compress to bytes
+        let compressed = checkpoint.to_compressed_bytes().unwrap();
+
+        // Decompress
+        let loaded = UnifiedCheckpoint::from_compressed_bytes(&compressed).unwrap();
+        let loaded_dag: DagNN = loaded.load_module().unwrap();
+
+        assert_eq!(dag.to_text(), loaded_dag.to_text());
+    }
+
+    #[test]
+    fn test_checkpoint_compressed_file_roundtrip() {
+        use std::path::Path;
+
+        let dag = DagNN::from_text("Testing compressed file I/O").unwrap();
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&dag).unwrap();
+
+        // Save compressed
+        let temp_path = Path::new("/tmp/test_checkpoint.json.gz");
+        checkpoint.save_compressed(temp_path).unwrap();
+
+        // Load compressed
+        let loaded = UnifiedCheckpoint::load_compressed(temp_path).unwrap();
+        let loaded_dag: DagNN = loaded.load_module().unwrap();
+
+        assert_eq!(dag.to_text(), loaded_dag.to_text());
+
+        // Clean up
+        let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_checkpoint_auto_format_detection() {
+        use std::path::Path;
+
+        let dag = DagNN::from_text("Auto format test").unwrap();
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&dag).unwrap();
+
+        // Test .gz extension
+        let gz_path = Path::new("/tmp/test_auto.json.gz");
+        checkpoint.save_auto(gz_path).unwrap();
+        let loaded_gz = UnifiedCheckpoint::load_auto(gz_path).unwrap();
+        let dag_gz: DagNN = loaded_gz.load_module().unwrap();
+        assert_eq!(dag.to_text(), dag_gz.to_text());
+
+        // Test .json extension
+        let json_path = Path::new("/tmp/test_auto.json");
+        checkpoint.save_auto(json_path).unwrap();
+        let loaded_json = UnifiedCheckpoint::load_auto(json_path).unwrap();
+        let dag_json: DagNN = loaded_json.load_module().unwrap();
+        assert_eq!(dag.to_text(), dag_json.to_text());
+
+        // Clean up
+        let _ = std::fs::remove_file(gz_path);
+        let _ = std::fs::remove_file(json_path);
+    }
+
+    #[test]
+    fn test_compression_stats() {
+        // Create a checkpoint with some data
+        let dag = DagNN::from_text("This is a test sentence for compression ratio measurement. It should show good compression for JSON data with repeated patterns like node definitions and edge weights.").unwrap();
+
+        let mut checkpoint = UnifiedCheckpoint::new();
+        checkpoint.add_module(&dag).unwrap();
+
+        let (uncompressed, compressed, ratio) = checkpoint.compression_stats().unwrap();
+
+        // Verify compression stats make sense
+        assert!(uncompressed > 0);
+        assert!(compressed > 0);
+        assert!(compressed < uncompressed, "Compressed should be smaller");
+        assert!(
+            ratio > 1.0,
+            "Compression ratio should be > 1.0, got {}",
+            ratio
+        );
+
+        // JSON checkpoint data typically compresses 3-10x
+        assert!(
+            ratio > 1.5,
+            "Expected reasonable compression ratio, got {}x",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_compression_multiple_modules() {
+        let dag1 = DagNN::from_text("First module").unwrap();
+        let dag2 = DagNN::from_text("Second module").unwrap();
+
+        // Create checkpoint with custom names
+        let mut checkpoint = UnifiedCheckpoint::new();
+
+        // Add both modules (they'll both be stored as DagNN type)
+        // Since persist_type_id returns "DagNN" for both, only the second one will be stored
+        // This is expected behavior - one module per type
+        checkpoint.add_module(&dag1).unwrap();
+        checkpoint.add_module(&dag2).unwrap();
+
+        // Compress and decompress
+        let compressed = checkpoint.to_compressed_bytes().unwrap();
+        let loaded = UnifiedCheckpoint::from_compressed_bytes(&compressed).unwrap();
+
+        // Should have DagNN module (the second one overwrites the first)
+        assert!(loaded.has_module::<DagNN>());
     }
 }

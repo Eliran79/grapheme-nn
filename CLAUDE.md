@@ -123,14 +123,42 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Project Stats (December 2025)
 
-- **Tests**: 1139 passing, zero warnings
-- **Tasks**: 224 total (197 done, 27 planned)
-- **LOC**: 67K+ Rust code
+- **Tests**: 1200 passing, zero warnings
+- **Tasks**: 224 total (210 done, 14 planned)
+- **LOC**: 70K+ Rust code
 - **Crates**: 22 modules
 
-### AGI Roadmap (27 new tasks)
-- Text/Web Learning: File ingestion, web fetcher, preprocessing
-- Graph-to-Graph (G2G): Transformation learning, morphism, serialization
-- A2A Protocol: Agent-to-agent communication, orchestration
-- LLM Collaboration: Claude/OpenAI/Gemini integration
-- MCP Integration: Server, client, graph tools
+### Recently Completed (AGI Roadmap)
+- ✅ Text/Web Learning: File ingestion, web fetcher, HTML parser, preprocessing
+- ✅ G2G Transformation: Graph-to-graph learning with structural loss
+- ✅ LLM API Client: Claude, OpenAI, Gemini, Ollama unified interface
+- ✅ MCP Server: 5 GRAPHEME tools (graph_from_text, query, transform, to_text, compare)
+- ✅ A2A Protocol: Agent discovery, task lifecycle, 4 skills
+
+### Remaining Tasks (14)
+- A2A message format, multi-agent orchestration
+- LLM bidirectional graph↔prompt translation
+- Graph morphism detection, efficient serialization
+- Integration tests for new capabilities
+
+## grapheme-train Modules
+
+The `grapheme-train` crate contains the following modules:
+
+| Module | Description | Tasks |
+|--------|-------------|-------|
+| `text_ingestion` | File ingestion (TXT, MD, JSON) | backend-169 |
+| `web_fetcher` | HTTP content fetching | backend-170 |
+| `html_parser` | HTML parsing and extraction | data-002 |
+| `text_preprocessor` | Text cleaning and chunking | data-001 |
+| `g2g` | Graph-to-graph transformation | backend-175 |
+| `llm_client` | LLM API client (Claude, OpenAI, Gemini, Ollama) | integration-001 |
+| `mcp_server` | MCP protocol server with 5 tools | api-017 |
+| `a2a_protocol` | A2A agent protocol with 4 skills | api-015 |
+
+### Training Binaries
+- `train` - Main curriculum training
+- `train_from_text` - Train from text files (backend-171)
+- `train_from_web` - Train from web content (backend-172)
+- `generate` - Dataset generation
+- `repl` - Interactive REPL

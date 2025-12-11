@@ -8,8 +8,9 @@
 //! Backend-166: Unified AGI Training
 //! Backend-167: Shared DagNN with Brain Slices
 
-use grapheme_core::{BrainSlice, CognitiveBrainOrchestrator, DagNN, Node};
+use grapheme_core::{BackwardPass, BrainSlice, CognitiveBrainOrchestrator, DagNN, Embedding, InitStrategy, Node, NodeId};
 use grapheme_router::{CognitiveRouter, Input, MathModule, TextModule, TimeSeriesModule, VisionModule};
+use ndarray::Array1;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -126,8 +127,10 @@ struct SharedAGIModel {
     slices: HashMap<String, BrainSlice>,
     /// Learning rate for parameter updates
     learning_rate: f32,
-    /// Accumulated gradients per slice
-    gradients: HashMap<String, Vec<f32>>,
+    /// Embedding layer for gradient accumulation
+    embedding: Embedding,
+    /// Track output nodes for backward pass
+    output_node_ids: HashMap<String, Vec<NodeId>>,
 }
 
 impl SharedAGIModel {
@@ -144,22 +147,33 @@ impl SharedAGIModel {
 
         // Create shared DagNN with enough nodes for all brains
         let mut dag = DagNN::new();
+        let mut output_node_ids: HashMap<String, Vec<NodeId>> = HashMap::new();
+
         for _i in 0..total_nodes {
             dag.graph.add_node(Node::hidden());
         }
 
-        // Initialize gradients
-        let mut gradients = HashMap::new();
+        // Track output nodes per brain slice
+        let nodes: Vec<_> = dag.graph.node_indices().collect();
         for (brain_id, slice) in &slices {
-            let grad_size = slice.input_count() + slice.output_count();
-            gradients.insert(brain_id.clone(), vec![0.0; grad_size]);
+            let mut output_ids = Vec::new();
+            for node_idx in slice.output_range.clone() {
+                if node_idx < nodes.len() {
+                    output_ids.push(nodes[node_idx]);
+                }
+            }
+            output_node_ids.insert(brain_id.clone(), output_ids);
         }
+
+        // Create embedding for gradient tracking
+        let embedding = Embedding::new(256, 64, InitStrategy::Xavier);
 
         Self {
             dag,
             slices,
             learning_rate,
-            gradients,
+            embedding,
+            output_node_ids,
         }
     }
 
@@ -197,35 +211,45 @@ impl SharedAGIModel {
         outputs
     }
 
-    /// Accumulate gradients for a brain's slice
-    fn accumulate_gradients(&mut self, brain_id: &str, loss: f32) {
-        if let Some(grads) = self.gradients.get_mut(brain_id) {
-            // Simple gradient: scale by loss
-            for g in grads.iter_mut() {
-                *g += loss * 0.1;
+    /// Accumulate gradients for a brain's slice using proper backward pass
+    fn accumulate_gradients(&mut self, brain_id: &str, loss: f32, target_activations: &[f32]) {
+        // Get output node IDs for this brain
+        let output_ids = match self.output_node_ids.get(brain_id) {
+            Some(ids) => ids.clone(),
+            None => return,
+        };
+
+        // Compute output gradients from MSE loss: dL/dy = 2 * (y - target) / n
+        let mut output_grad: HashMap<NodeId, Array1<f32>> = HashMap::new();
+
+        for (i, &node_id) in output_ids.iter().enumerate() {
+            if i < target_activations.len() {
+                // Find the node's activation
+                let node_activation = self.dag.graph[node_id].activation;
+                let grad = 2.0 * (node_activation - target_activations[i]) / target_activations.len() as f32;
+                // Scale by loss to incorporate structural loss signal
+                output_grad.insert(node_id, Array1::from_vec(vec![grad * loss.sqrt()]));
             }
         }
+
+        // Use proper backward pass through graph structure
+        self.dag.backward_accumulate(&output_grad, &mut self.embedding);
     }
 
     /// Apply accumulated gradients and reset
     fn apply_gradients(&mut self) {
-        let nodes: Vec<_> = self.dag.graph.node_indices().collect();
+        // Apply edge weight updates using learning rate
+        self.dag.step(self.learning_rate);
 
-        for (brain_id, grads) in &mut self.gradients {
-            if let Some(slice) = self.slices.get(brain_id) {
-                // Update input slice nodes
-                for (i, node_idx) in slice.input_range.clone().enumerate() {
-                    if node_idx < nodes.len() && i < grads.len() {
-                        let delta = -self.learning_rate * grads[i];
-                        self.dag.graph[nodes[node_idx]].activation += delta;
-                    }
-                }
-                // Reset gradients
-                for g in grads.iter_mut() {
-                    *g = 0.0;
-                }
-            }
-        }
+        // Zero gradients for next batch
+        self.dag.zero_grad();
+        self.embedding.zero_grad();
+    }
+
+    /// Zero gradients before training batch
+    fn zero_grad(&mut self) {
+        self.dag.zero_grad();
+        self.embedding.zero_grad();
     }
 
     /// Get total parameter count
@@ -320,6 +344,9 @@ fn main() {
         let mut total_loss = 0.0;
         let mut total_count = 0;
 
+        // Zero gradients at start of epoch
+        shared_model.zero_grad();
+
         for example in &examples {
             // Route input through cognitive router to get training pair
             match router.route_for_training(&example.input) {
@@ -339,11 +366,17 @@ fn main() {
                     }).collect();
                     shared_model.write_to_slice(example.domain, &input_activations);
 
+                    // Get target activations from target graph's nodes
+                    let target_activations: Vec<f32> = target_graph.graph.node_indices()
+                        .take(16)  // Match output slice size
+                        .map(|idx| target_graph.graph[idx].activation)
+                        .collect();
+
                     // Compute structural loss
                     let loss = structural_loss(&training_pair.output_graph, &target_graph);
 
-                    // Accumulate gradients for this brain's slice
-                    shared_model.accumulate_gradients(example.domain, loss);
+                    // Accumulate gradients for this brain's slice using proper backprop
+                    shared_model.accumulate_gradients(example.domain, loss, &target_activations);
 
                     // Update domain statistics
                     let domain_stat = stats.entry(example.domain).or_default();

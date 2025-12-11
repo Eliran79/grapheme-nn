@@ -1,7 +1,7 @@
 ---
 id: backend-184
 title: Extract training engine module
-status: todo
+status: done
 priority: medium
 tags:
 - backend

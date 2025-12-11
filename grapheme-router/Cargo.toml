@@ -15,6 +15,7 @@ grapheme-core = { path = "../grapheme-core" }
 grapheme-time = { path = "../grapheme-time" }
 grapheme-math = { path = "../grapheme-math" }
 grapheme-vision = { path = "../grapheme-vision" }
+grapheme-safety = { path = "../grapheme-safety" }
 
 [dev-dependencies]
 criterion.workspace = true

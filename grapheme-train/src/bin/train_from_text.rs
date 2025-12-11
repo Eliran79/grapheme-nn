@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
     println!("\nLoading text files...");
     let ingestion = TextIngestion::new();
     let mut all_text = String::new();
-    let mut file_count = 0;
+    let file_count: usize;
 
     if args.input.is_file() {
         // Single file

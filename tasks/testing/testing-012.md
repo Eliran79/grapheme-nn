@@ -1,7 +1,7 @@
 ---
 id: testing-012
 title: Integration tests for text and web learning pipelines
-status: todo
+status: done
 priority: medium
 tags:
 - testing
@@ -39,9 +39,16 @@ Brief description of what needs to be done and why.
 - Success criteria
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Add grapheme-train dependency to grapheme-tests
+- [x] Create integration test file (tests/integration_text_web_learning.rs)
+- [x] Write 27 integration tests covering:
+  - Text ingestion (plain text, markdown, JSON, JSONL, directories)
+  - Web fetcher (creation, config, WebContent type detection)
+  - HTML parser (basic parsing, title/link/metadata extraction, script removal)
+  - Text preprocessor (cleaning, URL removal)
+  - Text chunker (default and custom configs)
+  - Full pipeline integration tests
+- [x] All tests pass
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -88,25 +95,26 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-tests/tests/integration_text_web_learning.rs` with 27 tests
+- Added `grapheme-train` dependency to grapheme-tests/Cargo.toml
+- Added `tempfile` dependency for temp directory creation in tests
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- No runtime changes - these are test-only additions
+- Tests exercise the full text/web learning pipeline
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- grapheme-tests now depends on grapheme-train
+- Uses tempfile crate for test file creation
+- Tests use TextIngestion, WebFetcher, HtmlParser, TextPreprocessor, TextChunker APIs
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-tests --test integration_text_web_learning`
+- All 27 tests should pass
+- Tests cover edge cases like missing files, various formats
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- TextPreprocessor.clean() is the main public API (normalize_whitespace is private)
+- TextChunker uses config-based construction with ChunkConfig
+- HtmlParser returns ParsedHtml with metadata.title, links as Vec<(String, String)>
+- TextFormat::from_path is case-sensitive for extensions

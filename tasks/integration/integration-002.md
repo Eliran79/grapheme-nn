@@ -1,7 +1,7 @@
 ---
 id: integration-002
 title: Implement LLM response to DagNN graph translation
-status: todo
+status: done
 priority: high
 tags:
 - integration

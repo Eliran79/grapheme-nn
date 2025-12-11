@@ -68,6 +68,7 @@ struct Args {
 
 /// Training example (text or image description)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct WebExample {
     /// Source URL
     url: String,

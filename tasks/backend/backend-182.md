@@ -1,7 +1,7 @@
 ---
 id: backend-182
 title: Extract loss functions module
-status: todo
+status: done
 priority: medium
 tags:
 - backend

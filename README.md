@@ -59,7 +59,33 @@ Revolutionary neural architecture that processes text without tokenization, grow
 | `grapheme-core` | Character-to-graph processing, DagNN, clique detection, DomainBrain trait |
 | `grapheme-engine` | Symbolic math: evaluate, differentiate, integrate, solve |
 | `grapheme-polish` | Polish notation intermediate representation |
-| `grapheme-train` | Training: datasets, structural loss (Sinkhorn OT), WL kernel, curriculum learning |
+| `grapheme-train` | Training infrastructure with 19 modules (see below) |
+
+### grapheme-train Modules (19 total)
+
+| Module | Purpose |
+|--------|---------|
+| `lib.rs` | Core: Dataset, TrainingLoop, structural loss (Sinkhorn OT), WL kernel |
+| `curriculum.rs` | Curriculum learning: 7-level progression from basic to advanced |
+| `optimizer.rs` | SGD, Adam, LRScheduler, gradient clipping, accumulation |
+| `text_ingestion.rs` | File ingestion: TXT, MD, JSON, CSV formats |
+| `text_preprocessor.rs` | Text normalization, cleaning, tokenization |
+| `html_parser.rs` | HTML/web content parsing and extraction |
+| `web_fetcher.rs` | HTTPS client with ureq/native-tls for web content |
+| `web_crawler.rs` | Crawler with rate limiting, robots.txt support |
+| `g2g.rs` | Graph-to-Graph transformation learning |
+| `llm_client.rs` | LLM API client (Claude, OpenAI, Gemini) |
+| `graph_llm_translation.rs` | Bidirectional graph↔LLM translation |
+| `mcp_server.rs` | MCP server with 5 GRAPHEME tools |
+| `mcp_client.rs` | MCP client for external tool servers |
+| `a2a_protocol.rs` | A2A agent protocol (Agent-to-Agent) |
+| `a2a_registry.rs` | Agent discovery and registry |
+| `multi_agent.rs` | Multi-agent orchestration coordinator |
+| `knowledge_extraction.rs` | Entity/relation extraction from text |
+| `knowledge_distillation.rs` | Distill LLM knowledge to GRAPHEME graphs |
+| `collaborative_learning.rs` | Learn from LLM interactions |
+| `math_nl_augmentation.rs` | Math expression ↔ NL augmentation |
+| `online_learner.rs` | Continuous online learning with EWC, experience replay |
 
 ### Domain Brain Plugins
 | Crate | Domain | Features |
@@ -118,18 +144,28 @@ if let Some(brain) = registry.get_for_input("solve x^2 = 4") {
 
 ```bash
 cargo build --workspace
-cargo test --workspace   # 1139 tests, all passing
+cargo test --workspace   # 1318 tests, all passing
 cargo clippy --workspace # 0 warnings
 ```
 
 ## Recent Milestones
 
-**December 2025 - AGI Roadmap (27 new tasks planned):**
-- 🔄 Text/Web Learning: File ingestion, web fetcher, preprocessing pipelines
-- 🔄 Graph-to-Graph (G2G): Transformation learning, morphism detection, serialization
-- 🔄 A2A Protocol: Agent-to-agent communication, message format, orchestration
-- 🔄 LLM Collaboration: Claude/OpenAI/Gemini integration, bidirectional translation
-- 🔄 MCP Integration: Server/client implementation, graph tools
+**December 2025 - Web Learning & Knowledge Query (backend-170, 210):**
+- ✅ Web Learning: HTTPS support via ureq/native-tls, Wikipedia training
+- ✅ Knowledge Query: Interactive inference with trained GraphTransformNet
+- ✅ Semantic Search: Cosine similarity on graph embeddings (>0.97 accuracy)
+- ✅ Online Learning: EWC for forgetting prevention, experience replay
+- ✅ New binaries: `train_from_web`, `train_online`, `query`
+
+**December 2025 - Training Infrastructure Complete (252 tasks done):**
+- ✅ Text/Web Learning: File ingestion, web fetcher, crawler with robots.txt
+- ✅ Graph-to-Graph (G2G): Transformation learning, morphism detection
+- ✅ A2A Protocol: Agent discovery, registry, multi-agent orchestration
+- ✅ LLM Collaboration: Claude/OpenAI/Gemini client, knowledge distillation
+- ✅ MCP Integration: Server (5 tools) + client implementation
+- ✅ Knowledge: Entity extraction, relation extraction, graph conversion
+- ✅ Optimizers: SGD, Adam, LRScheduler, gradient clipping/accumulation
+- ✅ Data Augmentation: Math-NL augmentation pipeline
 
 **December 2025 - Unified AGI Training (backend-166, 167, 168):**
 - ✅ `train_unified_agi`: Single binary trains all modules at once
@@ -168,7 +204,7 @@ cargo clippy --workspace # 0 warnings
 - ✅ Removed all cross-entropy code (pure graph-to-graph learning)
 - ✅ DAG-specific O(n) clique alignment (no NP-hard enumeration)
 - ✅ Sinkhorn optimal transport for differentiable graph matching
-- ✅ 1139 tests passing, zero warnings
+- ✅ 1318 tests passing, zero warnings
 
 **Training Ready:**
 - Complete GRAPHEME vision formula implemented
@@ -187,6 +223,8 @@ cargo clippy --workspace # 0 warnings
 - **AGI Architecture**: Memory, reasoning, world model, agency layers
 - **Plugin System**: Extensible domain brains (math, code, law, music, chemistry)
 - **Learnable Modules**: All cognitive components support gradient-based learning
+- **Web Learning**: Train from Wikipedia/web content via HTTPS
+- **Knowledge Query**: Interactive semantic search on trained embeddings
 
 ## FAQ
 

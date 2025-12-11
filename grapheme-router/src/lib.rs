@@ -207,11 +207,18 @@ pub trait CognitiveModule: Send + Sync {
 }
 
 /// Cognitive router that automatically routes inputs to appropriate modules
+///
+/// ## Safety Integration
+///
+/// The CognitiveRouter includes a non-overridable SafetyGate that validates
+/// all outputs before they are returned. This ensures Asimov Laws compliance.
 pub struct CognitiveRouter {
     modules: HashMap<ModuleId, Box<dyn CognitiveModule>>,
     confidence_threshold: f32,
     /// Enable multi-module routing (combine outputs from multiple modules)
     multi_module: bool,
+    /// Safety gate for output validation (NON-OVERRIDABLE)
+    safety_gate: grapheme_safety::SafetyGate,
 }
 
 impl Default for CognitiveRouter {
@@ -221,12 +228,13 @@ impl Default for CognitiveRouter {
 }
 
 impl CognitiveRouter {
-    /// Create a new router with the given confidence threshold
+    /// Create a new router with the given confidence threshold and safety gate
     pub fn new(confidence_threshold: f32) -> Self {
         Self {
             modules: HashMap::new(),
             confidence_threshold,
             multi_module: false,
+            safety_gate: grapheme_safety::SafetyGate::new(),
         }
     }
 
@@ -251,6 +259,16 @@ impl CognitiveRouter {
     /// Get the number of registered modules
     pub fn module_count(&self) -> usize {
         self.modules.len()
+    }
+
+    /// Get safety violation count for auditing
+    pub fn safety_violation_count(&self) -> usize {
+        self.safety_gate.guard().violation_count()
+    }
+
+    /// Check if the router is in a safe state
+    pub fn is_safe(&self) -> bool {
+        self.safety_gate.guard().violation_count() == 0
     }
 
     /// Analyze input and detect type
@@ -326,6 +344,11 @@ impl CognitiveRouter {
     }
 
     /// Route input to appropriate module(s)
+    ///
+    /// ## Safety Validation
+    ///
+    /// All outputs are validated against Asimov's Laws before being returned.
+    /// If the output violates safety constraints, an error is returned.
     pub fn route(&self, input: &Input) -> RouterResult<RoutingResult> {
         if self.modules.is_empty() {
             return Err(RouterError::NoModulesRegistered);
@@ -374,7 +397,19 @@ impl CognitiveRouter {
             None
         };
 
-        // Step 7: Get alternatives (for multi-module support)
+        // Step 7: SAFETY VALIDATION (NON-OVERRIDABLE)
+        // Validate output against Asimov's Laws before returning
+        if let Some(ref output_text) = output {
+            let safety_result = self.safety_gate.validate_output(output_text, true);
+            if let grapheme_safety::SafetyCheck::Blocked(violation) = safety_result {
+                return Err(RouterError::ExecutionFailed(format!(
+                    "Safety violation ({}): {}",
+                    violation.law, violation.description
+                )));
+            }
+        }
+
+        // Step 8: Get alternatives (for multi-module support)
         let alternatives: Vec<(ModuleId, f32)> = module_scores
             .into_iter()
             .skip(1)

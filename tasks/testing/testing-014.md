@@ -1,7 +1,7 @@
 ---
 id: testing-014
 title: End-to-end tests for LLM collaboration workflows
-status: todo
+status: done
 priority: medium
 tags:
 - testing
@@ -41,9 +41,18 @@ Brief description of what needs to be done and why.
 - Success criteria
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create integration_llm_collaboration.rs test file
+- [x] Write session lifecycle tests (create, end, persistence)
+- [x] Write configuration tests (custom config, defaults)
+- [x] Write learning interaction tests (creation, metrics)
+- [x] Write graph feedback tests (positive, needs improvement, thresholds)
+- [x] Write knowledge base tests (structure, empty, application)
+- [x] Write graph translation workflow tests (PromptToGraph, GraphToPrompt)
+- [x] Write end-to-end workflow tests (setup, refinement cycle)
+- [x] Write multi-session tests (concurrency, isolation)
+- [x] Write error handling tests (invalid inputs, LLM config variations)
+- [x] Add ignored tests for actual LLM network calls
+- [x] Verify all 21 tests pass
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -90,25 +99,28 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `grapheme-tests/tests/integration_llm_collaboration.rs` with 24 tests (21 run, 3 ignored)
+- Added test entry in `grapheme-tests/Cargo.toml`
+- Test categories: session lifecycle, config, interactions, feedback, knowledge base, graph translation, workflows
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Tests verify CollaborativeLearner session management works correctly
+- Tests ensure feedback scoring thresholds work as expected
+- Tests verify graph translation converters (PromptToGraph, GraphToPrompt) can be instantiated
+- 3 tests marked #[ignore] require actual LLM API calls (network)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Depends on grapheme-train collaborative_learning module (backend-178)
+- Uses GraphToPrompt.translate() and PromptToGraph.translate() APIs
+- Tests LLMConfig::claude(), ::openai(), ::ollama() factory methods
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-tests --test integration_llm_collaboration`
+- Expected: 21 passed, 3 ignored
+- For LLM tests: `cargo test --test integration_llm_collaboration -- --ignored` (requires API key)
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- GraphToPrompt.translate(&dag) returns String (not Result)
+- PromptToGraph.translate(text) returns Result<GraphModification, TranslationError>
+- Knowledge base tests use empty learner (no actual LLM interactions tested without network)
+- LLMConfig variations test only instantiation, not actual API calls

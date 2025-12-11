@@ -1,7 +1,7 @@
 ---
 id: backend-180
 title: Implement efficient graph serialization for network transport
-status: todo
+status: done
 priority: high
 tags:
 - backend
