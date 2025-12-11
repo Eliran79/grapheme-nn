@@ -14,14 +14,16 @@
 
 use clap::Parser;
 use grapheme_core::{DagNN, GraphemeGraph, GraphTransformNet, UnifiedCheckpoint};
+use grapheme_engine::MathEngine;
 use grapheme_memory::{
     EpisodicMemory, SimpleEpisodicMemory, SimpleSemanticGraph, SimpleWorkingMemory,
     SemanticGraph, WorkingMemory, Episode,
 };
 use grapheme_meta::UnifiedCognition;
+use grapheme_polish::PolishParser;
 use grapheme_reason::{ReasoningEngine, create_default_reasoning_engine};
-use grapheme_router::{CognitiveRouter, Input};
-use grapheme_train::GraphKnowledgeBase;
+use grapheme_router::{CognitiveRouter, Input, InputType};
+use grapheme_train::{GraphKnowledgeBase, Pipeline};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -74,6 +76,10 @@ struct AGICognitiveSystem {
     /// Reasoning engine
     #[allow(dead_code)]
     reasoning: ReasoningEngine,
+    /// Math engine for actual computation
+    math_engine: MathEngine,
+    /// Pipeline for natural language math parsing
+    pipeline: Pipeline,
     /// Knowledge base for learned Q&A retrieval
     knowledge_base: Option<GraphKnowledgeBase>,
     /// Verbose mode
@@ -95,8 +101,118 @@ impl AGICognitiveSystem {
             episodic_memory: SimpleEpisodicMemory::new(Some(1000)),
             semantic_memory: SimpleSemanticGraph::new(),
             reasoning: create_default_reasoning_engine(),
+            math_engine: MathEngine::new(),
+            pipeline: Pipeline::new(),
             knowledge_base,
             verbose,
+        }
+    }
+
+    /// Try to compute math expression using MathEngine (TRUE reasoning, not retrieval)
+    ///
+    /// This implements the HUMAN BRAIN CORTEX model:
+    /// 1. Polish notation → Direct MathEngine (formal reasoning cortex)
+    /// 2. Natural language → Pipeline extracts math → MathEngine (language + math cortex mesh)
+    /// 3. Infix notation → Pipeline handles (secondary math patterns)
+    ///
+    /// Like human cognition: Language areas detect math intent → Route to math areas → Compute
+    fn try_compute_math(&self, input: &str) -> Option<String> {
+        // CORTEX 1: Direct Polish notation (formal math cortex - fastest path)
+        // Only try Polish if it looks like S-expression (starts with '(')
+        if input.trim().starts_with('(') {
+            let mut parser = PolishParser::new();
+            if let Ok(expr) = parser.parse(input) {
+                if let Ok(result) = self.math_engine.evaluate(&expr) {
+                    return Some(Self::format_result(result));
+                }
+            }
+        }
+
+        // CORTEX 2: Word-based math (language cortex pattern matching)
+        // Try word operators first - very specific patterns
+        if let Some(result) = self.try_word_math(input) {
+            return Some(Self::format_result(result));
+        }
+
+        // CORTEX 3: Natural Language Math via Pipeline (general NL math)
+        // The Pipeline handles "what is X", infix "2 + 3", etc.
+        let pipeline_result = self.pipeline.process(input);
+        if let Some(result) = pipeline_result.numeric_result {
+            // Sanity check: if input has word operators but result is just first number,
+            // the Pipeline failed - don't return it
+            let lower = input.to_lowercase();
+            let has_word_op = lower.contains(" plus ")
+                || lower.contains(" minus ")
+                || lower.contains(" times ")
+                || lower.contains(" divided by ");
+            if !has_word_op {
+                return Some(Self::format_result(result));
+            }
+        }
+
+        None
+    }
+
+    /// Parse word-based math expressions like "5 plus 3", "7 times 8"
+    /// This is a backup cortex for when Pipeline doesn't catch word operators
+    fn try_word_math(&self, input: &str) -> Option<f64> {
+        let lower = input.to_lowercase();
+
+        // Extract question prefix if present
+        let cleaned = lower
+            .strip_prefix("what is ")
+            .or_else(|| lower.strip_prefix("what's "))
+            .or_else(|| lower.strip_prefix("calculate "))
+            .or_else(|| lower.strip_prefix("compute "))
+            .unwrap_or(&lower)
+            .trim()
+            .trim_end_matches('?');
+
+        // Try each word operator pattern
+        if let Some(result) = Self::try_binary_op(cleaned, " plus ", |a, b| a + b) {
+            return Some(result);
+        }
+        if let Some(result) = Self::try_binary_op(cleaned, " minus ", |a, b| a - b) {
+            return Some(result);
+        }
+        if let Some(result) = Self::try_binary_op(cleaned, " times ", |a, b| a * b) {
+            return Some(result);
+        }
+        if let Some(result) = Self::try_binary_op(cleaned, " multiplied by ", |a, b| a * b) {
+            return Some(result);
+        }
+        if let Some(result) = Self::try_binary_op(cleaned, " divided by ", |a, b| if b != 0.0 { a / b } else { f64::NAN }) {
+            return Some(result);
+        }
+        if let Some(result) = Self::try_binary_op(cleaned, " over ", |a, b| if b != 0.0 { a / b } else { f64::NAN }) {
+            return Some(result);
+        }
+
+        None
+    }
+
+    /// Try to parse a binary operation from text
+    fn try_binary_op(text: &str, op_word: &str, op_fn: fn(f64, f64) -> f64) -> Option<f64> {
+        if let Some(idx) = text.find(op_word) {
+            let left_str = text[..idx].trim();
+            let right_str = text[idx + op_word.len()..].trim();
+
+            if let (Ok(left), Ok(right)) = (left_str.parse::<f64>(), right_str.parse::<f64>()) {
+                let result = op_fn(left, right);
+                if !result.is_nan() {
+                    return Some(result);
+                }
+            }
+        }
+        None
+    }
+
+    /// Format a numeric result nicely (integers without decimals)
+    fn format_result(result: f64) -> String {
+        if result.fract() == 0.0 && result.abs() < 1e15 {
+            format!("{}", result as i64)
+        } else {
+            format!("{:.6}", result).trim_end_matches('0').trim_end_matches('.').to_string()
         }
     }
 
@@ -125,20 +241,46 @@ impl AGICognitiveSystem {
             println!("  [Memory] Checking working memory ({} items)...", self.working_memory.len());
         }
 
-        // Step 4: Knowledge Base Retrieval (if available)
-        if let Some(ref mut kb) = self.knowledge_base {
+        // Step 4: Try DIRECT COMPUTATION (CORTEX MESH - TRUE reasoning)
+        // Like human brain: ALWAYS try math computation if input might contain math
+        // Don't rely solely on Router - language cortex should route to math cortex
+        let might_be_math = matches!(input_type, InputType::Math)
+            || input.chars().any(|c| c.is_ascii_digit())
+            || input.to_lowercase().contains("plus")
+            || input.to_lowercase().contains("minus")
+            || input.to_lowercase().contains("times")
+            || input.to_lowercase().contains("divided")
+            || input.to_lowercase().contains("calculate")
+            || input.to_lowercase().contains("what is");
+
+        if might_be_math {
             if self.verbose {
-                println!("  [Knowledge] Querying learned Q&A pairs...");
+                println!("  [CortexMesh] Math intent detected - engaging computation cortices...");
             }
-            let kb_results = kb.query(input, &self.model, 3);
-            if !kb_results.is_empty() {
-                let best = &kb_results[0];
-                result.kb_answer = Some(best.entry.answer.clone());
-                result.kb_similarity = best.similarity;
-                result.kb_question = Some(best.entry.question.clone());
+            if let Some(computed) = self.try_compute_math(input) {
+                result.computed_answer = Some(computed.clone());
                 if self.verbose {
-                    println!("    Found: \"{}\" -> \"{}\" (sim: {:.3})",
-                        best.entry.question, best.entry.answer, best.similarity);
+                    println!("    ✓ COMPUTED: {}", computed);
+                }
+            }
+        }
+
+        // Step 5: Knowledge Base Retrieval (fallback or for non-math)
+        if result.computed_answer.is_none() {
+            if let Some(ref mut kb) = self.knowledge_base {
+                if self.verbose {
+                    println!("  [Knowledge] Querying learned Q&A pairs...");
+                }
+                let kb_results = kb.query(input, &self.model, 3);
+                if !kb_results.is_empty() {
+                    let best = &kb_results[0];
+                    result.kb_answer = Some(best.entry.answer.clone());
+                    result.kb_similarity = best.similarity;
+                    result.kb_question = Some(best.entry.question.clone());
+                    if self.verbose {
+                        println!("    Found: \"{}\" -> \"{}\" (sim: {:.3})",
+                            best.entry.question, best.entry.answer, best.similarity);
+                    }
                 }
             }
         }
@@ -231,6 +373,8 @@ struct CognitiveResult {
     output_nodes: usize,
     output_edges: usize,
     neural_output: String,
+    /// Computed answer (from MathEngine - TRUE reasoning)
+    computed_answer: Option<String>,
     /// Knowledge base answer (if found)
     kb_answer: Option<String>,
     /// Knowledge base similarity score
@@ -254,6 +398,7 @@ impl CognitiveResult {
             output_nodes: 0,
             output_edges: 0,
             neural_output: String::new(),
+            computed_answer: None,
             kb_answer: None,
             kb_similarity: 0.0,
             kb_question: None,
@@ -268,16 +413,22 @@ impl CognitiveResult {
         println!("\nQ: {}", self.input);
         println!("{}", "-".repeat(60));
 
-        // Show the ANSWER prominently
-        if let Some(ref answer) = self.kb_answer {
+        // Priority 1: Show COMPUTED answer (TRUE reasoning)
+        if let Some(ref computed) = self.computed_answer {
+            println!("A: {}", computed);
+            println!("   (COMPUTED by MathEngine - true reasoning)");
+        }
+        // Priority 2: Show KB answer
+        else if let Some(ref answer) = self.kb_answer {
             if self.kb_similarity > 0.95 {
                 // High confidence - show answer directly
                 println!("A: {}", answer);
                 if let Some(ref matched_q) = self.kb_question {
                     if matched_q != &self.input {
-                        println!("   (matched: \"{}\" with {:.1}% confidence)", matched_q, self.kb_similarity * 100.0);
+                        println!("   (retrieved: \"{}\" with {:.1}% similarity)",
+                            truncate_str(matched_q, 50), self.kb_similarity * 100.0);
                     } else {
-                        println!("   (exact match, {:.1}% confidence)", self.kb_similarity * 100.0);
+                        println!("   (exact KB match, {:.1}% confidence)", self.kb_similarity * 100.0);
                     }
                 }
             } else {
@@ -287,7 +438,7 @@ impl CognitiveResult {
                     self.kb_question.as_deref().unwrap_or("?"), self.kb_similarity * 100.0);
             }
         } else {
-            println!("A: [No answer found in knowledge base]");
+            println!("A: [No answer found]");
             println!("   Neural output: \"{}\"", self.neural_output);
         }
 
@@ -317,6 +468,15 @@ impl CognitiveResult {
             println!("  4. Memory updated");
             println!("  5. Introspection complete");
         }
+    }
+}
+
+/// Truncate a string to max length with ellipsis
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
 

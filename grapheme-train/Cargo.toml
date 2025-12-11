@@ -99,3 +99,7 @@ path = "src/bin/train_with_llm.rs"
 [[bin]]
 name = "build_kb"
 path = "src/bin/build_kb.rs"
+
+[[bin]]
+name = "import_datasets"
+path = "src/bin/import_datasets.rs"
