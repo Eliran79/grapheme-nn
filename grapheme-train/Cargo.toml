@@ -32,6 +32,8 @@ grapheme-time = { path = "../grapheme-time" }
 grapheme-router = { path = "../grapheme-router" }
 grapheme-safety = { path = "../grapheme-safety" }
 grapheme-memory = { path = "../grapheme-memory" }
+grapheme-meta = { path = "../grapheme-meta" }
+grapheme-reason = { path = "../grapheme-reason" }
 regex = "1.10"
 ureq = { version = "2.9", features = ["native-tls"] }
 
@@ -81,3 +83,19 @@ path = "src/bin/train_online.rs"
 [[bin]]
 name = "query"
 path = "src/bin/query.rs"
+
+[[bin]]
+name = "infer"
+path = "src/bin/infer.rs"
+
+[[bin]]
+name = "agi_infer"
+path = "src/bin/agi_infer.rs"
+
+[[bin]]
+name = "train_with_llm"
+path = "src/bin/train_with_llm.rs"
+
+[[bin]]
+name = "build_kb"
+path = "src/bin/build_kb.rs"

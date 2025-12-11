@@ -15,7 +15,7 @@
 use clap::Parser;
 use grapheme_core::{GraphTransformNet, GraphemeGraph, UnifiedCheckpoint};
 use grapheme_train::{
-    compute_structural_loss, Adam, LLMClient, LRScheduler,
+    compute_structural_loss, Adam, GraphKnowledgeBase, KnowledgeEntry, LLMClient, LRScheduler,
     StructuralLossConfig, TrainingLoop, TrainingMetrics, TrainingState,
 };
 use std::fs;
@@ -247,7 +247,14 @@ fn main() -> anyhow::Result<()> {
     const VOCAB_SIZE: usize = 256;
     const EMBED_DIM: usize = 64;
     const HIDDEN_DIM: usize = 128;
-    const NUM_LAYERS: usize = 3;
+
+    // Calculate max answer length from generated examples for Sabag output size
+    let max_answer_len = examples.iter()
+        .map(|p| p.answer.len())
+        .max()
+        .unwrap_or(100)
+        .max(50);  // Minimum 50 characters for answers
+    println!("Max answer length: {} characters", max_answer_len);
 
     // Initialize or resume
     let config = grapheme_train::TrainingConfig {
@@ -271,7 +278,7 @@ fn main() -> anyhow::Result<()> {
         (model, opt, loop_state)
     } else {
         println!("\nInitializing new model...");
-        let model = GraphTransformNet::new(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, NUM_LAYERS);
+        let model = GraphTransformNet::new(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, max_answer_len);
         let optimizer = Adam::new(args.lr as f32);
         let training_loop = TrainingLoop::new(config.clone()).with_scheduler(
             LRScheduler::CosineAnnealingLR {
@@ -385,10 +392,33 @@ fn main() -> anyhow::Result<()> {
         &adam,
     )?;
 
+    // Save knowledge base with all Q&A pairs
+    let kb_path = args.output.join("knowledge_base.json");
+    println!("\nSaving knowledge base to: {:?}", kb_path);
+
+    let mut knowledge_base = GraphKnowledgeBase::new();
+    for (idx, pair) in examples.iter().enumerate() {
+        let entry = KnowledgeEntry::new(
+            format!("kb_{:04}", idx),
+            &pair.topic,
+            &pair.question,
+            &pair.answer,
+        ).with_epoch(args.epochs);
+        knowledge_base.add(entry);
+    }
+
+    knowledge_base.save(&kb_path)?;
+    let stats = knowledge_base.stats();
+    println!("Saved {} knowledge entries", stats.total_entries);
+    for (topic, count) in &stats.entries_by_topic {
+        println!("  - {}: {} entries", topic, count);
+    }
+
     let total_elapsed = total_start.elapsed();
     println!("\nTraining complete!");
     println!("Total time: {:.1}s", total_elapsed.as_secs_f32());
     println!("Final checkpoint: {:?}", final_path);
+    println!("Knowledge base: {:?}", kb_path);
     println!("Training pairs used: {}", examples.len());
 
     Ok(())

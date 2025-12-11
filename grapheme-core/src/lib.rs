@@ -4696,6 +4696,26 @@ impl Persistable for DagNN {
     }
 }
 
+impl Persistable for EncoderDecoder {
+    fn persist_type_id() -> &'static str {
+        "EncoderDecoder"
+    }
+
+    fn persist_version() -> u32 {
+        1  // First version of encoder-decoder architecture
+    }
+
+    fn validate(&self) -> Result<(), PersistenceError> {
+        // Verify encoder and decoder dimensions are compatible
+        if self.encoder.hidden_dim != self.decoder.hidden_dim {
+            return Err(PersistenceError::ValidationFailed(
+                "Encoder/decoder hidden dimension mismatch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Header for serialized neural network model data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelHeader {
@@ -5549,6 +5569,63 @@ impl Embedding {
     /// Unfreeze the layer (enable gradient computation)
     pub fn unfreeze(&mut self) {
         self.requires_grad = true;
+    }
+
+    /// Decode an embedding back to the nearest character (Graph-to-Text)
+    ///
+    /// This is the inverse of forward() - finds the character whose embedding
+    /// is most similar to the given embedding vector using cosine similarity.
+    ///
+    /// # Arguments
+    /// * `embedding` - The embedding vector to decode
+    ///
+    /// # Returns
+    /// The character whose embedding is closest to the input
+    pub fn decode(&self, embedding: &Array1<f32>) -> char {
+        let mut best_idx = 0;
+        let mut best_sim = f32::NEG_INFINITY;
+
+        // Compute embedding norm once
+        let emb_norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if emb_norm == 0.0 {
+            return ' '; // Return space for zero embeddings
+        }
+
+        // Search through printable ASCII characters (32-126)
+        for idx in 32..=126usize {
+            if idx >= self.vocab_size {
+                break;
+            }
+            let row = self.weights.row(idx);
+            let row_norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if row_norm == 0.0 {
+                continue;
+            }
+            let dot: f32 = embedding.iter().zip(row.iter()).map(|(a, b)| a * b).sum();
+            let sim = dot / (emb_norm * row_norm);
+            if sim > best_sim {
+                best_sim = sim;
+                best_idx = idx;
+            }
+        }
+
+        (best_idx as u8) as char
+    }
+
+    /// Decode a batch of embeddings back to text
+    ///
+    /// # Arguments
+    /// * `embeddings` - Matrix of embeddings (n_chars x embed_dim)
+    ///
+    /// # Returns
+    /// String of decoded characters
+    pub fn decode_batch(&self, embeddings: &Array2<f32>) -> String {
+        let mut result = String::with_capacity(embeddings.nrows());
+        for i in 0..embeddings.nrows() {
+            let emb = embeddings.row(i).to_owned();
+            result.push(self.decode(&emb));
+        }
+        result
     }
 }
 
@@ -7200,7 +7277,6 @@ pub struct GraphTransformNet {
     /// Sabag pooling layer for differentiable DAG coarsening (backend-104)
     /// Named after Eliran Sabag - DAG-aware soft pooling with Sinkhorn refinement
     /// Enables gradient flow while preserving DAG topology
-    #[serde(skip)]
     pub sabag_pooling: Option<SabagPooling>,
 }
 
@@ -7432,6 +7508,36 @@ impl GraphTransformNet {
             };
             (input_graph.clone(), pooling_result)
         }
+    }
+
+    /// Decode output embeddings back to text (Graph-to-Text)
+    ///
+    /// After forward pass, the pooling_result contains feature embeddings.
+    /// This method decodes those embeddings back to human-readable text
+    /// using the learned embedding table.
+    ///
+    /// # Arguments
+    /// * `pooling_result` - Result from forward() containing feature embeddings
+    ///
+    /// # Returns
+    /// String of decoded characters from the output graph
+    pub fn decode(&self, pooling_result: &PoolingResult) -> String {
+        self.embedding.decode_batch(&pooling_result.features)
+    }
+
+    /// Full inference: question graph → answer text
+    ///
+    /// Combines forward pass and decoding for end-to-end inference.
+    ///
+    /// # Arguments
+    /// * `input_graph` - Input graph (e.g., question encoded as GraphemeGraph)
+    ///
+    /// # Returns
+    /// Tuple of (output_graph, decoded_text)
+    pub fn infer(&self, input_graph: &GraphemeGraph) -> (GraphemeGraph, String) {
+        let (output_graph, pooling_result) = self.forward(input_graph);
+        let decoded = self.decode(&pooling_result);
+        (output_graph, decoded)
     }
 
     /// Helper: Compute cosine similarity between two embedding vectors
@@ -7678,6 +7784,281 @@ impl GraphTransformer for GraphTransformNet {
             input_pattern: Vec::new(),
             output_pattern: Vec::new(),
         }
+    }
+}
+
+// ============================================================================
+// Encoder-Decoder Architecture for Q→A Generation (backend-207)
+// ============================================================================
+
+/// Encoder component: transforms question graphs into latent representations
+///
+/// The encoder uses message passing layers to build context vectors
+/// that capture the semantic meaning of the input question.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEncoder {
+    /// Character embedding layer
+    pub embedding: Embedding,
+    /// Message passing layers for graph encoding
+    pub mp_layers: Vec<MessagePassingLayer>,
+    /// Attention for focusing on relevant parts
+    pub attention: AttentionLayer,
+    /// Hidden dimension
+    pub hidden_dim: usize,
+}
+
+impl GraphEncoder {
+    /// Create a new graph encoder
+    ///
+    /// # Arguments
+    /// * `vocab_size` - Size of character vocabulary
+    /// * `embed_dim` - Character embedding dimension
+    /// * `hidden_dim` - Hidden layer dimension
+    /// * `num_layers` - Number of message passing layers
+    pub fn new(vocab_size: usize, embed_dim: usize, hidden_dim: usize, num_layers: usize) -> Self {
+        let embedding = Embedding::xavier(vocab_size, embed_dim);
+
+        let mut mp_layers = Vec::with_capacity(num_layers);
+        let mut in_dim = embed_dim;
+        for _ in 0..num_layers {
+            mp_layers.push(MessagePassingLayer::new(in_dim, hidden_dim));
+            in_dim = hidden_dim;
+        }
+
+        let attention = AttentionLayer::new(hidden_dim, 4);
+
+        Self {
+            embedding,
+            mp_layers,
+            attention,
+            hidden_dim,
+        }
+    }
+
+    /// Encode a graph to latent representation
+    ///
+    /// # Returns
+    /// (node_features, context_vector)
+    /// - node_features: Per-node hidden states
+    /// - context_vector: Pooled graph-level representation
+    pub fn encode(&self, graph: &GraphemeGraph) -> (Array2<f32>, Array1<f32>) {
+        let n = graph.input_nodes.len();
+        if n == 0 {
+            return (Array2::zeros((0, self.hidden_dim)), Array1::zeros(self.hidden_dim));
+        }
+
+        // Step 1: Embed input characters
+        let embed_dim = self.embedding.embed_dim;
+        let mut features = Array2::zeros((n, embed_dim));
+
+        for (idx, &node_id) in graph.input_nodes.iter().enumerate() {
+            if let NodeType::Input(ch) = graph.graph[node_id].node_type {
+                let emb = self.embedding.forward(ch);
+                for (i, &val) in emb.iter().enumerate() {
+                    features[[idx, i]] = val;
+                }
+            }
+        }
+
+        // Step 2: Build adjacency list for message passing
+        let adjacency: Vec<Vec<usize>> = graph
+            .input_nodes
+            .iter()
+            .map(|&node| {
+                graph.graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                    .filter_map(|e| {
+                        let source = e.source();
+                        graph.input_nodes.iter().position(|&n| n == source)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Step 3: Apply message passing layers
+        for layer in &self.mp_layers {
+            features = layer.forward_batch(&features, &adjacency);
+        }
+
+        // Step 4: Compute context vector (mean pooling)
+        let context = features.mean_axis(ndarray::Axis(0))
+            .unwrap_or_else(|| Array1::zeros(self.hidden_dim));
+
+        (features, context)
+    }
+}
+
+/// Decoder component: generates answer from latent representation
+///
+/// The decoder takes the context vector and generates output embeddings
+/// that can be decoded back to text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphDecoder {
+    /// Transform context to initial hidden state
+    pub context_proj: Array2<f32>,
+    /// Message passing layers for output generation
+    pub mp_layers: Vec<MessagePassingLayer>,
+    /// Output projection to character space
+    pub output_proj: Embedding,
+    /// Hidden dimension
+    pub hidden_dim: usize,
+    /// Output vocabulary size
+    pub vocab_size: usize,
+    /// Maximum output length
+    pub max_length: usize,
+}
+
+impl GraphDecoder {
+    /// Create a new graph decoder
+    ///
+    /// # Arguments
+    /// * `hidden_dim` - Hidden layer dimension (must match encoder)
+    /// * `vocab_size` - Output vocabulary size
+    /// * `embed_dim` - Output embedding dimension
+    /// * `max_length` - Maximum output sequence length
+    pub fn new(hidden_dim: usize, vocab_size: usize, embed_dim: usize, max_length: usize) -> Self {
+        // Context projection: hidden_dim -> hidden_dim * max_length
+        let context_proj = Array2::from_shape_fn(
+            (hidden_dim, hidden_dim),
+            |_| (rand::random::<f32>() - 0.5) * 0.1
+        );
+
+        // Single message passing layer for refinement
+        let mp_layers = vec![MessagePassingLayer::new(hidden_dim, hidden_dim)];
+
+        // Output projection uses embedding for decode
+        let output_proj = Embedding::xavier(vocab_size, embed_dim);
+
+        Self {
+            context_proj,
+            mp_layers,
+            output_proj,
+            hidden_dim,
+            vocab_size,
+            max_length,
+        }
+    }
+
+    /// Decode context to output embeddings
+    ///
+    /// # Arguments
+    /// * `context` - Context vector from encoder
+    /// * `encoder_features` - Per-node encoder features for attention
+    ///
+    /// # Returns
+    /// Output embeddings (max_length x embed_dim)
+    pub fn decode(&self, context: &Array1<f32>, _encoder_features: &Array2<f32>) -> Array2<f32> {
+        // Project context to initial decoder state
+        let projected = self.context_proj.dot(context);
+
+        // Tile projected state to create max_length outputs
+        let mut outputs = Array2::zeros((self.max_length, self.hidden_dim));
+        for i in 0..self.max_length {
+            // Add position-dependent variation
+            let pos_scale = 1.0 - (i as f32 / self.max_length as f32) * 0.1;
+            for j in 0..self.hidden_dim {
+                outputs[[i, j]] = projected[j] * pos_scale;
+            }
+        }
+
+        // Build simple sequential adjacency for refinement
+        let adjacency: Vec<Vec<usize>> = (0..self.max_length)
+            .map(|i| if i > 0 { vec![i - 1] } else { vec![] })
+            .collect();
+
+        // Refine with message passing
+        for layer in &self.mp_layers {
+            outputs = layer.forward_batch(&outputs, &adjacency);
+        }
+
+        outputs
+    }
+
+    /// Decode embeddings to text
+    pub fn decode_to_text(&self, embeddings: &Array2<f32>) -> String {
+        self.output_proj.decode_batch(embeddings)
+    }
+}
+
+/// Encoder-Decoder model for Q→A generation (backend-207)
+///
+/// This architecture separates encoding (understanding the question)
+/// from decoding (generating the answer), enabling better Q→A learning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncoderDecoder {
+    /// Encoder: question → latent
+    pub encoder: GraphEncoder,
+    /// Decoder: latent → answer
+    pub decoder: GraphDecoder,
+    /// Cached encoder output for gradient computation
+    #[serde(skip)]
+    last_encoder_features: Option<Array2<f32>>,
+    /// Cached context for gradient computation
+    #[serde(skip)]
+    last_context: Option<Array1<f32>>,
+}
+
+impl EncoderDecoder {
+    /// Create a new encoder-decoder model
+    ///
+    /// # Arguments
+    /// * `vocab_size` - Character vocabulary size
+    /// * `embed_dim` - Embedding dimension
+    /// * `hidden_dim` - Hidden layer dimension
+    /// * `max_answer_len` - Maximum answer length
+    /// * `num_encoder_layers` - Number of encoder message passing layers
+    pub fn new(
+        vocab_size: usize,
+        embed_dim: usize,
+        hidden_dim: usize,
+        max_answer_len: usize,
+        num_encoder_layers: usize,
+    ) -> Self {
+        let encoder = GraphEncoder::new(vocab_size, embed_dim, hidden_dim, num_encoder_layers);
+        let decoder = GraphDecoder::new(hidden_dim, vocab_size, embed_dim, max_answer_len);
+
+        Self {
+            encoder,
+            decoder,
+            last_encoder_features: None,
+            last_context: None,
+        }
+    }
+
+    /// Forward pass: question graph → answer embeddings
+    ///
+    /// # Arguments
+    /// * `question` - Input question as GraphemeGraph
+    ///
+    /// # Returns
+    /// (output_embeddings, decoded_text)
+    pub fn forward(&mut self, question: &GraphemeGraph) -> (Array2<f32>, String) {
+        // Encode question
+        let (encoder_features, context) = self.encoder.encode(question);
+
+        // Cache for backward pass
+        self.last_encoder_features = Some(encoder_features.clone());
+        self.last_context = Some(context.clone());
+
+        // Decode to answer embeddings
+        let output_embeddings = self.decoder.decode(&context, &encoder_features);
+
+        // Decode to text
+        let decoded_text = self.decoder.decode_to_text(&output_embeddings);
+
+        (output_embeddings, decoded_text)
+    }
+
+    /// Inference: question text → answer text
+    pub fn infer(&mut self, question: &str) -> String {
+        let question_graph = GraphemeGraph::from_text(question);
+        let (_, answer) = self.forward(&question_graph);
+        answer
+    }
+
+    /// Get the decoder's output embedding layer for decoding
+    pub fn decode_embeddings(&self, embeddings: &Array2<f32>) -> String {
+        self.decoder.decode_to_text(embeddings)
     }
 }
 

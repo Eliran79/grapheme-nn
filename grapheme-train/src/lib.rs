@@ -83,6 +83,10 @@ pub use knowledge_extraction::*;
 pub mod knowledge_distillation;
 pub use knowledge_distillation::*;
 
+/// Graph-based knowledge base for Q&A storage and retrieval (backend-210)
+pub mod graph_knowledge_base;
+pub use graph_knowledge_base::*;
+
 /// External dataset loaders (data-004, data-005, etc.)
 pub mod datasets;
 

@@ -1,12 +1,16 @@
 //! Query GRAPHEME model for knowledge retrieval.
 //!
 //! This binary allows querying a trained GRAPHEME model to retrieve
-//! learned knowledge patterns using the actual trained neural network.
+//! learned knowledge using TRUE graph-based retrieval.
+//!
+//! Usage:
+//!   query --model checkpoints/llm_final.checkpoint --kb knowledge.json --query "What is a derivative?"
+//!   query --model checkpoints/llm_final.checkpoint --kb knowledge.json  # Interactive mode
 
 use clap::Parser;
-use grapheme_core::{DagNN, GraphTransformNet, UnifiedCheckpoint};
+use grapheme_core::{GraphemeGraph, GraphTransformNet, UnifiedCheckpoint};
+use grapheme_train::GraphKnowledgeBase;
 use std::path::PathBuf;
-use ndarray::Array1;
 
 #[derive(Parser, Debug)]
 #[command(name = "query")]
@@ -16,6 +20,10 @@ struct Args {
     #[arg(short, long)]
     model: PathBuf,
 
+    /// Path to knowledge base JSON file
+    #[arg(short = 'k', long)]
+    kb: Option<PathBuf>,
+
     /// Query text (if not provided, enters interactive mode)
     #[arg(short, long)]
     query: Option<String>,
@@ -24,163 +32,132 @@ struct Args {
     #[arg(short = 'n', long, default_value = "5")]
     top_n: usize,
 
+    /// Use TRUE inference (graph transformation) instead of KB retrieval
+    #[arg(long)]
+    infer: bool,
+
     /// Enable verbose output
     #[arg(short, long)]
     verbose: bool,
 }
 
-/// Compute cosine similarity between two vectors
-fn cosine_similarity(a: &Array1<f32>, b: &Array1<f32>) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 {
-        dot / (norm_a * norm_b)
-    } else {
-        0.0
+/// Run TRUE GRAPHEME inference (graph-to-graph transformation)
+fn run_inference(question: &str, model: &GraphTransformNet, verbose: bool) -> String {
+    let input_graph = GraphemeGraph::from_text(question);
+
+    if verbose {
+        println!("  Input graph: {} nodes, {} edges",
+            input_graph.node_count(),
+            input_graph.edge_count());
     }
+
+    // TRUE graph-to-graph transformation
+    let (output_graph, decoded) = model.infer(&input_graph);
+
+    if verbose {
+        println!("  Output graph: {} nodes, {} edges",
+            output_graph.node_count(),
+            output_graph.edge_count());
+    }
+
+    decoded
 }
 
-/// Pool node embeddings into a single graph embedding
-fn pool_embeddings(embeddings: &[Array1<f32>]) -> Array1<f32> {
-    if embeddings.is_empty() {
-        return Array1::zeros(64);
-    }
-    let dim = embeddings[0].len();
-    let mut pooled = Array1::zeros(dim);
-    for emb in embeddings {
-        pooled = pooled + emb;
-    }
-    pooled / embeddings.len() as f32
-}
-
-/// Knowledge base with reference embeddings
-struct KnowledgeBase {
-    entries: Vec<(String, String, Array1<f32>)>, // (concept, description, embedding)
-}
-
-impl KnowledgeBase {
-    fn new(model: &GraphTransformNet) -> Self {
-        // Wikipedia knowledge topics
-        let knowledge = vec![
-            ("graph theory", "A branch of mathematics studying graphs - structures with vertices/nodes and edges connecting them"),
-            ("machine learning", "A field of AI that enables systems to learn and improve from experience without explicit programming"),
-            ("neural network", "Computing systems inspired by biological neural networks in the brain"),
-            ("artificial intelligence", "The simulation of human intelligence processes by computer systems"),
-            ("deep learning", "A subset of machine learning using neural networks with many layers (depth)"),
-            ("algorithm", "A step-by-step procedure for solving a problem or accomplishing a task"),
-            ("mathematics", "The abstract science of number, quantity, and space"),
-            ("calculus", "Mathematical study of continuous change, including derivatives and integrals"),
-            ("linear algebra", "Branch of mathematics concerning linear equations and their representations"),
-            ("physics", "Natural science studying matter, energy, and fundamental forces of nature"),
-            ("vertex", "A fundamental unit of graphs, also called a node"),
-            ("edge", "A connection between two vertices in a graph"),
-            ("derivative", "Rate of change of a function with respect to a variable"),
-            ("integral", "The reverse operation of differentiation, finding area under curves"),
-            ("training", "The process of teaching a model by showing it examples"),
-            ("inference", "Using a trained model to make predictions on new data"),
-            ("gradient descent", "An optimization algorithm that iteratively adjusts parameters to minimize loss"),
-            ("backpropagation", "Algorithm for computing gradients in neural networks by chain rule"),
-            ("activation function", "Non-linear function applied to neuron outputs (ReLU, sigmoid, tanh)"),
-            ("loss function", "Measures difference between predicted and actual outputs"),
-        ];
-
-        let mut entries = Vec::new();
-        for (concept, description) in knowledge {
-            // Encode the concept using the trained model
-            let dag = DagNN::from_text(concept).unwrap_or_else(|_| DagNN::new());
-            let embeddings = model.encode(&dag);
-            let embedding = pool_embeddings(&embeddings);
-            entries.push((concept.to_string(), description.to_string(), embedding));
-        }
-
-        Self { entries }
-    }
-
-    fn search(&self, query_embedding: &Array1<f32>, top_n: usize) -> Vec<(String, String, f32)> {
-        let mut results: Vec<_> = self.entries
-            .iter()
-            .map(|(concept, desc, emb)| {
-                let similarity = cosine_similarity(query_embedding, emb);
-                (concept.clone(), desc.clone(), similarity)
-            })
-            .collect();
-
-        // Sort by similarity (descending)
-        results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        results.into_iter().take(top_n).collect()
-    }
-}
-
-fn query_model(query: &str, model: &GraphTransformNet, kb: &KnowledgeBase, verbose: bool, top_n: usize) -> Vec<(String, f32)> {
+/// Query knowledge base using graph similarity
+fn query_kb(
+    query: &str,
+    model: &GraphTransformNet,
+    kb: &mut GraphKnowledgeBase,
+    top_n: usize,
+    verbose: bool,
+) {
     println!("\nQuery: \"{}\"", query);
     println!("{}", "-".repeat(50));
 
-    // Create a DagNN from the query text
-    let query_dag = match DagNN::from_text(query) {
-        Ok(dag) => dag,
-        Err(e) => {
-            println!("Error creating query graph: {:?}", e);
-            return vec![];
-        }
-    };
-
     if verbose {
+        let query_graph = GraphemeGraph::from_text(query);
         println!("Query graph: {} nodes, {} edges",
-            query_dag.graph.node_count(),
-            query_dag.graph.edge_count());
+            query_graph.node_count(),
+            query_graph.edge_count());
     }
 
-    // Encode query using the trained model
-    let query_embeddings = model.encode(&query_dag);
-    let query_embedding = pool_embeddings(&query_embeddings);
-
-    if verbose {
-        let norm: f32 = query_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        println!("Query embedding norm: {:.4}", norm);
-        println!("Query embedding (first 8): {:?}", &query_embedding.as_slice().unwrap()[..8.min(query_embedding.len())]);
-    }
-
-    // Search knowledge base
-    let search_results = kb.search(&query_embedding, top_n);
-
-    // Format results
-    let mut results = Vec::new();
-    for (concept, description, similarity) in search_results {
-        let icon = if similarity > 0.8 {
-            "📚" // High match
-        } else if similarity > 0.5 {
-            "📖" // Medium match
-        } else {
-            "📄" // Low match
-        };
-        results.push((format!("{} {}: {}", icon, concept.to_uppercase(), description), similarity));
-    }
+    // Query knowledge base using trained model embeddings
+    let results = kb.query(query, model, top_n);
 
     if results.is_empty() {
-        results.push((
-            "🤖 No relevant knowledge found. Try asking about: graph theory, machine learning, neural networks, calculus...".to_string(),
-            0.0
-        ));
+        println!("No matching knowledge found.");
+        println!("Tip: Use --infer flag for TRUE graph-to-graph inference.");
+        return;
     }
 
-    results
+    println!("\nResults:");
+    for result in &results {
+        let icon = if result.similarity > 0.8 {
+            "+++"
+        } else if result.similarity > 0.5 {
+            "++"
+        } else {
+            "+"
+        };
+        println!("  [{}] ({} sim: {:.3}) Q: {}",
+            result.rank,
+            icon,
+            result.similarity,
+            truncate(&result.entry.question, 50));
+        println!("      A: {}", truncate(&result.entry.answer, 70));
+    }
 }
 
-fn interactive_mode(model: &GraphTransformNet, kb: &KnowledgeBase, verbose: bool, top_n: usize) {
+/// Run TRUE inference and display result
+fn run_inference_mode(query: &str, model: &GraphTransformNet, verbose: bool) {
+    println!("\nQuery: \"{}\"", query);
+    println!("{}", "-".repeat(50));
+    println!("Mode: TRUE Graph-to-Graph Inference\n");
+
+    let decoded = run_inference(query, model, verbose);
+
+    // Clean up the decoded text (remove null chars, trim)
+    let clean: String = decoded.chars()
+        .filter(|c| *c >= ' ' && *c != '\0')
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    println!("Model output:");
+    if clean.is_empty() {
+        println!("  [empty output - model needs more training]");
+    } else {
+        println!("  \"{}\"", clean);
+    }
+
+    // Also show raw for debugging
+    if verbose && !decoded.is_empty() {
+        println!("\nRaw decoded ({} chars): {:?}",
+            decoded.len(),
+            &decoded[..decoded.len().min(100)]);
+    }
+}
+
+fn interactive_mode(model: &GraphTransformNet, kb: &mut Option<GraphKnowledgeBase>, verbose: bool, top_n: usize, infer_mode: bool) {
     use std::io::{self, BufRead, Write};
 
-    println!("\n🧠 GRAPHEME Interactive Knowledge Query");
+    println!("\n GRAPHEME Knowledge Query");
     println!("========================================");
-    println!("Ask questions about what the model learned from Wikipedia.");
-    println!("The model uses neural embeddings to find semantically similar concepts.");
-    println!("Type 'quit' to exit.\n");
+    if infer_mode {
+        println!("Mode: TRUE Graph-to-Graph Inference");
+    } else if kb.is_some() {
+        println!("Mode: Knowledge Base Retrieval");
+    } else {
+        println!("Mode: Inference (no KB loaded)");
+    }
+    println!("Commands: 'quit', 'infer <text>', 'kb <text>'");
+    println!();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     loop {
-        print!("🔍 query> ");
+        print!("query> ");
         stdout.flush().unwrap();
 
         let mut input = String::new();
@@ -194,39 +171,67 @@ fn interactive_mode(model: &GraphTransformNet, kb: &KnowledgeBase, verbose: bool
         }
 
         if input.to_lowercase() == "quit" || input.to_lowercase() == "exit" {
-            println!("👋 Goodbye!");
+            println!("Goodbye!");
             break;
         }
 
-        let results = query_model(input, model, kb, verbose, top_n);
+        // Check for mode commands
+        if input.starts_with("infer ") {
+            let query = input.strip_prefix("infer ").unwrap();
+            run_inference_mode(query, model, verbose);
+            println!();
+            continue;
+        }
 
-        println!("\n📊 Results:");
-        for (i, (text, score)) in results.iter().enumerate() {
-            println!("  {}. [sim: {:.4}] {}", i + 1, score, text);
+        if input.starts_with("kb ") {
+            if let Some(ref mut kb_ref) = kb {
+                let query = input.strip_prefix("kb ").unwrap();
+                query_kb(query, model, kb_ref, top_n, verbose);
+            } else {
+                println!("No knowledge base loaded. Use --kb flag.");
+            }
+            println!();
+            continue;
+        }
+
+        // Default mode
+        if infer_mode {
+            run_inference_mode(input, model, verbose);
+        } else if let Some(ref mut kb_ref) = kb {
+            query_kb(input, model, kb_ref, top_n, verbose);
+        } else {
+            run_inference_mode(input, model, verbose);
         }
         println!();
+    }
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    println!("🧠 GRAPHEME Knowledge Query");
+    println!(" GRAPHEME Knowledge Query");
     println!("===========================\n");
 
     // Load the model checkpoint
-    println!("📂 Loading model from: {:?}", args.model);
+    println!("Loading model from: {:?}", args.model);
 
-    // Try to load as UnifiedCheckpoint first
     let model: GraphTransformNet = if let Ok(checkpoint) = UnifiedCheckpoint::load_from_file(&args.model) {
         match checkpoint.load_module::<GraphTransformNet>() {
             Ok(m) => {
-                println!("✅ Loaded GraphTransformNet from checkpoint");
+                println!("Loaded GraphTransformNet from checkpoint");
                 m
             }
             Err(e) => {
-                println!("⚠️ Could not load GraphTransformNet: {}", e);
-                println!("📝 Creating default model for inference...");
+                println!("Could not load GraphTransformNet: {}", e);
+                println!("Creating default model...");
                 GraphTransformNet::new(256, 64, 64, 32)
             }
         }
@@ -234,33 +239,53 @@ fn main() -> anyhow::Result<()> {
         // Try loading as raw JSON
         let checkpoint_data = std::fs::read_to_string(&args.model)?;
         if let Ok(m) = serde_json::from_str::<GraphTransformNet>(&checkpoint_data) {
-            println!("✅ Loaded GraphTransformNet from JSON");
+            println!("Loaded GraphTransformNet from JSON");
             m
         } else {
-            println!("⚠️ Could not parse checkpoint, creating default model");
+            println!("Could not parse checkpoint, creating default model");
             GraphTransformNet::new(256, 64, 64, 32)
         }
     };
 
-    println!("📊 Model: {} hidden dim, {} layers\n",
+    println!("Model: {} hidden dim, {} layers",
         model.hidden_dim,
-        model.num_layers);
+        model.mp_layers.len());
 
-    // Build knowledge base with model embeddings
-    println!("🔨 Building knowledge base embeddings...");
-    let kb = KnowledgeBase::new(&model);
-    println!("✅ Knowledge base ready ({} entries)\n", kb.entries.len());
+    // Load knowledge base if provided
+    let mut kb: Option<GraphKnowledgeBase> = if let Some(ref kb_path) = args.kb {
+        println!("\nLoading knowledge base from: {:?}", kb_path);
+        match GraphKnowledgeBase::load(kb_path) {
+            Ok(loaded_kb) => {
+                let stats = loaded_kb.stats();
+                println!("Loaded {} knowledge entries", stats.total_entries);
+                for (topic, count) in &stats.entries_by_topic {
+                    println!("  - {}: {} entries", topic, count);
+                }
+                Some(loaded_kb)
+            }
+            Err(e) => {
+                println!("Failed to load KB: {}", e);
+                println!("Starting with empty knowledge base.");
+                None
+            }
+        }
+    } else {
+        println!("\nNo knowledge base specified. Use --kb <path> to load one.");
+        println!("Using TRUE inference mode (--infer).\n");
+        None
+    };
 
     // Run query
     if let Some(query) = args.query {
-        let results = query_model(&query, &model, &kb, args.verbose, args.top_n);
-
-        println!("\n📊 Top {} results:", results.len().min(args.top_n));
-        for (i, (text, score)) in results.iter().take(args.top_n).enumerate() {
-            println!("  {}. [sim: {:.4}] {}", i + 1, score, text);
+        if args.infer {
+            run_inference_mode(&query, &model, args.verbose);
+        } else if let Some(ref mut kb_ref) = kb {
+            query_kb(&query, &model, kb_ref, args.top_n, args.verbose);
+        } else {
+            run_inference_mode(&query, &model, args.verbose);
         }
     } else {
-        interactive_mode(&model, &kb, args.verbose, args.top_n);
+        interactive_mode(&model, &mut kb, args.verbose, args.top_n, args.infer);
     }
 
     Ok(())
