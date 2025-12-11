@@ -35,6 +35,7 @@ use grapheme_core::{
 use ndarray::Array1;
 use std::collections::HashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -628,6 +629,10 @@ pub struct FeatureConfig {
     pub adjacency_threshold: f32,
     /// Enable rich spatial relationships (directional edges, proximity)
     pub build_spatial_graph: bool,
+    /// Enable parallel processing for grid sampling (uses Rayon)
+    pub use_parallel: bool,
+    /// Minimum grid size to enable parallel processing (smaller grids benefit less)
+    pub parallel_threshold: usize,
 }
 
 impl Default for FeatureConfig {
@@ -645,6 +650,8 @@ impl Default for FeatureConfig {
             max_hierarchy_levels: 3,
             adjacency_threshold: 0.15,
             build_spatial_graph: true,
+            use_parallel: true, // Enable parallel by default for performance
+            parallel_threshold: 16, // 16x16 = 256 grid cells, below this sequential is faster
         }
     }
 }
@@ -698,6 +705,23 @@ impl FeatureConfig {
         self.build_hierarchy = enabled;
         self.max_hierarchy_levels = max_levels;
         self
+    }
+
+    /// Builder: enable/disable parallel processing
+    pub fn with_parallel(mut self, enabled: bool) -> Self {
+        self.use_parallel = enabled;
+        self
+    }
+
+    /// Builder: set parallel threshold (min grid size to enable parallel)
+    pub fn with_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.parallel_threshold = threshold;
+        self
+    }
+
+    /// Check if parallel processing should be used for current config
+    pub fn should_use_parallel(&self) -> bool {
+        self.use_parallel && self.grid_size >= self.parallel_threshold
     }
 }
 
@@ -1159,9 +1183,22 @@ pub fn image_to_graph(image: &RawImage, config: &FeatureConfig) -> VisionResult<
 
 /// Grid sampling mode: samples pixels at regular grid points.
 /// Produces grid_size^2 nodes with consistent, dense activations.
+///
+/// Uses parallel processing for large grids when `use_parallel` is enabled.
+/// The pixel sampling phase is parallelized; graph construction is sequential.
 fn image_to_graph_grid(image: &RawImage, config: &FeatureConfig) -> VisionResult<VisionGraph> {
-    let mut graph = VisionGraph::new(image.width, image.height);
     let grid_size = config.grid_size;
+
+    // Parallel sampling: extract intensities for all grid cells in parallel
+    // This is the CPU-intensive part that benefits from parallelization
+    let grid_samples: Vec<GridSample> = if config.should_use_parallel() {
+        sample_grid_parallel(image, grid_size)
+    } else {
+        sample_grid_sequential(image, grid_size)
+    };
+
+    // Graph construction: must be sequential (graph mutations not thread-safe)
+    let mut graph = VisionGraph::new(image.width, image.height);
 
     // Create root node
     let root = graph.add_node(new_vision_node(VisionNodeType::ImageRoot {
@@ -1170,59 +1207,124 @@ fn image_to_graph_grid(image: &RawImage, config: &FeatureConfig) -> VisionResult
     }));
     graph.root = Some(root);
 
-    // Sample pixels at grid points
+    // Add all grid nodes
     let mut grid_nodes = Vec::with_capacity(grid_size * grid_size);
-
-    for gy in 0..grid_size {
-        for gx in 0..grid_size {
-            // Map grid position to image coordinates
-            let x = (gx * image.width) / grid_size;
-            let y = (gy * image.height) / grid_size;
-
-            // Sample pixel intensity (with 3x3 averaging for robustness)
-            let intensity = sample_pixel_region(image, x, y, 1);
-
-            // Create blob node with grid position
-            let cx = (gx as f32 + 0.5) / grid_size as f32;
-            let cy = (gy as f32 + 0.5) / grid_size as f32;
-
-            let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
-                cx,
-                cy,
-                size: 1, // Grid cell represents 1 logical unit
-                intensity,
-            }));
-            grid_nodes.push(node);
-
-            // Connect to root
-            graph.add_edge(root, node, VisionEdge::Contains);
-        }
+    for sample in &grid_samples {
+        let node = graph.add_node(new_vision_node(VisionNodeType::Blob {
+            cx: sample.cx,
+            cy: sample.cy,
+            size: 1, // Grid cell represents 1 logical unit
+            intensity: sample.intensity,
+        }));
+        grid_nodes.push(node);
+        graph.add_edge(root, node, VisionEdge::Contains);
     }
 
     // Build spatial edges between adjacent grid cells
     if config.build_spatial_graph {
-        for gy in 0..grid_size {
-            for gx in 0..grid_size {
-                let idx = gy * grid_size + gx;
-
-                // Connect to right neighbor
-                if gx + 1 < grid_size {
-                    let right_idx = gy * grid_size + (gx + 1);
-                    graph.add_edge(grid_nodes[idx], grid_nodes[right_idx], VisionEdge::LeftOf);
-                    graph.add_edge(grid_nodes[right_idx], grid_nodes[idx], VisionEdge::RightOf);
-                }
-
-                // Connect to bottom neighbor
-                if gy + 1 < grid_size {
-                    let bottom_idx = (gy + 1) * grid_size + gx;
-                    graph.add_edge(grid_nodes[idx], grid_nodes[bottom_idx], VisionEdge::Above);
-                    graph.add_edge(grid_nodes[bottom_idx], grid_nodes[idx], VisionEdge::Below);
-                }
-            }
-        }
+        build_spatial_edges(&mut graph, &grid_nodes, grid_size);
     }
 
     Ok(graph)
+}
+
+/// A sampled grid cell with computed values
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // gx, gy used in tests for verification
+struct GridSample {
+    /// Grid x position
+    gx: usize,
+    /// Grid y position
+    gy: usize,
+    /// Normalized center x (0.0 to 1.0)
+    cx: f32,
+    /// Normalized center y (0.0 to 1.0)
+    cy: f32,
+    /// Sampled intensity
+    intensity: f32,
+}
+
+/// Sample grid cells in parallel using Rayon.
+/// O(grid_size^2) work distributed across threads.
+fn sample_grid_parallel(image: &RawImage, grid_size: usize) -> Vec<GridSample> {
+    let width = image.width;
+    let height = image.height;
+    let grid_size_f32 = grid_size as f32;
+
+    // Create indices for all grid cells
+    let indices: Vec<(usize, usize)> = (0..grid_size)
+        .flat_map(|gy| (0..grid_size).map(move |gx| (gx, gy)))
+        .collect();
+
+    // Sample in parallel - each cell computation is independent
+    indices
+        .par_iter()
+        .map(|&(gx, gy)| {
+            // Map grid position to image coordinates
+            let x = (gx * width) / grid_size;
+            let y = (gy * height) / grid_size;
+
+            // Sample pixel intensity (with 3x3 averaging for robustness)
+            let intensity = sample_pixel_region(image, x, y, 1);
+
+            // Normalized center coordinates
+            let cx = (gx as f32 + 0.5) / grid_size_f32;
+            let cy = (gy as f32 + 0.5) / grid_size_f32;
+
+            GridSample { gx, gy, cx, cy, intensity }
+        })
+        .collect()
+}
+
+/// Sample grid cells sequentially (for small grids or when parallel disabled).
+fn sample_grid_sequential(image: &RawImage, grid_size: usize) -> Vec<GridSample> {
+    let width = image.width;
+    let height = image.height;
+    let grid_size_f32 = grid_size as f32;
+
+    let mut samples = Vec::with_capacity(grid_size * grid_size);
+
+    for gy in 0..grid_size {
+        for gx in 0..grid_size {
+            // Map grid position to image coordinates
+            let x = (gx * width) / grid_size;
+            let y = (gy * height) / grid_size;
+
+            // Sample pixel intensity (with 3x3 averaging for robustness)
+            let intensity = sample_pixel_region(image, x, y, 1);
+
+            // Normalized center coordinates
+            let cx = (gx as f32 + 0.5) / grid_size_f32;
+            let cy = (gy as f32 + 0.5) / grid_size_f32;
+
+            samples.push(GridSample { gx, gy, cx, cy, intensity });
+        }
+    }
+
+    samples
+}
+
+/// Build spatial edges between adjacent grid cells.
+fn build_spatial_edges(graph: &mut VisionGraph, grid_nodes: &[NodeIndex], grid_size: usize) {
+    for gy in 0..grid_size {
+        for gx in 0..grid_size {
+            let idx = gy * grid_size + gx;
+
+            // Connect to right neighbor
+            if gx + 1 < grid_size {
+                let right_idx = gy * grid_size + (gx + 1);
+                graph.add_edge(grid_nodes[idx], grid_nodes[right_idx], VisionEdge::LeftOf);
+                graph.add_edge(grid_nodes[right_idx], grid_nodes[idx], VisionEdge::RightOf);
+            }
+
+            // Connect to bottom neighbor
+            if gy + 1 < grid_size {
+                let bottom_idx = (gy + 1) * grid_size + gx;
+                graph.add_edge(grid_nodes[idx], grid_nodes[bottom_idx], VisionEdge::Above);
+                graph.add_edge(grid_nodes[bottom_idx], grid_nodes[idx], VisionEdge::Below);
+            }
+        }
+    }
 }
 
 /// Sample a region around a pixel for robust intensity estimation.
@@ -2623,6 +2725,100 @@ impl std::fmt::Debug for ImageClassificationModel {
 }
 
 // ============================================================================
+// Parallel Batch Processing
+// ============================================================================
+
+/// Process multiple images to graphs in parallel.
+///
+/// Takes a batch of images and converts them to VisionGraphs using Rayon.
+/// This is useful for batch inference or training data preparation.
+///
+/// # Arguments
+/// * `images` - Slice of images to process
+/// * `config` - Feature extraction configuration
+///
+/// # Returns
+/// Vec of VisionResults (one per image), preserving order
+pub fn batch_images_to_graphs(
+    images: &[RawImage],
+    config: &FeatureConfig,
+) -> Vec<VisionResult<VisionGraph>> {
+    images
+        .par_iter()
+        .map(|image| image_to_graph(image, config))
+        .collect()
+}
+
+/// Process multiple images to graphs in parallel, filtering errors.
+///
+/// Like `batch_images_to_graphs` but returns only successful conversions.
+/// Use when you want to skip failed images without stopping the batch.
+///
+/// # Arguments
+/// * `images` - Slice of images to process
+/// * `config` - Feature extraction configuration
+///
+/// # Returns
+/// Vec of (index, VisionGraph) tuples for successful conversions
+pub fn batch_images_to_graphs_ok(
+    images: &[RawImage],
+    config: &FeatureConfig,
+) -> Vec<(usize, VisionGraph)> {
+    images
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, image)| {
+            image_to_graph(image, config).ok().map(|g| (idx, g))
+        })
+        .collect()
+}
+
+/// Statistics from parallel batch processing
+#[derive(Debug, Clone, Default)]
+pub struct BatchStats {
+    /// Total images processed
+    pub total: usize,
+    /// Successful conversions
+    pub success: usize,
+    /// Failed conversions
+    pub failed: usize,
+    /// Total nodes created (across all graphs)
+    pub total_nodes: usize,
+    /// Total edges created (across all graphs)
+    pub total_edges: usize,
+}
+
+/// Process multiple images with statistics tracking.
+///
+/// Returns both the graphs and statistics about the batch processing.
+pub fn batch_images_to_graphs_with_stats(
+    images: &[RawImage],
+    config: &FeatureConfig,
+) -> (Vec<VisionResult<VisionGraph>>, BatchStats) {
+    let results: Vec<VisionResult<VisionGraph>> = batch_images_to_graphs(images, config);
+
+    let mut stats = BatchStats {
+        total: results.len(),
+        ..Default::default()
+    };
+
+    for result in &results {
+        match result {
+            Ok(graph) => {
+                stats.success += 1;
+                stats.total_nodes += graph.graph.node_count();
+                stats.total_edges += graph.graph.edge_count();
+            }
+            Err(_) => {
+                stats.failed += 1;
+            }
+        }
+    }
+
+    (results, stats)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3723,5 +3919,192 @@ mod tests {
             .with_grid_size(5);
         let hybrid_graph = image_to_graph(&image, &hybrid_config).unwrap();
         assert!(hybrid_graph.node_count() >= 26, "Hybrid should have at least grid nodes");
+    }
+
+    // ========================================================================
+    // Parallel Processing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parallel_grid_sampling_deterministic() {
+        // Parallel and sequential should produce identical results
+        let pixels = vec![0.5f32; 784];
+        let image = RawImage::grayscale(28, 28, pixels).unwrap();
+
+        // Sequential config
+        let seq_config = FeatureConfig::default()
+            .grid_sampling(10)
+            .with_parallel(false);
+
+        // Parallel config (force parallel even for small grid)
+        let par_config = FeatureConfig::default()
+            .grid_sampling(10)
+            .with_parallel(true)
+            .with_parallel_threshold(1); // Force parallel
+
+        let seq_graph = image_to_graph(&image, &seq_config).unwrap();
+        let par_graph = image_to_graph(&image, &par_config).unwrap();
+
+        assert_eq!(seq_graph.node_count(), par_graph.node_count());
+        assert_eq!(seq_graph.edge_count(), par_graph.edge_count());
+
+        // Check activations match
+        let seq_activations: Vec<f32> = seq_graph.graph.node_weights()
+            .map(|n| n.activation)
+            .collect();
+        let par_activations: Vec<f32> = par_graph.graph.node_weights()
+            .map(|n| n.activation)
+            .collect();
+        assert_eq!(seq_activations, par_activations);
+    }
+
+    #[test]
+    fn test_parallel_grid_sampling_large() {
+        // Test with larger grid to ensure parallel works correctly
+        let pixels = vec![0.5f32; 10000];
+        let image = RawImage::grayscale(100, 100, pixels).unwrap();
+
+        let config = FeatureConfig::default()
+            .grid_sampling(32) // 32x32 = 1024 grid cells
+            .with_parallel(true);
+
+        let graph = image_to_graph(&image, &config).unwrap();
+
+        // 32x32 grid + 1 root = 1025 nodes
+        assert_eq!(graph.node_count(), 1025);
+    }
+
+    #[test]
+    fn test_should_use_parallel() {
+        // Test threshold logic
+        let config_small = FeatureConfig::default()
+            .grid_sampling(8)
+            .with_parallel(true)
+            .with_parallel_threshold(16);
+        assert!(!config_small.should_use_parallel()); // 8 < 16
+
+        let config_large = FeatureConfig::default()
+            .grid_sampling(20)
+            .with_parallel(true)
+            .with_parallel_threshold(16);
+        assert!(config_large.should_use_parallel()); // 20 >= 16
+
+        let config_disabled = FeatureConfig::default()
+            .grid_sampling(32)
+            .with_parallel(false);
+        assert!(!config_disabled.should_use_parallel()); // disabled
+    }
+
+    #[test]
+    fn test_batch_images_to_graphs() {
+        // Create batch of images
+        let images: Vec<RawImage> = (0..5)
+            .map(|i| {
+                let pixels = vec![i as f32 / 10.0; 100];
+                RawImage::grayscale(10, 10, pixels).unwrap()
+            })
+            .collect();
+
+        let config = FeatureConfig::default().grid_sampling(5);
+
+        let results = batch_images_to_graphs(&images, &config);
+
+        assert_eq!(results.len(), 5);
+        for result in &results {
+            assert!(result.is_ok());
+            let graph = result.as_ref().unwrap();
+            // 5x5 grid + 1 root = 26 nodes
+            assert_eq!(graph.node_count(), 26);
+        }
+    }
+
+    #[test]
+    fn test_batch_images_to_graphs_ok() {
+        // Create batch with one empty (invalid) image
+        let mut images: Vec<RawImage> = (0..4)
+            .map(|i| {
+                let pixels = vec![i as f32 / 10.0; 100];
+                RawImage::grayscale(10, 10, pixels).unwrap()
+            })
+            .collect();
+
+        // Add empty image (will fail)
+        images.push(RawImage {
+            width: 0,
+            height: 0,
+            channels: 1,
+            pixels: vec![],
+        });
+
+        let config = FeatureConfig::default().grid_sampling(5);
+
+        let results = batch_images_to_graphs_ok(&images, &config);
+
+        // Should have 4 successful results (indices 0-3)
+        assert_eq!(results.len(), 4);
+        for (idx, _graph) in &results {
+            assert!(*idx < 4); // Empty image at index 4 should fail
+        }
+    }
+
+    #[test]
+    fn test_batch_images_to_graphs_with_stats() {
+        let images: Vec<RawImage> = (0..10)
+            .map(|_| {
+                let pixels = vec![0.5f32; 100];
+                RawImage::grayscale(10, 10, pixels).unwrap()
+            })
+            .collect();
+
+        let config = FeatureConfig::default().grid_sampling(5);
+
+        let (results, stats) = batch_images_to_graphs_with_stats(&images, &config);
+
+        assert_eq!(results.len(), 10);
+        assert_eq!(stats.total, 10);
+        assert_eq!(stats.success, 10);
+        assert_eq!(stats.failed, 0);
+        // Each graph has 26 nodes (5x5 + root)
+        assert_eq!(stats.total_nodes, 260);
+    }
+
+    #[test]
+    fn test_grid_sample_struct() {
+        // Test GridSample creation in parallel sampling
+        let pixels = vec![0.8f32; 100];
+        let image = RawImage::grayscale(10, 10, pixels).unwrap();
+
+        let samples = sample_grid_parallel(&image, 5);
+        assert_eq!(samples.len(), 25); // 5x5
+
+        // Check first sample (top-left)
+        let first = &samples[0];
+        assert_eq!(first.gx, 0);
+        assert_eq!(first.gy, 0);
+        assert!((first.cx - 0.1).abs() < 0.01); // (0 + 0.5) / 5 = 0.1
+        assert!((first.cy - 0.1).abs() < 0.01);
+
+        // Check intensity is correct
+        assert!((first.intensity - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parallel_preserves_order() {
+        // Verify that parallel processing preserves grid cell order
+        let pixels = vec![0.5f32; 400];
+        let image = RawImage::grayscale(20, 20, pixels).unwrap();
+
+        let seq = sample_grid_sequential(&image, 10);
+        let par = sample_grid_parallel(&image, 10);
+
+        assert_eq!(seq.len(), par.len());
+
+        for (s, p) in seq.iter().zip(par.iter()) {
+            assert_eq!(s.gx, p.gx);
+            assert_eq!(s.gy, p.gy);
+            assert!((s.cx - p.cx).abs() < 1e-6);
+            assert!((s.cy - p.cy).abs() < 1e-6);
+            assert!((s.intensity - p.intensity).abs() < 1e-6);
+        }
     }
 }
