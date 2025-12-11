@@ -298,6 +298,14 @@ impl TextChunker {
         let mut index = 0;
 
         while start < text.len() {
+            // Ensure start is on a character boundary
+            while start < text.len() && !text.is_char_boundary(start) {
+                start += 1;
+            }
+            if start >= text.len() {
+                break;
+            }
+
             let end = self.find_chunk_end(text, start);
             let chunk_text = &text[start..end];
 
@@ -351,7 +359,19 @@ impl TextChunker {
 
     // Find the best end position for a chunk
     fn find_chunk_end(&self, text: &str, start: usize) -> usize {
-        let max_end = (start + self.config.chunk_size).min(text.len());
+        let raw_max_end = (start + self.config.chunk_size).min(text.len());
+
+        // Adjust to valid character boundary (find next valid boundary)
+        let max_end = if raw_max_end >= text.len() {
+            text.len()
+        } else {
+            // Find the nearest character boundary at or before raw_max_end
+            let mut end = raw_max_end;
+            while end > start && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            end
+        };
 
         if max_end >= text.len() {
             return text.len();
@@ -405,7 +425,11 @@ impl TextChunker {
 
     fn find_word_boundary(&self, text: &str, max_end: usize) -> Option<usize> {
         // Look backwards from max_end for whitespace
-        let search_start = max_end.saturating_sub(50);
+        let mut search_start = max_end.saturating_sub(50);
+        // Ensure search_start is on a character boundary
+        while search_start > 0 && !text.is_char_boundary(search_start) {
+            search_start -= 1;
+        }
         for (i, c) in text[search_start..max_end].char_indices().rev() {
             if c.is_whitespace() {
                 return Some(search_start + i);

@@ -39,6 +39,10 @@ pub use text_preprocessor::*;
 pub mod html_parser;
 pub use html_parser::*;
 
+/// Graph-to-Graph transformation learning (backend-175)
+pub mod g2g;
+pub use g2g::*;
+
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{
     Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,

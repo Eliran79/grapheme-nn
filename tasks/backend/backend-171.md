@@ -1,7 +1,7 @@
 ---
 id: backend-171
 title: Create train_from_text binary (learn from TXT/MD/JSON files)
-status: todo
+status: done
 priority: high
 tags:
 - backend

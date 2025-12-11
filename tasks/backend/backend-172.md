@@ -1,7 +1,7 @@
 ---
 id: backend-172
 title: Create train_from_web binary (learn from URLs and web content)
-status: todo
+status: done
 priority: high
 tags:
 - backend
