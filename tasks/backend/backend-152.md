@@ -1,7 +1,7 @@
 ---
 id: backend-152
 title: Add Rayon thread pool configuration for multi-core utilization
-status: todo
+status: done
 priority: high
 tags:
 - backend

@@ -20,6 +20,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 // ============================================================================
@@ -39,6 +40,236 @@ pub type NodeIndex = usize;
 pub use rayon;
 
 // ============================================================================
+// Thread Pool Configuration
+// ============================================================================
+
+/// Global initialization flag
+static POOL_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Configuration for Rayon thread pool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadPoolConfig {
+    /// Number of worker threads (0 = auto-detect)
+    pub num_threads: usize,
+    /// Stack size for each thread in bytes (0 = default)
+    pub stack_size: usize,
+    /// Thread name prefix
+    pub thread_name: String,
+    /// Whether to use work-stealing
+    pub work_stealing: bool,
+}
+
+impl Default for ThreadPoolConfig {
+    fn default() -> Self {
+        Self {
+            num_threads: 0, // Auto-detect
+            stack_size: 0,  // Default
+            thread_name: "grapheme-worker".to_string(),
+            work_stealing: true,
+        }
+    }
+}
+
+impl ThreadPoolConfig {
+    /// Create config with specific thread count
+    pub fn with_threads(num_threads: usize) -> Self {
+        Self {
+            num_threads,
+            ..Default::default()
+        }
+    }
+
+    /// Create config with thread count based on CPU cores
+    pub fn with_core_fraction(fraction: f32) -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        let threads = (cores as f32 * fraction).ceil() as usize;
+        Self {
+            num_threads: threads.max(1),
+            ..Default::default()
+        }
+    }
+
+    /// Set thread name prefix
+    pub fn thread_name(mut self, name: impl Into<String>) -> Self {
+        self.thread_name = name.into();
+        self
+    }
+
+    /// Set stack size per thread
+    pub fn stack_size(mut self, size: usize) -> Self {
+        self.stack_size = size;
+        self
+    }
+
+    /// Get effective number of threads
+    pub fn effective_threads(&self) -> usize {
+        if self.num_threads == 0 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+        } else {
+            self.num_threads
+        }
+    }
+
+    /// Check if parallel execution is worthwhile for given work size
+    pub fn should_parallelize(&self, work_items: usize) -> bool {
+        work_items >= self.effective_threads() * 2
+    }
+}
+
+/// Statistics about thread pool usage
+#[derive(Debug, Clone, Default)]
+pub struct ThreadPoolStats {
+    /// Number of parallel operations executed
+    pub parallel_ops: u64,
+    /// Number of sequential fallbacks
+    pub sequential_fallbacks: u64,
+    /// Total items processed in parallel
+    pub parallel_items: u64,
+    /// Total items processed sequentially
+    pub sequential_items: u64,
+}
+
+impl ThreadPoolStats {
+    /// Record a parallel operation
+    pub fn record_parallel(&mut self, items: usize) {
+        self.parallel_ops += 1;
+        self.parallel_items += items as u64;
+    }
+
+    /// Record a sequential fallback
+    pub fn record_sequential(&mut self, items: usize) {
+        self.sequential_fallbacks += 1;
+        self.sequential_items += items as u64;
+    }
+
+    /// Get parallelization rate
+    pub fn parallelization_rate(&self) -> f32 {
+        let total = self.parallel_ops + self.sequential_fallbacks;
+        if total == 0 {
+            0.0
+        } else {
+            self.parallel_ops as f32 / total as f32
+        }
+    }
+
+    /// Get efficiency (parallel items / total items)
+    pub fn efficiency(&self) -> f32 {
+        let total = self.parallel_items + self.sequential_items;
+        if total == 0 {
+            0.0
+        } else {
+            self.parallel_items as f32 / total as f32
+        }
+    }
+}
+
+/// Initialize the global Rayon thread pool with custom configuration
+///
+/// This should be called once at program startup. If not called,
+/// Rayon uses its default configuration.
+///
+/// # Returns
+/// - `Ok(())` if pool was initialized successfully
+/// - `Err` if pool was already initialized or initialization failed
+pub fn init_thread_pool(config: &ThreadPoolConfig) -> ParallelResult<()> {
+    if POOL_INITIALIZED.swap(true, Ordering::SeqCst) {
+        return Err(ParallelError::AlreadyInitialized);
+    }
+
+    let mut builder = rayon::ThreadPoolBuilder::new()
+        .thread_name(|idx| format!("{}-{}", "grapheme-worker", idx));
+
+    if config.num_threads > 0 {
+        builder = builder.num_threads(config.num_threads);
+    }
+
+    if config.stack_size > 0 {
+        builder = builder.stack_size(config.stack_size);
+    }
+
+    builder
+        .build_global()
+        .map_err(|e| ParallelError::ThreadPoolError(e.to_string()))
+}
+
+/// Initialize with default configuration
+pub fn init_default_pool() -> ParallelResult<()> {
+    init_thread_pool(&ThreadPoolConfig::default())
+}
+
+/// Initialize for high-throughput batch processing
+pub fn init_batch_pool() -> ParallelResult<()> {
+    init_thread_pool(&ThreadPoolConfig {
+        num_threads: 0, // Use all cores
+        stack_size: 8 * 1024 * 1024, // 8MB stack for deep recursion
+        thread_name: "grapheme-batch".to_string(),
+        work_stealing: true,
+    })
+}
+
+/// Initialize for memory-constrained environments
+pub fn init_low_memory_pool() -> ParallelResult<()> {
+    let threads = std::thread::available_parallelism()
+        .map(|p| (p.get() / 2).max(1))
+        .unwrap_or(1);
+
+    init_thread_pool(&ThreadPoolConfig {
+        num_threads: threads,
+        stack_size: 2 * 1024 * 1024, // 2MB stack
+        thread_name: "grapheme-lowmem".to_string(),
+        work_stealing: true,
+    })
+}
+
+/// Get current thread pool information
+pub fn pool_info() -> ThreadPoolInfo {
+    ThreadPoolInfo {
+        num_threads: rayon::current_num_threads(),
+        is_initialized: POOL_INITIALIZED.load(Ordering::Relaxed),
+        thread_index: rayon::current_thread_index(),
+    }
+}
+
+/// Information about the current thread pool
+#[derive(Debug, Clone)]
+pub struct ThreadPoolInfo {
+    /// Number of threads in the pool
+    pub num_threads: usize,
+    /// Whether custom initialization was performed
+    pub is_initialized: bool,
+    /// Current thread's index (if in pool)
+    pub thread_index: Option<usize>,
+}
+
+/// Scope for local thread pool (doesn't affect global)
+pub fn with_thread_pool<F, R>(config: &ThreadPoolConfig, f: F) -> ParallelResult<R>
+where
+    F: FnOnce() -> R + Send,
+    R: Send,
+{
+    let mut builder = rayon::ThreadPoolBuilder::new()
+        .thread_name(|idx| format!("{}-{}", "grapheme-local", idx));
+
+    if config.num_threads > 0 {
+        builder = builder.num_threads(config.num_threads);
+    }
+
+    if config.stack_size > 0 {
+        builder = builder.stack_size(config.stack_size);
+    }
+
+    let pool = builder
+        .build()
+        .map_err(|e| ParallelError::ThreadPoolError(e.to_string()))?;
+
+    Ok(pool.install(f))
+}
+
+// ============================================================================
 // Error Types
 // ============================================================================
 
@@ -53,6 +284,10 @@ pub enum ParallelError {
     EmptyBatch,
     #[error("Operation cancelled")]
     Cancelled,
+    #[error("Thread pool already initialized")]
+    AlreadyInitialized,
+    #[error("Thread pool error: {0}")]
+    ThreadPoolError(String),
 }
 
 /// Result type for parallel operations
@@ -828,5 +1063,131 @@ mod tests {
     fn test_batch_optimal_size() {
         let processor = GraphBatchProcessor::new(|g: &Graph| g.node_count());
         assert!(processor.optimal_batch_size() > 0);
+    }
+
+    // ========================================================================
+    // Thread Pool Configuration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_thread_pool_config_default() {
+        let config = ThreadPoolConfig::default();
+        assert_eq!(config.num_threads, 0); // Auto-detect
+        assert_eq!(config.stack_size, 0);  // Default
+        assert!(config.work_stealing);
+    }
+
+    #[test]
+    fn test_thread_pool_config_with_threads() {
+        let config = ThreadPoolConfig::with_threads(4);
+        assert_eq!(config.num_threads, 4);
+        assert_eq!(config.effective_threads(), 4);
+    }
+
+    #[test]
+    fn test_thread_pool_config_with_core_fraction() {
+        let config = ThreadPoolConfig::with_core_fraction(0.5);
+        let cores = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        let expected = (cores as f32 * 0.5).ceil() as usize;
+        assert_eq!(config.num_threads, expected);
+    }
+
+    #[test]
+    fn test_thread_pool_config_builder_pattern() {
+        let config = ThreadPoolConfig::with_threads(2)
+            .thread_name("test-worker")
+            .stack_size(4 * 1024 * 1024);
+
+        assert_eq!(config.num_threads, 2);
+        assert_eq!(config.thread_name, "test-worker");
+        assert_eq!(config.stack_size, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_thread_pool_config_effective_threads() {
+        // Auto-detect
+        let config = ThreadPoolConfig::default();
+        assert!(config.effective_threads() >= 1);
+
+        // Explicit
+        let config2 = ThreadPoolConfig::with_threads(8);
+        assert_eq!(config2.effective_threads(), 8);
+    }
+
+    #[test]
+    fn test_thread_pool_config_should_parallelize() {
+        let config = ThreadPoolConfig::with_threads(4);
+
+        // Need at least threads * 2 items
+        assert!(!config.should_parallelize(4));
+        assert!(config.should_parallelize(8));
+        assert!(config.should_parallelize(100));
+    }
+
+    #[test]
+    fn test_thread_pool_stats_default() {
+        let stats = ThreadPoolStats::default();
+        assert_eq!(stats.parallel_ops, 0);
+        assert_eq!(stats.sequential_fallbacks, 0);
+        assert_eq!(stats.parallelization_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_thread_pool_stats_recording() {
+        let mut stats = ThreadPoolStats::default();
+
+        stats.record_parallel(100);
+        stats.record_parallel(50);
+        stats.record_sequential(10);
+
+        assert_eq!(stats.parallel_ops, 2);
+        assert_eq!(stats.sequential_fallbacks, 1);
+        assert_eq!(stats.parallel_items, 150);
+        assert_eq!(stats.sequential_items, 10);
+    }
+
+    #[test]
+    fn test_thread_pool_stats_rates() {
+        let mut stats = ThreadPoolStats::default();
+
+        stats.record_parallel(100);
+        stats.record_parallel(100);
+        stats.record_sequential(100);
+
+        // 2 parallel / 3 total = 0.666...
+        assert!((stats.parallelization_rate() - 0.666).abs() < 0.01);
+
+        // 200 parallel items / 300 total = 0.666...
+        assert!((stats.efficiency() - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_pool_info() {
+        let info = pool_info();
+        assert!(info.num_threads >= 1);
+    }
+
+    #[test]
+    fn test_with_thread_pool_local() {
+        let config = ThreadPoolConfig::with_threads(2);
+
+        let result = with_thread_pool(&config, || {
+            // Run something in local pool
+            (0..10).into_par_iter().map(|x| x * 2).sum::<i32>()
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 90); // 0+2+4+6+8+10+12+14+16+18
+    }
+
+    #[test]
+    fn test_thread_pool_error_types() {
+        let err = ParallelError::AlreadyInitialized;
+        assert!(err.to_string().contains("already initialized"));
+
+        let err2 = ParallelError::ThreadPoolError("test error".to_string());
+        assert!(err2.to_string().contains("test error"));
     }
 }
