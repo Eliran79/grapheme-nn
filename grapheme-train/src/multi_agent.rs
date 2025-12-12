@@ -603,7 +603,7 @@ impl AgentCoordinator {
                 task.results
                     .iter()
                     .filter(|r| r.status == AgentResultStatus::Success)
-                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|r| AggregatedResult {
                         data: r.data.clone(),
                         confidence: r.confidence,

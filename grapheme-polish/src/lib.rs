@@ -200,26 +200,30 @@ impl PolishGraph {
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Operand)
                         .map(|e| e.target())
-                        .unwrap();
+                        .expect("Operand edge should exist when has_operand is true");
                     Expr::UnaryOp {
                         op: *op,
                         operand: Box::new(self.node_to_expr(operand_idx)),
                     }
                 } else {
+                    // Binary operator: needs Left and Right edges
                     let left_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Left)
-                        .map(|e| e.target())
-                        .unwrap();
+                        .map(|e| e.target());
                     let right_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Right)
-                        .map(|e| e.target())
-                        .unwrap();
-                    Expr::BinOp {
-                        op: *op,
-                        left: Box::new(self.node_to_expr(left_idx)),
-                        right: Box::new(self.node_to_expr(right_idx)),
+                        .map(|e| e.target());
+
+                    match (left_idx, right_idx) {
+                        (Some(left), Some(right)) => Expr::BinOp {
+                            op: *op,
+                            left: Box::new(self.node_to_expr(left)),
+                            right: Box::new(self.node_to_expr(right)),
+                        },
+                        // Malformed graph: return a placeholder value
+                        _ => Expr::Value(Value::Symbol(format!("MALFORMED_OP_{:?}", op))),
                     }
                 }
             }

@@ -271,7 +271,7 @@ impl GoalHierarchy {
     pub fn highest_priority(&self) -> Option<&Goal> {
         self.active_goals()
             .into_iter()
-            .max_by(|a, b| a.priority.partial_cmp(&b.priority).unwrap())
+            .max_by(|a, b| a.priority.partial_cmp(&b.priority).unwrap_or(std::cmp::Ordering::Equal))
     }
 }
 

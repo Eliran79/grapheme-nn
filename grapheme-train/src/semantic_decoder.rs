@@ -196,7 +196,7 @@ impl SemanticDecoder {
         // Get top-k indices
         let mut indexed_probs: Vec<(usize, f32)> =
             probs.iter().enumerate().map(|(i, &p)| (i, p)).collect();
-        indexed_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         indexed_probs
             .into_iter()
@@ -449,7 +449,7 @@ fn argmax(slice: &[f32]) -> (usize, f32) {
     slice
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, &v)| (i, v))
         .unwrap_or((0, 0.0))
 }

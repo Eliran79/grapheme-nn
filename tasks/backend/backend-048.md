@@ -1,7 +1,7 @@
 ---
 id: backend-048
 title: Add graph structure validation before edge unwrap in grapheme-polish
-status: todo
+status: done
 priority: high
 tags:
 - backend
