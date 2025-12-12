@@ -402,6 +402,44 @@ impl CodeBrain {
 
         issues
     }
+
+    // ========================================================================
+    // Graph Transform Helper Methods
+    // ========================================================================
+
+    /// Dead Code Elimination: Remove nodes not reachable from output nodes.
+    ///
+    /// In GRAPHEME, this prunes weak edges to remove effectively "dead" paths.
+    /// Full dead code elimination on AST would require AST-level representation.
+    fn dead_code_elimination(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let mut result = graph.clone();
+
+        // Prune edges with very low weights (essentially dead connections)
+        let pruned = result.prune_weak_edges(0.1);
+        if pruned > 0 {
+            // Topology may have changed
+            let _ = result.update_topology();
+        }
+
+        Ok(result)
+    }
+
+    /// Constant Folding: Evaluate constant expressions at compile time.
+    ///
+    /// In GRAPHEME, constant folding is learned through graph-to-graph training
+    /// rather than hard-coded. This method provides a structural pass-through.
+    fn constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // For character-level graphs, constant folding means identifying
+        // sequences like "1+2" and transforming to "3".
+        //
+        // This transformation is better learned through training:
+        // - The model learns patterns like "digit + digit" → "digit"
+        // - Actual numeric evaluation requires semantic understanding
+        //
+        // For now, return unchanged - the actual folding happens during
+        // graph-to-graph learning in grapheme-train.
+        Ok(graph.clone())
+    }
 }
 
 // ============================================================================
@@ -491,7 +529,11 @@ impl DomainBrain for CodeBrain {
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0..=4 => Ok(graph.clone()),
+            0 => self.dead_code_elimination(graph),
+            1 => self.constant_folding(graph),
+            2 => Ok(graph.clone()), // Inline expansion - requires call site analysis
+            3 => Ok(graph.clone()), // Loop unrolling - requires loop detection
+            4 => Ok(graph.clone()), // Type inference - requires type system
             _ => Err(grapheme_core::DomainError::InvalidInput(
                 format!("Unknown rule ID: {}", rule_id)
             )),
