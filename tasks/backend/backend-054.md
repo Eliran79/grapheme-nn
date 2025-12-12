@@ -1,7 +1,7 @@
 ---
 id: backend-054
 title: Optimize excessive cloning in training loop
-status: todo
+status: done
 priority: low
 tags:
 - backend

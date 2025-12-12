@@ -382,7 +382,7 @@ impl DataGenerator {
         for _ in 0..count {
             let a = self.rand_int(1, 20);
             let b = self.rand_int(1, 20);
-            let op = *self.choose(&ops).unwrap();
+            let op = *self.choose(&ops).expect("ops array is non-empty");
 
             let expr = Expr::BinOp {
                 op,
@@ -405,8 +405,8 @@ impl DataGenerator {
             let a = self.rand_int(1, 10);
             let b = self.rand_int(1, 10);
             let c = self.rand_int(1, 10);
-            let op1 = *self.choose(&ops).unwrap();
-            let op2 = *self.choose(&ops).unwrap();
+            let op1 = *self.choose(&ops).expect("ops array is non-empty");
+            let op2 = *self.choose(&ops).expect("ops array is non-empty");
 
             let expr = Expr::BinOp {
                 op: op2,
@@ -431,10 +431,10 @@ impl DataGenerator {
         let symbols = ["x", "y", "z"];
 
         for _ in 0..count {
-            let sym = *self.choose(&symbols).unwrap();
+            let sym = *self.choose(&symbols).expect("symbols array is non-empty");
             let sym_value = self.rand_int(1, 10) as f64;
             let b = self.rand_int(1, 10);
-            let op = *self.choose(&ops).unwrap();
+            let op = *self.choose(&ops).expect("ops array is non-empty");
 
             // Create expression: sym op b
             let expr = Expr::BinOp {
