@@ -1199,7 +1199,7 @@ mod tests {
     fn test_expr_builders() {
         // Test int, float, symbol builders
         assert_eq!(Expr::int(42), Expr::Value(Value::Integer(42)));
-        assert_eq!(Expr::float(3.14), Expr::Value(Value::Float(3.14)));
+        assert_eq!(Expr::float(3.15), Expr::Value(Value::Float(3.15)));
         assert_eq!(
             Expr::symbol("x"),
             Expr::Value(Value::Symbol("x".to_string()))

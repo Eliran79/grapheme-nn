@@ -21,10 +21,10 @@ fn test_nan_in_float_operations() {
     let result = engine.evaluate(&expr);
 
     // Result should be either an error or NaN
-    match result {
-        Ok(f) => assert!(f.is_nan(), "0/0 should be NaN"),
-        Err(_) => (), // Error is also acceptable
+    if let Ok(f) = result {
+        assert!(f.is_nan(), "0/0 should be NaN");
     }
+    // Error is also acceptable - do nothing
 }
 
 /// Test infinity handling
@@ -41,10 +41,10 @@ fn test_infinity_handling() {
 
     let result = engine.evaluate(&expr);
 
-    match result {
-        Ok(f) => assert!(f.is_infinite(), "1/0 should be infinite"),
-        Err(_) => (), // Error is also acceptable
+    if let Ok(f) = result {
+        assert!(f.is_infinite(), "1/0 should be infinite");
     }
+    // Error is also acceptable - do nothing
 }
 
 /// Test empty graph handling
@@ -297,10 +297,10 @@ fn test_negative_infinity() {
 
     let result = engine.evaluate(&expr);
 
-    match result {
-        Ok(f) => assert!(f.is_infinite() && f < 0.0, "-1/0 should be negative infinity"),
-        Err(_) => (), // Error is also acceptable
+    if let Ok(f) = result {
+        assert!(f.is_infinite() && f < 0.0, "-1/0 should be negative infinity");
     }
+    // Error is also acceptable - do nothing
 }
 
 /// Test very small numbers

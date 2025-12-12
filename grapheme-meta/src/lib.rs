@@ -746,7 +746,7 @@ mod tests {
 
         meta.calibrate(&predictions);
         let error = meta.calibration_error();
-        assert!(error >= 0.0 && error <= 1.0);
+        assert!((0.0..=1.0).contains(&error));
     }
 
     #[test]

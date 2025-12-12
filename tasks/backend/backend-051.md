@@ -1,7 +1,7 @@
 ---
 id: backend-051
 title: Add logging for dropped examples in data generation
-status: todo
+status: done
 priority: medium
 tags:
 - backend

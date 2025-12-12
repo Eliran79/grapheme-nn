@@ -1909,7 +1909,7 @@ mod tests {
         let mut dag = DagNN::new();
 
         // Test add_character
-        let n1 = dag.add_character('H', 0);
+        let _n1 = dag.add_character('H', 0);
         let n2 = dag.add_character('i', 1);
         assert_eq!(dag.node_count(), 2);
 
@@ -1961,12 +1961,12 @@ mod tests {
 
         // Test find_cliques_parallel
         let cliques = dag.find_cliques_parallel();
-        // May be empty for short text
-        assert!(cliques.len() >= 0);
+        // May be empty for short text - just verify it doesn't panic
+        let _clique_count = cliques.len();
 
         // Test compress_to_clique
         let nodes: Vec<NodeId> = dag.input_nodes().iter().take(2).cloned().collect();
-        let clique_node = dag.compress_to_clique(nodes);
+        let _clique_node = dag.compress_to_clique(nodes);
         // Verify the node was added by checking node count increased
         assert!(dag.node_count() > 4);
 

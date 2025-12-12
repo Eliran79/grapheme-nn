@@ -108,15 +108,15 @@ fn test_complex_expression_graph() {
 fn test_float_expression_pipeline() {
     let engine = MathEngine::new();
 
-    // Test: 3.14 * 2.0 = 6.28
+    // Test: 3.15 * 2.0 = 6.30 (using non-PI value to avoid clippy approx_constant warning)
     let expr = Expr::BinOp {
         op: MathOp::Mul,
-        left: Box::new(Expr::Value(Value::Float(3.14))),
+        left: Box::new(Expr::Value(Value::Float(3.15))),
         right: Box::new(Expr::Value(Value::Float(2.0))),
     };
 
     let result = engine.evaluate(&expr).expect("should evaluate");
-    assert!((result - 6.28).abs() < 1e-10);
+    assert!((result - 6.30).abs() < 1e-10);
 }
 
 /// Test division operations

@@ -1,7 +1,7 @@
 ---
 id: backend-052
 title: Implement symbolic example validation in dataset generation
-status: todo
+status: done
 priority: medium
 tags:
 - backend

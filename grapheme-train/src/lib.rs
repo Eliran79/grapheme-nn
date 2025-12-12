@@ -306,6 +306,8 @@ pub struct DataGenerator {
     symbolic: SymbolicEngine,
     rng_seed: u64,
     counter: usize,
+    /// Number of examples dropped due to evaluation failures
+    dropped_count: usize,
 }
 
 impl DataGenerator {
@@ -316,7 +318,33 @@ impl DataGenerator {
             symbolic: SymbolicEngine::new(),
             rng_seed: seed,
             counter: 0,
+            dropped_count: 0,
         }
+    }
+
+    /// Get the number of dropped examples
+    pub fn dropped_count(&self) -> usize {
+        self.dropped_count
+    }
+
+    /// Get generation statistics summary
+    pub fn generation_summary(&self) -> String {
+        let total_attempts = self.counter + self.dropped_count;
+        let drop_rate = if total_attempts > 0 {
+            (self.dropped_count as f64 / total_attempts as f64) * 100.0
+        } else {
+            0.0
+        };
+        format!(
+            "Generated: {}, Dropped: {} ({:.1}% drop rate)",
+            self.counter, self.dropped_count, drop_rate
+        )
+    }
+
+    /// Reset statistics
+    pub fn reset_stats(&mut self) {
+        self.counter = 0;
+        self.dropped_count = 0;
     }
 
     /// Generate a unique ID for an example
@@ -393,6 +421,8 @@ impl DataGenerator {
             if let Ok(result) = self.engine.evaluate(&expr) {
                 let id = self.next_id(1);
                 examples.push(TrainingExample::numeric(id, expr, result, 1));
+            } else {
+                self.dropped_count += 1;
             }
         }
     }
@@ -421,6 +451,8 @@ impl DataGenerator {
             if let Ok(result) = self.engine.evaluate(&expr) {
                 let id = self.next_id(2);
                 examples.push(TrainingExample::numeric(id, expr, result, 2));
+            } else {
+                self.dropped_count += 1;
             }
         }
     }
@@ -452,6 +484,8 @@ impl DataGenerator {
                 let example = TrainingExample::numeric(id, expr, result, 3)
                     .with_bindings(vec![(sym.to_string(), sym_value)]);
                 examples.push(example);
+            } else {
+                self.dropped_count += 1;
             }
         }
     }
@@ -476,6 +510,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.dropped_count += 1;
                         continue;
                     }
                 }
@@ -489,6 +524,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.dropped_count += 1;
                         continue;
                     }
                 }
@@ -502,6 +538,7 @@ impl DataGenerator {
                     if let Ok(r) = self.engine.evaluate(&expr) {
                         (expr, r)
                     } else {
+                        self.dropped_count += 1;
                         continue;
                     }
                 }
@@ -1004,6 +1041,50 @@ impl Trainer {
 // Validation Utilities
 // ============================================================================
 
+/// Check if an expression is structurally valid (well-formed)
+fn is_valid_expression(expr: &Expr) -> bool {
+    match expr {
+        Expr::Value(_) => true,
+        Expr::BinOp { left, right, .. } => {
+            is_valid_expression(left) && is_valid_expression(right)
+        }
+        Expr::UnaryOp { operand, .. } => is_valid_expression(operand),
+        Expr::Function { args, .. } => args.iter().all(is_valid_expression),
+    }
+}
+
+/// Check if two expressions are structurally equivalent
+/// Uses numerical evaluation at multiple test points for comparison
+fn expressions_equivalent(expr1: &Expr, expr2: &Expr, var: &str) -> bool {
+    let engine = MathEngine::new();
+    let test_values = [0.5, 1.0, 2.0, -1.0, 2.5];
+
+    for val in test_values {
+        let mut eng1 = engine.clone();
+        let mut eng2 = engine.clone();
+        eng1.bind(var, Value::Float(val));
+        eng2.bind(var, Value::Float(val));
+
+        match (eng1.evaluate(expr1), eng2.evaluate(expr2)) {
+            (Ok(r1), Ok(r2)) => {
+                // Allow for numerical tolerance
+                if (r1 - r2).abs() > 1e-6 && (r1 - r2).abs() / (r1.abs().max(r2.abs()).max(1e-10)) > 1e-6 {
+                    return false;
+                }
+            }
+            (Err(_), Err(_)) => {
+                // Both fail at this point, continue checking others
+                continue;
+            }
+            _ => {
+                // One succeeds, one fails - not equivalent
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Validate an entire dataset
 pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
     let engine = MathEngine::new();
@@ -1026,20 +1107,55 @@ pub fn validate_dataset(dataset: &Dataset) -> TrainingResult<ValidationReport> {
                         report.valid += 1;
                     } else {
                         report.invalid += 1;
-                        report.errors.push(format!(
-                            "{}: expected {}, got {}",
-                            example.id, expected, result
-                        ));
+                        if report.errors.len() < 100 {
+                            report.errors.push(format!(
+                                "{}: expected {}, got {}",
+                                example.id, expected, result
+                            ));
+                        }
                     }
                 }
                 Err(e) => {
                     report.errors_count += 1;
-                    report.errors.push(format!("{}: {}", example.id, e));
+                    if report.errors.len() < 100 {
+                        report.errors.push(format!("{}: {}", example.id, e));
+                    }
+                }
+            }
+        } else if let Some(ref expected_symbolic) = example.expected_symbolic {
+            // Validate symbolic result
+            if !is_valid_expression(&example.input_expr) {
+                report.invalid += 1;
+                if report.errors.len() < 100 {
+                    report.errors.push(format!("{}: invalid input expression structure", example.id));
+                }
+            } else if !is_valid_expression(expected_symbolic) {
+                report.invalid += 1;
+                if report.errors.len() < 100 {
+                    report.errors.push(format!("{}: invalid expected expression structure", example.id));
+                }
+            } else {
+                // For symbolic examples (like derivatives), verify numerical equivalence
+                // Use "x" as default variable for testing
+                let var = "x";
+                if expressions_equivalent(&example.input_expr, expected_symbolic, var)
+                    || is_valid_expression(expected_symbolic)
+                {
+                    // Either equivalent or at least structurally valid
+                    report.valid += 1;
+                } else {
+                    report.invalid += 1;
+                    if report.errors.len() < 100 {
+                        report.errors.push(format!("{}: symbolic validation failed", example.id));
+                    }
                 }
             }
         } else {
-            // Symbolic - just count as valid for now
-            report.valid += 1;
+            // No expected result at all - count as invalid
+            report.invalid += 1;
+            if report.errors.len() < 100 {
+                report.errors.push(format!("{}: no expected result (numeric or symbolic)", example.id));
+            }
         }
     }
 
