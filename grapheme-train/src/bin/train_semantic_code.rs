@@ -1,4 +1,4 @@
-//! GRAPHEME Semantic Code Training - TRUE Graph-to-Graph
+//! GRAPHEME Semantic Code Training - TRUE Graph-to-Graph with SemanticDecoder
 //!
 //! This is the GRAPHEME vision for code generation:
 //! - Input: Text graph (prompt/docstring)
@@ -13,17 +13,23 @@
 //!           Str("Hi"), Punct(')'), EndSeq]
 //!
 //! This trains on SEMANTIC NODES not characters!
+//!
+//! Key innovation: Uses SemanticDecoder with unified vocabulary from all domain brains
+//! to enable generation of ANY semantic node type, not just the types in the input.
 
 use anyhow::Result;
 use clap::Parser;
-use grapheme_core::GraphemeGraph;
+use grapheme_core::{ActivationFn, GraphemeGraph, Node};
 use grapheme_train::cortex_mesh::{CortexMesh, MeshConfig};
+use grapheme_train::semantic_decoder::{SemanticDecoder, SemanticDecoderConfig};
 use grapheme_train::{compute_structural_loss, StructuralLossConfig};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -66,6 +72,7 @@ struct TrainingSample {
     #[serde(alias = "target")]
     output: String,
     #[serde(default)]
+    #[allow(dead_code)]  // Reserved for future domain-specific training
     domain: Option<String>,
 }
 
@@ -162,6 +169,77 @@ fn exact_code_match(pred_graph: &GraphemeGraph, target_code: &str) -> bool {
     predicted_code.trim() == target_code.trim()
 }
 
+/// Decode pooled features to a semantic graph using SemanticDecoder
+fn decode_features_to_graph(
+    features: &ndarray::Array2<f32>,
+    decoder: &SemanticDecoder,
+) -> GraphemeGraph {
+    use petgraph::graph::DiGraph;
+    use grapheme_core::Edge;
+
+    let mut graph: DiGraph<Node, Edge> = DiGraph::new();
+    let mut prev_idx = None;
+    let mut input_nodes = Vec::new();
+
+    // Decode each feature vector to a semantic node type
+    for i in 0..features.nrows() {
+        let hidden: Vec<f32> = features.row(i).to_vec();
+        let (node_type, confidence) = decoder.decode(&hidden);
+
+        let node = Node {
+            value: None,
+            activation: confidence,
+            pre_activation: confidence,
+            node_type,
+            position: Some(i),
+            activation_fn: ActivationFn::Linear,
+        };
+
+        let idx = graph.add_node(node);
+        input_nodes.push(idx);
+
+        // Add sequential edge
+        if let Some(prev) = prev_idx {
+            graph.add_edge(prev, idx, Edge::sequential());
+        }
+        prev_idx = Some(idx);
+    }
+
+    GraphemeGraph {
+        graph,
+        input_nodes,
+        cliques: Vec::new(),
+    }
+}
+
+/// Prepare training batch for SemanticDecoder
+/// Returns (hidden_vectors, target_indices) for decoder training
+fn prepare_decoder_batch(
+    features: &ndarray::Array2<f32>,
+    target_graph: &GraphemeGraph,
+    decoder: &SemanticDecoder,
+) -> Vec<(Vec<f32>, usize)> {
+    let mut batch = Vec::new();
+    let target_nodes: Vec<_> = target_graph.graph.node_indices()
+        .map(|idx| &target_graph.graph[idx])
+        .collect();
+
+    // Match features to target nodes (min of both lengths)
+    let n = features.nrows().min(target_nodes.len());
+
+    for i in 0..n {
+        let hidden: Vec<f32> = features.row(i).to_vec();
+        let target_type = &target_nodes[i].node_type;
+
+        // Get target index in vocabulary
+        if let Some(target_idx) = decoder.get_index(target_type) {
+            batch.push((hidden, target_idx));
+        }
+    }
+
+    batch
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -199,6 +277,7 @@ fn main() -> Result<()> {
     println!();
 
     // Create mesh configuration
+    let embed_dim = 64;  // Save for decoder config
     let config = MeshConfig {
         activation_threshold: 0.2,
         max_active_brains: usize::MAX,
@@ -206,7 +285,7 @@ fn main() -> Result<()> {
         hidden_dim: 256,
         num_layers: 6,
         vocab_size: 256,  // For character-level input
-        embed_dim: 64,
+        embed_dim,
     };
 
     // Create or resume mesh
@@ -223,6 +302,25 @@ fn main() -> Result<()> {
     println!("\nMesh Ready:");
     println!("  Brains: {}", mesh.brain_count());
     println!("  Modules: {}", mesh.module_count());
+
+    // Create SemanticDecoder with unified vocabulary from all brains
+    println!("\nBuilding unified semantic vocabulary...");
+    let vocab = SemanticDecoder::build_vocab_from_brains();
+    let decoder_config = SemanticDecoderConfig {
+        hidden_dim: embed_dim,  // Match embedding dimension
+        learning_rate: args.lr,
+        temperature: 1.0,
+        label_smoothing: 0.1,
+    };
+    let mut decoder = SemanticDecoder::new(vocab, decoder_config);
+    let vocab_stats = decoder.vocab_stats();
+    println!("SemanticDecoder ready:");
+    println!("  Vocabulary size: {}", decoder.vocab_size());
+    println!("  Node types: {} Keywords, {} Ops, {} Puncts, {} Input chars",
+        vocab_stats.by_type.get("Keyword").unwrap_or(&0),
+        vocab_stats.by_type.get("Op").unwrap_or(&0),
+        vocab_stats.by_type.get("Punct").unwrap_or(&0),
+        vocab_stats.by_type.get("Input").unwrap_or(&0));
 
     // Training loop
     let mut best_loss = f32::MAX;
@@ -258,57 +356,102 @@ fn main() -> Result<()> {
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
             .unwrap());
 
+        let mut decoder_loss = 0.0;
+        let progress = AtomicUsize::new(0);
+
         for batch in train_samples.chunks(args.batch_size) {
             mesh.zero_grad();
 
-            for sample in batch {
-                // KEY CHANGE: Use from_code() for target to get SEMANTIC graph!
-                let input_graph = GraphemeGraph::from_text(&sample.input);
-                let target_graph = GraphemeGraph::from_code(&sample.output);
+            // PARALLEL: Pre-compute all graphs for the batch
+            let graphs: Vec<(GraphemeGraph, GraphemeGraph)> = batch
+                .par_iter()
+                .map(|sample| {
+                    let input_graph = GraphemeGraph::from_text(&sample.input);
+                    let target_graph = GraphemeGraph::from_code(&sample.output);
+                    (input_graph, target_graph)
+                })
+                .collect();
 
-                // Forward pass
-                let (output_graph, pooling) = mesh.model.forward(&input_graph);
+            // Collect decoder training batch across all samples in batch
+            let mut decoder_batch = Vec::new();
+
+            for (input_graph, target_graph) in &graphs {
+                // Forward pass - get pooled features (sequential due to mutable model state)
+                let (output_graph, pooling) = mesh.model.forward(input_graph);
+
+                // Build decoder training batch from features and target
+                let sample_batch = prepare_decoder_batch(&pooling.features, target_graph, &decoder);
+                decoder_batch.extend(sample_batch);
 
                 // Compute structural loss against SEMANTIC target
-                let loss_result = compute_structural_loss(&output_graph, &target_graph, &loss_config);
+                let loss_result = compute_structural_loss(&output_graph, target_graph, &loss_config);
                 train_loss += loss_result.total_loss;
 
-                // Backward pass
-                mesh.model.backward(&input_graph, &pooling, &loss_result.activation_gradients, mesh.config.embed_dim);
+                // Backward pass for mesh
+                mesh.model.backward(input_graph, &pooling, &loss_result.activation_gradients, mesh.config.embed_dim);
             }
 
             mesh.model.step(current_lr / batch.len() as f32);
-            pb.inc(batch.len() as u64);
+
+            // Train SemanticDecoder on accumulated batch
+            if !decoder_batch.is_empty() {
+                let loss = decoder.backward(&decoder_batch);
+                decoder_loss += loss * decoder_batch.len() as f32;
+            }
+
+            progress.fetch_add(batch.len(), Ordering::Relaxed);
+            pb.set_position(progress.load(Ordering::Relaxed) as u64);
         }
         pb.finish_and_clear();
 
         train_loss /= train_samples.len() as f32;
+        decoder_loss /= train_samples.len() as f32;
 
-        // Validation
-        let mut val_loss = 0.0;
-        let mut val_semantic_acc = 0.0;
-        let mut val_exact_matches = 0;
+        // Validation - PARALLEL: Process validation samples in parallel
+        // Step 1: Parallel pre-compute all graphs
+        let val_graphs: Vec<(GraphemeGraph, GraphemeGraph, &str)> = val_samples
+            .par_iter()
+            .map(|sample| {
+                let input_graph = GraphemeGraph::from_text(&sample.input);
+                let target_graph = GraphemeGraph::from_code(&sample.output);
+                (input_graph, target_graph, sample.output.as_str())
+            })
+            .collect();
 
-        for sample in val_samples {
-            let input_graph = GraphemeGraph::from_text(&sample.input);
-            let target_graph = GraphemeGraph::from_code(&sample.output);
+        // Step 2: Parallel forward pass and metrics computation
+        // Note: mesh.model.forward() takes &self (immutable), so it's thread-safe
+        let val_results: Vec<(f32, f32, f32, bool)> = val_graphs
+            .par_iter()
+            .map(|(input_graph, target_graph, output_code)| {
+                let (output_graph, pooling) = mesh.model.forward(input_graph);
 
-            let (output_graph, _) = mesh.model.forward(&input_graph);
+                let loss_result = compute_structural_loss(&output_graph, target_graph, &loss_config);
+                let loss = loss_result.total_loss;
 
-            let loss_result = compute_structural_loss(&output_graph, &target_graph, &loss_config);
-            val_loss += loss_result.total_loss;
+                // Semantic accuracy on raw output (before decoder)
+                let sem_acc = semantic_accuracy(&output_graph, target_graph);
 
-            // Semantic accuracy
-            val_semantic_acc += semantic_accuracy(&output_graph, &target_graph);
+                // Decoder accuracy: decode features and compare to target
+                let decoded_graph = decode_features_to_graph(&pooling.features, &decoder);
+                let dec_batch = prepare_decoder_batch(&pooling.features, target_graph, &decoder);
+                let dec_acc = if !dec_batch.is_empty() {
+                    decoder.compute_accuracy(&dec_batch)
+                } else {
+                    0.0
+                };
 
-            // Exact code match
-            if exact_code_match(&output_graph, &sample.output) {
-                val_exact_matches += 1;
-            }
-        }
+                // Exact code match (using decoded graph)
+                let exact_match = exact_code_match(&decoded_graph, output_code);
 
-        val_loss /= val_samples.len() as f32;
-        val_semantic_acc /= val_samples.len() as f32;
+                (loss, sem_acc, dec_acc, exact_match)
+            })
+            .collect();
+
+        // Step 3: Aggregate results
+        let val_loss: f32 = val_results.iter().map(|(l, _, _, _)| l).sum::<f32>() / val_samples.len() as f32;
+        let _val_semantic_acc: f32 = val_results.iter().map(|(_, s, _, _)| s).sum::<f32>() / val_samples.len() as f32;
+        let val_decoder_acc: f32 = val_results.iter().map(|(_, _, d, _)| d).sum::<f32>() / val_samples.len() as f32;
+        let val_exact_matches = val_results.iter().filter(|(_, _, _, e)| *e).count();
         let exact_match_rate = val_exact_matches as f32 / val_samples.len() as f32;
 
         let epoch_time = epoch_start.elapsed();
@@ -319,12 +462,15 @@ fn main() -> Result<()> {
             best_loss = val_loss;
             let best_path = args.output.with_file_name("semantic_code_best.json");
             mesh.save(&best_path)?;
+            // Also save decoder
+            let decoder_path = args.output.with_file_name("semantic_decoder_best.json");
+            decoder.save(decoder_path.to_str().unwrap())?;
         }
 
-        // Print progress
-        print!("Epoch {}/{}: train_loss={:.4}, val_loss={:.4}, semantic_acc={:.1}%, exact={:.1}%",
-            epoch + 1, args.epochs, train_loss, val_loss,
-            val_semantic_acc * 100.0, exact_match_rate * 100.0);
+        // Print progress - now includes decoder_acc which should improve!
+        print!("Epoch {}/{}: train={:.1}, dec_loss={:.2}, dec_acc={:.1}%, exact={:.1}%",
+            epoch + 1, args.epochs, train_loss, decoder_loss,
+            val_decoder_acc * 100.0, exact_match_rate * 100.0);
 
         if is_best {
             print!(" [BEST]");
@@ -338,18 +484,22 @@ fn main() -> Result<()> {
             let demo_target = &val_samples[0].output;
 
             let input_graph = GraphemeGraph::from_text(demo_input);
-            let (output_graph, _) = mesh.model.forward(&input_graph);
+            let (_, pooling) = mesh.model.forward(&input_graph);
+
+            // Use SemanticDecoder to decode features to semantic graph
+            let decoded_graph = decode_features_to_graph(&pooling.features, &decoder);
 
             println!("Input: {}...", demo_input.chars().take(60).collect::<String>());
             println!("Target code: {}", demo_target.chars().take(80).collect::<String>());
-            println!("Predicted graph ({} nodes):", output_graph.node_count());
+            println!("Decoded graph ({} nodes from {} features):",
+                decoded_graph.node_count(), pooling.features.nrows());
 
-            // Show predicted semantic nodes
-            for (i, idx) in output_graph.graph.node_indices().take(5).enumerate() {
-                let node = &output_graph.graph[idx];
+            // Show decoded semantic nodes (now should show diverse types!)
+            for (i, idx) in decoded_graph.graph.node_indices().take(8).enumerate() {
+                let node = &decoded_graph.graph[idx];
                 println!("  [{}] {:?}", i, node.node_type);
             }
-            let predicted_code = output_graph.to_code();
+            let predicted_code = decoded_graph.to_code();
             println!("Decoded code: {}", predicted_code.chars().take(80).collect::<String>());
             println!();
         }
@@ -358,12 +508,17 @@ fn main() -> Result<()> {
         if (epoch + 1) % 20 == 0 {
             let checkpoint_path = args.output.with_file_name(format!("semantic_code_epoch{}.json", epoch + 1));
             mesh.save(&checkpoint_path)?;
+            let decoder_checkpoint = args.output.with_file_name(format!("semantic_decoder_epoch{}.json", epoch + 1));
+            decoder.save(decoder_checkpoint.to_str().unwrap())?;
         }
     }
 
-    // Save final model
+    // Save final model and decoder
     mesh.save(&args.output)?;
+    let decoder_final_path = args.output.with_file_name("semantic_decoder_final.json");
+    decoder.save(decoder_final_path.to_str().unwrap())?;
     println!("\nFinal model saved to {:?}", args.output);
+    println!("Final decoder saved to {:?}", decoder_final_path);
     println!("Best validation loss: {:.4}", best_loss);
 
     Ok(())
