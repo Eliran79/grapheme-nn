@@ -27,7 +27,7 @@
 
 use grapheme_core::{
     DagNN, DomainBrain, DomainError, DomainExample, DomainResult, DomainRule, Edge, EdgeType,
-    ExecutionResult, Node, NodeId, ValidationIssue, ValidationSeverity,
+    ExecutionResult, Node, NodeId, NodeType, ValidationIssue, ValidationSeverity,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -521,6 +521,34 @@ impl DomainBrain for TimeBrain {
 
     fn output_node_count(&self) -> usize {
         1 // Single prediction output
+    }
+
+    /// Returns all semantic node types that TimeBrain can produce.
+    ///
+    /// Time series data uses Feature nodes for numerical values rather than
+    /// character-based Input nodes. Each feature position in the window
+    /// gets its own Feature(index) node type.
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Feature nodes for window positions
+        for i in 0..self.config.window_size {
+            types.push(NodeType::Feature(i));
+        }
+
+        // Output node for prediction
+        types.push(NodeType::Output);
+
+        // Also include digits and decimal for text representations
+        for c in '0'..='9' {
+            types.push(NodeType::Input(c));
+        }
+        types.push(NodeType::Input('.'));
+        types.push(NodeType::Input('-'));
+        types.push(NodeType::Input(','));
+        types.push(NodeType::Input(' '));
+
+        types
     }
 }
 

@@ -29,8 +29,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    Embedding, NodeId, BackwardPass,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    ValidationIssue, Embedding, NodeId, BackwardPass,
 };
 use ndarray::Array1;
 use std::collections::HashMap;
@@ -1788,6 +1788,32 @@ impl DomainBrain for VisionBrain {
         // For now, return empty (images are loaded externally)
         Vec::new()
     }
+
+    /// Returns all semantic node types that VisionBrain can produce.
+    ///
+    /// Vision brain uses Pixel nodes for spatial positions in images.
+    /// The grid dimensions are determined by the image size, so we return
+    /// a representative set of pixel positions.
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Pixel nodes for a typical grid (parameterized by max dimensions)
+        // Vision typically operates on downsampled images, so we use moderate dimensions
+        let max_dim = 64; // Support images up to 64x64
+        for row in 0..max_dim {
+            for col in 0..max_dim {
+                types.push(NodeType::Pixel { row, col });
+            }
+        }
+
+        // Hidden processing nodes
+        types.push(NodeType::Hidden);
+
+        // Output nodes for feature extraction
+        types.push(NodeType::Output);
+
+        types
+    }
 }
 
 // ============================================================================
@@ -2070,6 +2096,24 @@ impl DomainBrain for ClassificationBrain {
 
     fn generate_examples(&self, _count: usize) -> Vec<DomainExample> {
         Vec::new()
+    }
+
+    /// Returns all semantic node types that ClassificationBrain can produce.
+    ///
+    /// Classification uses ClassOutput nodes for class predictions.
+    /// The number of classes is configured at brain creation time.
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // ClassOutput nodes for each class
+        for class_idx in 0..self.classification_config.num_classes {
+            types.push(NodeType::ClassOutput(class_idx));
+        }
+
+        // Output node
+        types.push(NodeType::Output);
+
+        types
     }
 }
 

@@ -17,7 +17,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    ValidationIssue,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -551,6 +552,41 @@ impl DomainBrain for ChemBrain {
         }
 
         examples
+    }
+
+    /// Returns all semantic node types that ChemBrain can produce.
+    ///
+    /// Chemistry node types are character-based for now, covering:
+    /// - Element symbols (periodic table)
+    /// - Subscript digits for molecular formulas
+    /// - Bond symbols and reaction arrows
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Element symbols (uppercase letters)
+        for c in 'A'..='Z' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Lowercase for element symbols (second letter, e.g., Na, Cl, Fe)
+        for c in 'a'..='z' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Digits for subscripts and coefficients
+        for c in '0'..='9' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Chemical symbols
+        for c in ['+', '-', '→', '⇌', '(', ')', '[', ']', '·', '↑', '↓'] {
+            types.push(NodeType::Input(c));
+        }
+
+        // Space for separation
+        types.push(NodeType::Input(' '));
+
+        types
     }
 }
 

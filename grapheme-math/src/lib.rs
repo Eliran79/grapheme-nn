@@ -24,8 +24,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    ValidationIssue, ValidationSeverity,
 };
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::NodeIndex;
@@ -999,6 +999,44 @@ impl DomainBrain for MathBrain {
         }
 
         examples
+    }
+
+    /// Returns all semantic node types that MathBrain can produce.
+    ///
+    /// Math node types use the base Input(char) type for now since mathematical
+    /// expressions are typically represented at the character level (digits, operators).
+    /// Future work may add specialized math node types.
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Digits 0-9
+        for c in '0'..='9' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Math operators
+        for c in ['+', '-', '*', '/', '^', '=', '<', '>', '(', ')', '[', ']', '{', '}'] {
+            types.push(NodeType::Input(c));
+        }
+
+        // Decimal point
+        types.push(NodeType::Input('.'));
+
+        // Common math symbols (space, comma)
+        types.push(NodeType::Input(' '));
+        types.push(NodeType::Input(','));
+
+        // Letters for variables (x, y, z, etc.)
+        for c in 'a'..='z' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Capital letters for constants (E, PI, etc.)
+        for c in 'A'..='Z' {
+            types.push(NodeType::Input(c));
+        }
+
+        types
     }
 }
 

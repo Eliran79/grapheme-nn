@@ -17,8 +17,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    ValidationIssue, ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -481,6 +481,37 @@ impl DomainBrain for LawBrain {
         }
 
         examples
+    }
+
+    /// Returns all semantic node types that LawBrain can produce.
+    ///
+    /// Legal text uses standard ASCII characters for citations, case names,
+    /// statutory references, and legal terminology.
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Letters (for case names, citations, legal text)
+        for c in 'a'..='z' {
+            types.push(NodeType::Input(c));
+        }
+        for c in 'A'..='Z' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Numbers (for citations, section numbers)
+        for c in '0'..='9' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Punctuation common in legal text
+        for c in [
+            '.', ',', ':', ';', '(', ')', '[', ']', '-', '–', '"', '\'',
+            '/', '§', '¶', ' ', '\n',
+        ] {
+            types.push(NodeType::Input(c));
+        }
+
+        types
     }
 }
 

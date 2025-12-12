@@ -17,7 +17,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    ValidationIssue,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -509,6 +510,44 @@ impl DomainBrain for MusicBrain {
         }
 
         examples
+    }
+
+    /// Returns all semantic node types that MusicBrain can produce.
+    ///
+    /// Music node types are character-based covering:
+    /// - Note names (A-G)
+    /// - Accidentals (sharp, flat, natural)
+    /// - Octave numbers
+    /// - Duration markers
+    fn node_types(&self) -> Vec<NodeType> {
+        let mut types = Vec::new();
+
+        // Note names (both cases for flexibility)
+        for c in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'a', 'b', 'c', 'd', 'e', 'f', 'g'] {
+            types.push(NodeType::Input(c));
+        }
+
+        // Accidentals
+        for c in ['#', 'b', '♯', '♭', '♮'] {
+            types.push(NodeType::Input(c));
+        }
+
+        // Octave numbers
+        for c in '0'..='9' {
+            types.push(NodeType::Input(c));
+        }
+
+        // Duration and other notation
+        for c in ['/', '.', '-', '|', '(', ')', '[', ']', ' ', ','] {
+            types.push(NodeType::Input(c));
+        }
+
+        // Additional letters for chord symbols and duration
+        for c in ['m', 'M', 'd', 'i', 'n', 's', 'u', 'j', 'o', 'r'] {
+            types.push(NodeType::Input(c));
+        }
+
+        types
     }
 }
 

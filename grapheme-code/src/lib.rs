@@ -21,8 +21,8 @@
 
 use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, ValidationIssue,
-    ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
+    SpaceType, ValidationIssue, ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -1495,6 +1495,74 @@ impl DomainBrain for CodeBrain {
         }
 
         examples
+    }
+
+    /// Returns all semantic node types that CodeBrain can produce.
+    ///
+    /// This vocabulary is used for building a unified decoder that can output
+    /// ANY semantic code node type. The types include:
+    /// - Keywords (def, if, else, for, while, return, class, import, etc.)
+    /// - Operators (+, -, *, /, ==, !=, <, >, <=, >=, and, or, not)
+    /// - Punctuation (colon, comma, parentheses, brackets, braces)
+    /// - Space types (space, newline, indent, dedent)
+    /// - Placeholder types (Variable, Int, Float, Str, Bool, Call, TypeAnnot, Comment)
+    fn node_types(&self) -> Vec<NodeType> {
+        use NodeType::*;
+
+        let mut types = Vec::new();
+
+        // Python keywords (most common for code training)
+        let keywords = [
+            "def", "if", "else", "elif", "for", "while", "return", "class",
+            "import", "from", "as", "try", "except", "finally", "raise",
+            "with", "pass", "break", "continue", "lambda", "yield", "assert",
+            "global", "nonlocal", "del", "in", "is", "not", "and", "or",
+            "True", "False", "None", "async", "await",
+        ];
+        for kw in keywords {
+            types.push(Keyword(kw.to_string()));
+        }
+
+        // Operators
+        let operators = [
+            "+", "-", "*", "/", "//", "%", "**",  // Arithmetic
+            "==", "!=", "<", ">", "<=", ">=",    // Comparison
+            "=", "+=", "-=", "*=", "/=",         // Assignment
+            "&", "|", "^", "~", "<<", ">>",      // Bitwise
+            "->",                                 // Return type annotation
+        ];
+        for op in operators {
+            types.push(Op(op.to_string()));
+        }
+
+        // Punctuation
+        let puncts = [':', ',', '(', ')', '[', ']', '{', '}', '.', ';', '@', '#'];
+        for punct in puncts {
+            types.push(Punct(punct));
+        }
+
+        // Space types (using fully qualified SpaceType to avoid ambiguity)
+        types.push(Space(SpaceType::Space));
+        types.push(Space(SpaceType::Newline));
+        types.push(Space(SpaceType::Indent));
+        types.push(Space(SpaceType::Dedent));
+
+        // Placeholder types for variable content (the actual string value is learned)
+        // These represent "slots" in the vocabulary that get filled with specific values
+        types.push(Variable(String::new()));  // Variable placeholder
+        types.push(Int(0));                   // Integer placeholder
+        types.push(Float(String::new()));     // Float placeholder
+        types.push(Str(String::new()));       // String literal placeholder
+        types.push(Bool(true));               // Boolean true
+        types.push(Bool(false));              // Boolean false
+        types.push(Call(String::new()));      // Function call placeholder
+        types.push(TypeAnnot(String::new())); // Type annotation placeholder
+        types.push(Comment(String::new()));   // Comment placeholder
+
+        // End of sequence marker
+        types.push(EndSeq);
+
+        types
     }
 }
 
