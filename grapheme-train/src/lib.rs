@@ -25,6 +25,17 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use thiserror::Error;
 
+// Module declarations
+pub mod backprop;
+
+// Re-export key types
+pub use backprop::{
+    ActivationType, AggregationType, BackwardResult, CombineType,
+    GradientCheckResult, MessagePassingBackward, Tape, TapeOp,
+    clip_grad_norm, clip_grad_value, gradient_check,
+    reverse_topological_sort, topological_sort,
+};
+
 /// Training errors
 #[derive(Error, Debug)]
 pub enum TrainingError {

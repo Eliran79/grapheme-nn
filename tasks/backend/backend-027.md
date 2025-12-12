@@ -1,7 +1,7 @@
 ---
 id: backend-027
 title: Implement backpropagation through graph structures
-status: todo
+status: done
 priority: high
 tags:
 - backend
