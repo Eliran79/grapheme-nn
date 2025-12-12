@@ -14,6 +14,7 @@ serde_json.workspace = true
 petgraph.workspace = true
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
+grapheme-core = { path = "../grapheme-core" }
 
 [dev-dependencies]
 criterion.workspace = true

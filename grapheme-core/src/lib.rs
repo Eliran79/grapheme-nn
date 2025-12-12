@@ -1540,6 +1540,12 @@ impl ValidationIssue {
     pub fn error(message: impl Into<String>) -> Self {
         Self::new(ValidationSeverity::Error, message)
     }
+
+    /// Set the location (node index) for this issue
+    pub fn with_location(mut self, location: usize) -> Self {
+        self.location = Some(location);
+        self
+    }
 }
 
 /// A transformation rule in a domain brain

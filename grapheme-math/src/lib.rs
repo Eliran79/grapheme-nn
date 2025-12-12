@@ -11,6 +11,7 @@
 //! Unlike traditional NLP, we use typed nodes rather than embeddings,
 //! but remain vocabulary-free through the type system.
 
+use grapheme_core::ValidationIssue;
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -216,6 +217,178 @@ impl MathGraph {
     /// Get the number of edges in the graph
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
+    }
+
+    /// Validate the mathematical graph structure
+    ///
+    /// Checks for:
+    /// - Operator arity (binary ops need 2 inputs, unary need 1)
+    /// - Function arity (correct number of arguments)
+    /// - Division by zero possibilities
+    /// - Disconnected nodes
+    /// - Missing root
+    pub fn validate_structure(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+
+        // Check for empty graph
+        if self.graph.node_count() == 0 {
+            issues.push(ValidationIssue::warning("Math graph is empty"));
+            return issues;
+        }
+
+        // Check for missing root
+        if self.root.is_none() {
+            issues.push(ValidationIssue::error("Math graph has no root node"));
+            return issues;
+        }
+
+        let root = self.root.unwrap();
+
+        // Validate each node
+        for node_idx in self.graph.node_indices() {
+            let node = &self.graph[node_idx];
+            let incoming_edges: Vec<_> = self.graph.edges_directed(node_idx, petgraph::Direction::Incoming).collect();
+            let outgoing_edges: Vec<_> = self.graph.edges(node_idx).collect();
+
+            match node {
+                MathNode::Operator(op) => {
+                    // Binary operators need exactly 2 children (via LeftOperand and RightOperand)
+                    let left_count = outgoing_edges.iter()
+                        .filter(|e| matches!(e.weight(), MathEdge::LeftOperand))
+                        .count();
+                    let right_count = outgoing_edges.iter()
+                        .filter(|e| matches!(e.weight(), MathEdge::RightOperand))
+                        .count();
+
+                    if left_count != 1 {
+                        issues.push(ValidationIssue::error(format!(
+                            "Operator {:?} at node {} has {} left operands, expected 1",
+                            op, node_idx.index(), left_count
+                        )).with_location(node_idx.index()));
+                    }
+                    if right_count != 1 {
+                        issues.push(ValidationIssue::error(format!(
+                            "Operator {:?} at node {} has {} right operands, expected 1",
+                            op, node_idx.index(), right_count
+                        )).with_location(node_idx.index()));
+                    }
+
+                    // Check for division by zero
+                    if matches!(op, MathOp::Div) {
+                        for edge in &outgoing_edges {
+                            if matches!(edge.weight(), MathEdge::RightOperand) {
+                                let target = edge.target();
+                                let is_zero = match &self.graph[target] {
+                                    MathNode::Integer(0) => true,
+                                    MathNode::Float(f) if *f == 0.0 => true,
+                                    _ => false,
+                                };
+                                if is_zero {
+                                    issues.push(ValidationIssue::warning(
+                                        "Division by zero detected"
+                                    ).with_location(node_idx.index()));
+                                }
+                            }
+                        }
+                    }
+                }
+                MathNode::Function(func) => {
+                    // Count function arguments
+                    let arg_count = outgoing_edges.iter()
+                        .filter(|e| matches!(e.weight(), MathEdge::Argument(_)))
+                        .count();
+
+                    let expected_args = match func {
+                        MathFn::Sin | MathFn::Cos | MathFn::Tan |
+                        MathFn::Sqrt | MathFn::Abs | MathFn::Log | MathFn::Ln |
+                        MathFn::Exp | MathFn::Floor | MathFn::Ceil => 1,
+                        MathFn::Derive | MathFn::Integrate => 2, // expression and variable
+                    };
+
+                    if arg_count != expected_args {
+                        issues.push(ValidationIssue::error(format!(
+                            "Function {:?} at node {} has {} arguments, expected {}",
+                            func, node_idx.index(), arg_count, expected_args
+                        )).with_location(node_idx.index()));
+                    }
+
+                    // Check for sqrt of negative
+                    if matches!(func, MathFn::Sqrt) {
+                        for edge in &outgoing_edges {
+                            if matches!(edge.weight(), MathEdge::Argument(0)) {
+                                if let MathNode::Integer(n) = &self.graph[edge.target()] {
+                                    if *n < 0 {
+                                        issues.push(ValidationIssue::warning(
+                                            "Square root of negative number"
+                                        ).with_location(node_idx.index()));
+                                    }
+                                }
+                                if let MathNode::Float(f) = &self.graph[edge.target()] {
+                                    if *f < 0.0 {
+                                        issues.push(ValidationIssue::warning(
+                                            "Square root of negative number"
+                                        ).with_location(node_idx.index()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Check for log of non-positive
+                    if matches!(func, MathFn::Log | MathFn::Ln) {
+                        for edge in &outgoing_edges {
+                            if matches!(edge.weight(), MathEdge::Argument(0)) {
+                                if let MathNode::Integer(n) = &self.graph[edge.target()] {
+                                    if *n <= 0 {
+                                        issues.push(ValidationIssue::warning(
+                                            "Logarithm of non-positive number"
+                                        ).with_location(node_idx.index()));
+                                    }
+                                }
+                                if let MathNode::Float(f) = &self.graph[edge.target()] {
+                                    if *f <= 0.0 {
+                                        issues.push(ValidationIssue::warning(
+                                            "Logarithm of non-positive number"
+                                        ).with_location(node_idx.index()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                MathNode::Integer(_) | MathNode::Float(_) | MathNode::Symbol(_) => {
+                    // Leaf nodes should have no outgoing edges to operands
+                    let operand_edges = outgoing_edges.iter()
+                        .filter(|e| matches!(e.weight(), MathEdge::LeftOperand | MathEdge::RightOperand | MathEdge::Argument(_)))
+                        .count();
+                    if operand_edges > 0 {
+                        issues.push(ValidationIssue::error(format!(
+                            "Value node at {} has {} unexpected operand edges",
+                            node_idx.index(), operand_edges
+                        )).with_location(node_idx.index()));
+                    }
+                }
+                MathNode::Result => {
+                    // Result nodes should have no outgoing edges
+                    if !outgoing_edges.is_empty() {
+                        issues.push(ValidationIssue::warning(format!(
+                            "Result node at {} has {} outgoing edges",
+                            node_idx.index(), outgoing_edges.len()
+                        )).with_location(node_idx.index()));
+                    }
+                }
+            }
+
+            // Check for disconnected nodes (except root)
+            if node_idx != root && incoming_edges.is_empty() && outgoing_edges.is_empty() {
+                issues.push(ValidationIssue::warning(format!(
+                    "Node at {} is disconnected from the graph",
+                    node_idx.index()
+                )).with_location(node_idx.index()));
+            }
+        }
+
+        issues
     }
 }
 
@@ -863,5 +1036,103 @@ mod tests {
 
         let simplified = brain.simplify(&expr);
         assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
+    }
+
+    // Tests for backend-083: MathGraph validation
+
+    #[test]
+    fn test_validate_valid_graph() {
+        // Valid expression: 2 + 3
+        let expr = Expr::BinOp {
+            op: MathOp::Add,
+            left: Box::new(Expr::Value(Value::Integer(2))),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.is_empty(), "Valid graph should have no issues: {:?}", issues);
+    }
+
+    #[test]
+    fn test_validate_empty_graph() {
+        let graph = MathGraph::new();
+        let issues = graph.validate_structure();
+        assert!(!issues.is_empty(), "Empty graph should have issues");
+        assert!(issues.iter().any(|i| i.message.contains("empty")));
+    }
+
+    #[test]
+    fn test_validate_division_by_zero() {
+        // Expression: 10 / 0
+        let expr = Expr::BinOp {
+            op: MathOp::Div,
+            left: Box::new(Expr::Value(Value::Integer(10))),
+            right: Box::new(Expr::Value(Value::Integer(0))),
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.iter().any(|i| i.message.contains("Division by zero")),
+            "Should detect division by zero: {:?}", issues);
+    }
+
+    #[test]
+    fn test_validate_sqrt_negative() {
+        // Expression: sqrt(-4)
+        let expr = Expr::Function {
+            func: MathFn::Sqrt,
+            args: vec![Expr::Value(Value::Integer(-4))],
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.iter().any(|i| i.message.contains("Square root of negative")),
+            "Should detect sqrt of negative: {:?}", issues);
+    }
+
+    #[test]
+    fn test_validate_log_non_positive() {
+        // Expression: ln(0)
+        let expr = Expr::Function {
+            func: MathFn::Ln,
+            args: vec![Expr::Value(Value::Integer(0))],
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.iter().any(|i| i.message.contains("Logarithm of non-positive")),
+            "Should detect log of non-positive: {:?}", issues);
+    }
+
+    #[test]
+    fn test_validate_complex_expression() {
+        // Valid complex expression: (x + 2) * 3
+        let expr = Expr::BinOp {
+            op: MathOp::Mul,
+            left: Box::new(Expr::BinOp {
+                op: MathOp::Add,
+                left: Box::new(Expr::Value(Value::Symbol("x".into()))),
+                right: Box::new(Expr::Value(Value::Integer(2))),
+            }),
+            right: Box::new(Expr::Value(Value::Integer(3))),
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.is_empty(), "Valid complex expression should have no issues: {:?}", issues);
+    }
+
+    #[test]
+    fn test_validate_sin_function() {
+        // Expression: sin(x)
+        let expr = Expr::Function {
+            func: MathFn::Sin,
+            args: vec![Expr::Value(Value::Symbol("x".into()))],
+        };
+
+        let graph = MathGraph::from_expr(&expr);
+        let issues = graph.validate_structure();
+        assert!(issues.is_empty(), "Valid sin function should have no issues: {:?}", issues);
     }
 }
