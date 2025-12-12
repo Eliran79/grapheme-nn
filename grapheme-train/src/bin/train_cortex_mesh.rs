@@ -16,9 +16,10 @@
 
 use anyhow::Result;
 use clap::Parser;
-use grapheme_core::{ActivationFn, GraphemeGraph, Node};
+use grapheme_core::GraphemeGraph;
 use grapheme_train::cortex_mesh::{CortexMesh, MeshConfig, list_all_brains, list_all_modules};
 use grapheme_train::semantic_decoder::{SemanticDecoder, SemanticDecoderConfig};
+use grapheme_train::training_utils::{semantic_accuracy, prepare_decoder_batch};
 use grapheme_train::{compute_structural_loss, StructuralLossConfig};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -26,7 +27,6 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -87,96 +87,6 @@ struct TrainingSample {
     #[serde(default)]
     #[allow(dead_code)]  // Reserved for future domain-specific routing
     domain: Option<String>,
-}
-
-/// Semantic accuracy: percentage of nodes with matching node types
-fn semantic_accuracy(pred: &GraphemeGraph, target: &GraphemeGraph) -> f32 {
-    let pred_types: Vec<_> = pred.graph.node_indices()
-        .map(|idx| &pred.graph[idx].node_type)
-        .collect();
-    let target_types: Vec<_> = target.graph.node_indices()
-        .map(|idx| &target.graph[idx].node_type)
-        .collect();
-
-    let min_len = pred_types.len().min(target_types.len());
-    if min_len == 0 {
-        return 0.0;
-    }
-
-    let matches = pred_types.iter().take(min_len)
-        .zip(target_types.iter().take(min_len))
-        .filter(|(p, t)| p == t)
-        .count();
-
-    matches as f32 / min_len as f32
-}
-
-/// Decode pooled features to a semantic graph using SemanticDecoder
-fn decode_features_to_graph(
-    features: &ndarray::Array2<f32>,
-    decoder: &SemanticDecoder,
-) -> GraphemeGraph {
-    use petgraph::graph::DiGraph;
-    use grapheme_core::Edge;
-
-    let mut graph: DiGraph<Node, Edge> = DiGraph::new();
-    let mut prev_idx = None;
-    let mut input_nodes = Vec::new();
-
-    // Decode each feature vector to a semantic node type
-    for i in 0..features.nrows() {
-        let hidden: Vec<f32> = features.row(i).to_vec();
-        let (node_type, confidence) = decoder.decode(&hidden);
-
-        let node = Node {
-            value: None,
-            activation: confidence,
-            pre_activation: confidence,
-            node_type,
-            position: Some(i),
-            activation_fn: ActivationFn::Linear,
-        };
-
-        let idx = graph.add_node(node);
-        input_nodes.push(idx);
-
-        // Add sequential edge
-        if let Some(prev) = prev_idx {
-            graph.add_edge(prev, idx, Edge::sequential());
-        }
-        prev_idx = Some(idx);
-    }
-
-    GraphemeGraph {
-        graph,
-        input_nodes,
-        cliques: Vec::new(),
-    }
-}
-
-/// Prepare training batch for SemanticDecoder
-fn prepare_decoder_batch(
-    features: &ndarray::Array2<f32>,
-    target_graph: &GraphemeGraph,
-    decoder: &SemanticDecoder,
-) -> Vec<(Vec<f32>, usize)> {
-    let mut batch = Vec::new();
-    let target_nodes: Vec<_> = target_graph.graph.node_indices()
-        .map(|idx| &target_graph.graph[idx])
-        .collect();
-
-    let n = features.nrows().min(target_nodes.len());
-
-    for i in 0..n {
-        let hidden: Vec<f32> = features.row(i).to_vec();
-        let target_type = &target_nodes[i].node_type;
-
-        if let Some(target_idx) = decoder.get_index(target_type) {
-            batch.push((hidden, target_idx));
-        }
-    }
-
-    batch
 }
 
 /// Load training data
@@ -354,31 +264,58 @@ fn main() -> Result<()> {
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
             .unwrap());
 
-        // Process batches with PROPER BATCH TRAINING
+        // Process batches with PROPER BATCH TRAINING + SemanticDecoder
         // Critical: zero_grad → accumulate gradients → step (once per batch)
         let mut train_struct_loss = 0.0;
-        let mut train_char_loss = 0.0;
-        let struct_weight = 1.0;  // Structural loss weight
-        let char_weight = 0.5;    // Character loss weight
+        let mut train_decoder_loss = 0.0;
+        let loss_config = StructuralLossConfig::default();
 
         for batch in train_samples.chunks(args.batch_size) {
             // 1. Zero gradients at start of batch
-            mesh.zero_grad();
+            mesh.model.zero_grad();
+
+            // PARALLEL: Pre-compute all graphs for the batch
+            let graphs: Vec<(GraphemeGraph, GraphemeGraph)> = batch
+                .par_iter()
+                .map(|sample| {
+                    let input_graph = GraphemeGraph::from_text(&sample.input);
+                    let target_graph = GraphemeGraph::from_text(&sample.output);
+                    (input_graph, target_graph)
+                })
+                .collect();
+
+            // Collect decoder training batch across all samples
+            let mut decoder_batch = Vec::new();
 
             // 2. Accumulate gradients across all samples in batch
-            for sample in batch {
-                let (total, struct_loss, char_loss) = mesh.backward_unified(
-                    &sample.input,
-                    &sample.output,
-                    char_weight,
-                );
-                train_loss += total;
-                train_struct_loss += struct_loss;
-                train_char_loss += char_loss;
+            for (input_graph, target_graph) in &graphs {
+                // Forward pass - get pooled features
+                let (output_graph, pooling) = mesh.model.forward(input_graph);
+
+                // Build decoder training batch from features and target
+                let sample_batch = prepare_decoder_batch(&pooling.features, target_graph, &decoder);
+                decoder_batch.extend(sample_batch);
+
+                // Compute structural loss
+                let loss_result = compute_structural_loss(&output_graph, target_graph, &loss_config);
+                train_struct_loss += loss_result.total_loss;
+                train_loss += loss_result.total_loss;
+
+                // Backward pass for mesh model
+                mesh.model.backward(input_graph, &pooling, &loss_result.activation_gradients, mesh.config.embed_dim);
             }
 
             // 3. Apply accumulated gradients ONCE per batch (with batch-averaged LR)
-            mesh.step(current_lr / batch.len() as f32, struct_weight, char_weight);
+            mesh.model.step(current_lr / batch.len() as f32);
+
+            // 4. Train SemanticDecoder on accumulated batch
+            if !decoder_batch.is_empty() {
+                let dec_loss = decoder.backward(&decoder_batch);
+                train_decoder_loss += dec_loss * decoder_batch.len() as f32;
+            }
+
+            // Update stats
+            mesh.stats.total_processed += batch.len();
 
             pb.inc(batch.len() as u64);
         }
@@ -387,21 +324,49 @@ fn main() -> Result<()> {
         let n = train_samples.len() as f32;
         train_loss /= n;
         train_struct_loss /= n;
-        train_char_loss /= n;
+        train_decoder_loss /= n;
 
-        // Validation (structural loss only - no character similarity)
-        let mut val_loss = 0.0;
-        let loss_config = StructuralLossConfig::default();
+        // Validation - PARALLEL: Process validation samples in parallel
+        // Step 1: Parallel pre-compute all graphs
+        let val_graphs: Vec<(GraphemeGraph, GraphemeGraph)> = val_samples
+            .par_iter()
+            .map(|sample| {
+                let input_graph = GraphemeGraph::from_text(&sample.input);
+                let target_graph = GraphemeGraph::from_text(&sample.output);
+                (input_graph, target_graph)
+            })
+            .collect();
 
-        for sample in val_samples {
-            let result = mesh.process_parallel(&sample.input);
-            let target_graph = GraphemeGraph::from_text(&sample.output);
+        // Step 2: Parallel forward pass and metrics computation
+        // Note: mesh.model.forward() takes &self (immutable), so it's thread-safe
+        let val_results: Vec<(f32, f32, f32)> = val_graphs
+            .par_iter()
+            .map(|(input_graph, target_graph)| {
+                let (output_graph, pooling) = mesh.model.forward(input_graph);
 
-            let loss_result = compute_structural_loss(&result.output_graph, &target_graph, &loss_config);
-            val_loss += loss_result.total_loss;
-        }
+                let loss_result = compute_structural_loss(&output_graph, target_graph, &loss_config);
+                let loss = loss_result.total_loss;
 
-        val_loss /= val_samples.len() as f32;
+                // Semantic accuracy on raw output (before decoder)
+                let sem_acc = semantic_accuracy(&output_graph, target_graph);
+
+                // Decoder accuracy
+                let dec_batch = prepare_decoder_batch(&pooling.features, target_graph, &decoder);
+                let dec_acc = if !dec_batch.is_empty() {
+                    decoder.compute_accuracy(&dec_batch)
+                } else {
+                    0.0
+                };
+
+                (loss, sem_acc, dec_acc)
+            })
+            .collect();
+
+        // Aggregate validation metrics
+        let val_count = val_results.len() as f32;
+        let val_loss: f32 = val_results.iter().map(|(l, _, _)| l).sum::<f32>() / val_count;
+        let val_semantic_acc: f32 = val_results.iter().map(|(_, s, _)| s).sum::<f32>() / val_count;
+        let val_decoder_acc: f32 = val_results.iter().map(|(_, _, d)| d).sum::<f32>() / val_count;
 
         let epoch_time = epoch_start.elapsed();
 
@@ -413,10 +378,10 @@ fn main() -> Result<()> {
             mesh.save(&best_path)?;
         }
 
-        // Print progress (structural loss only)
-        print!("Epoch {}/{}: loss={:.4} (struct={:.2}, char={:.2}), val={:.4}",
-            epoch + 1, args.epochs, train_loss, train_struct_loss, train_char_loss,
-            val_loss);
+        // Print progress with semantic metrics
+        print!("Epoch {}/{}: loss={:.4} (struct={:.2}, dec={:.2}), val={:.4}, sem_acc={:.1}%, dec_acc={:.1}%",
+            epoch + 1, args.epochs, train_loss, train_struct_loss, train_decoder_loss,
+            val_loss, val_semantic_acc * 100.0, val_decoder_acc * 100.0);
 
         if is_best {
             print!(" [BEST]");
@@ -424,7 +389,7 @@ fn main() -> Result<()> {
 
         // Show brain activation stats
         let active_count = mesh.stats.brain_activations.len();
-        println!(", lr={:.6}, active_brains={}, time={:.1}s",
+        println!(", lr={:.6}, brains={}, time={:.1}s",
             current_lr, active_count, epoch_time.as_secs_f64());
 
         // Verbose stats

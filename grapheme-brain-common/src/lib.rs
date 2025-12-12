@@ -12,18 +12,22 @@
 //! - [`TextTransformRule`] - Reusable text-based transformation rules
 //! - [`KeywordCapabilityDetector`] - Domain detection via keyword matching
 //! - [`TextNormalizer`] - Input text normalization
+//! - [`GraphAutoencoder`] - Trait for Stage 1 brain autoencoder training
+//! - [`LatentGraph`] - Serializable latent graph representation
 
 mod node;
 mod graph;
 mod transform;
 mod traits;
 mod utils;
+mod autoencoder;
 
 pub use node::ActivatedNode;
 pub use graph::TypedGraph;
 pub use transform::{TextTransformRule, TransformRuleSet};
 pub use traits::{BaseDomainBrain, DomainConfig};
 pub use utils::{KeywordCapabilityDetector, TextNormalizer, math_normalizer, code_normalizer, legal_normalizer};
+pub use autoencoder::{GraphAutoencoder, LatentGraph, EncodedPair, AutoencoderError};
 
 // Re-export commonly used types from dependencies
 pub use petgraph::graph::{DiGraph, NodeIndex, EdgeIndex};

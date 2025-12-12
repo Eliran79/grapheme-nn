@@ -254,3 +254,132 @@ The `generate_mixed_agi` binary creates multi-modal datasets:
 - `api-017`: MCP server for GRAPHEME
 - `api-018`: MCP tools (graph_query, graph_transform, train_step)
 - `integration-004`: MCP client for external tool servers
+
+## Two-Stage Training Paradigm (December 2025)
+
+### The Vision: Train on Graphs, Not Text
+
+Traditional training flow has a critical flaw:
+```
+Text → Graph → Transform → Graph → Text
+         ↑                      ↓
+    (lossy encoding)      (lossy decoding)
+```
+
+The new two-stage paradigm eliminates text from the training loop:
+
+### Stage 1: Graph Autoencoder (Perfect the Brains)
+
+Each cognitive brain learns to be a **perfect encoder/decoder** for its domain:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     STAGE 1: BRAIN AUTOENCODER TRAINING                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   For each domain brain (Code, Math, Text, Vision, etc.):                    │
+│                                                                              │
+│   Domain Input ──► Brain.encode() ──► Latent Graph ──► Brain.decode() ──►   │
+│        ↓                                    ↓                          ↓     │
+│   "def foo():"                        Graph repr.               "def foo():" │
+│                                                                              │
+│   Loss: Reconstruction (input_text == output_text)                           │
+│   Goal: Zero information loss in encoding/decoding                           │
+│                                                                              │
+│   CodeBrain:   "fn main() {}" ←──► CodeGraph  (perfect reconstruction)       │
+│   MathBrain:   "2 + 3 * 4"    ←──► MathGraph  (perfect reconstruction)       │
+│   TextBrain:   "Hello world"  ←──► TextGraph  (perfect reconstruction)       │
+│   VisionBrain: [pixels]       ←──► VisionGraph (feature preservation)        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Stage 2: Graph-Only Transformation (Pure Graph Learning)
+
+Once brains can perfectly encode/decode, we train **purely on graphs**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    STAGE 2: GRAPH-TO-GRAPH TRANSFORMATION                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   NO TEXT IN THIS STAGE - Pure graph operations                              │
+│                                                                              │
+│   Problem Graph ──────────► GraphTransformNet ──────────► Solution Graph     │
+│        ↓                          ↓                            ↓             │
+│   (pre-encoded)            (learns mapping)             (pre-encoded)        │
+│                                                                              │
+│   Loss: Structural (graph topology, node types, edge weights)                │
+│   Goal: Learn graph→graph transformations without text interference          │
+│                                                                              │
+│   Training Data Format:                                                      │
+│   {                                                                          │
+│     "input_graph": <serialized CodeGraph from docstring>,                    │
+│     "output_graph": <serialized CodeGraph from solution>                     │
+│   }                                                                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why This Matters for HumanEval
+
+```
+Current approach:  Text → Graph → Transform → Graph → Text  (lossy at both ends)
+New approach:      Graph ────────► Transform ────────► Graph (lossless)
+```
+
+Benefits:
+1. **No tokenization artifacts** - Graphs preserve code structure natively
+2. **Compositional generalization** - Graph operations compose naturally
+3. **Smaller model needed** - Learning graph transforms is simpler than text→text
+4. **Interpretable** - Can inspect intermediate graphs for debugging
+
+### Brains as Perception (Eyes and Ears)
+
+After Stage 1 training, brains become like **sensory organs**:
+- They **perceive** raw input (text, images, audio)
+- They **convert** to the universal graph language
+- The **thinking** happens entirely in graph space
+- They **translate** back to the output modality
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      BRAINS AS SENSORY ORGANS                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   PERCEPTION (Stage 1 trained)        COGNITION (Stage 2 trained)            │
+│   ─────────────────────────────       ────────────────────────────           │
+│                                                                              │
+│   CodeBrain   ──┐                                                            │
+│   (eyes for    │                                                             │
+│    code)       │                     ┌─────────────────┐                     │
+│                ├──► Input Graph ──►  │  GraphTransform  │ ──► Output Graph   │
+│   MathBrain   ──┤                    │     (learns)     │                    │
+│   (eyes for    │                     └─────────────────┘                     │
+│    math)       │                                                             │
+│                │                                                             │
+│   VisionBrain ──┘                                                            │
+│   (eyes for                                                                  │
+│    images)                                                                   │
+│                                                                              │
+│   Brains are FROZEN after Stage 1 - only GraphTransform learns in Stage 2   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Tasks
+
+**Stage 1: Brain Autoencoder Tasks**
+- `backend-221`: Implement GraphAutoencoder trait for all brains
+- `backend-222`: CodeBrain autoencoder (code ↔ CodeGraph)
+- `backend-223`: MathBrain autoencoder (expression ↔ MathGraph)
+- `backend-224`: TextBrain autoencoder (text ↔ TextGraph)
+- `backend-225`: VisionBrain autoencoder (image ↔ VisionGraph)
+- `backend-226`: Autoencoder reconstruction loss and metrics
+
+**Stage 2: Graph-Only Training Tasks**
+- `backend-227`: Graph-only training data format
+- `backend-228`: Pre-encode HumanEval to graph pairs
+- `backend-229`: Graph-only trainer (no text in training loop)
+- `backend-230`: Structural loss improvements for code graphs
+- `backend-231`: HumanEval benchmark integration

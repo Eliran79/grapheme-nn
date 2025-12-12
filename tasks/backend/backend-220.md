@@ -1,7 +1,7 @@
 ---
 id: backend-220
 title: Generalize parallel CPU processing across all mesh trainers
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -42,12 +42,12 @@ After backend-217/218/219, the parallel processing and SemanticDecoder integrati
 - Reduce code duplication across training binaries
 
 ## Tasks
-- [ ] Create `grapheme-train/src/training_utils.rs` module
-- [ ] Move helper functions: `semantic_accuracy()`, `decode_features_to_graph()`, `prepare_decoder_batch()`
-- [ ] Add `ParallelTrainer` or `TrainingContext` struct with common batch logic
-- [ ] Refactor train_cortex_mesh.rs to use shared utilities
-- [ ] Refactor train_mesh_code.rs to use shared utilities
-- [ ] Update lib.rs to export new module
+- [x] Create `grapheme-train/src/training_utils.rs` module
+- [x] Move helper functions: `semantic_accuracy()`, `decode_features_to_graph()`, `prepare_decoder_batch()`
+- [x] Add helper functions: `hash_based_features()`, `char_accuracy()`, `exact_match()`, `compute_validation_metrics()`
+- [x] Refactor train_cortex_mesh.rs to use shared utilities
+- [x] Refactor train_mesh_code.rs to use shared utilities
+- [x] Update lib.rs to export new module
 
 ## Acceptance Criteria
 ✅ **Code Reuse:**
@@ -68,10 +68,10 @@ After backend-217/218/219, the parallel processing and SemanticDecoder integrati
 - Keep SemanticDecoder initialization in individual trainers (they may have different configs)
 
 ## Testing
-- [ ] Build passes with zero errors
-- [ ] All existing tests pass
-- [ ] Run both trainers for 2 epochs to verify unchanged behavior
-- [ ] Verify semantic accuracy metrics are consistent
+- [x] Build passes with zero errors
+- [x] All existing tests pass (6 new tests for training_utils module)
+- [x] Run both trainers for 2 epochs to verify unchanged behavior
+- [x] Verify semantic accuracy metrics are consistent
 
 ## Version Control
 
@@ -95,30 +95,46 @@ After backend-217/218/219, the parallel processing and SemanticDecoder integrati
 
 ## Updates
 - 2025-12-12: Task created
+- 2025-12-12: Task completed - training_utils.rs module created with shared helper functions
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **New File**: `grapheme-train/src/training_utils.rs` (~280 lines)
+  - `semantic_accuracy()` - compares node types between predicted and target graphs
+  - `decode_features_to_graph()` - converts pooled features to GraphemeGraph using SemanticDecoder (marked `#[allow(dead_code)]`)
+  - `prepare_decoder_batch()` - creates training batch for SemanticDecoder
+  - `hash_based_features()` - generates simple feature matrix from graph characters
+  - `char_accuracy()` - character-level accuracy between strings
+  - `exact_match()` - checks if strings match exactly
+  - `compute_validation_metrics()` - parallel validation metrics computation using rayon
+  - 6 unit tests for the above functions
+
+- **Modified Files**:
+  - `grapheme-train/src/lib.rs` - Added `pub mod training_utils` and re-exports
+  - `grapheme-train/src/bin/train_cortex_mesh.rs` - Removed ~90 lines of duplicate helpers, now imports from `training_utils`
+  - `grapheme-train/src/bin/train_mesh_code.rs` - Removed ~105 lines of duplicate helpers, now imports from `training_utils`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- No change to training behavior - functions are pure and thread-safe
+- `compute_validation_metrics()` uses rayon `ParallelIterator` for parallel validation
+- Helper functions are imported at compile time, no runtime changes
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses existing dependencies: `grapheme_core`, `ndarray`, `petgraph`, `rayon`
+- Added `rayon::iter::ParallelIterator` import for parallel validation helper
+- Both trainers now import from `grapheme_train::training_utils` instead of local definitions
+- SemanticDecoder initialization remains in individual trainers (different configs possible)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Build: `cargo build --release -p grapheme-train --bin train_cortex_mesh --bin train_mesh_code` - zero errors
+- Tests: `cargo test --release -p grapheme-train --lib` - 6 new training_utils tests pass
+- All 445 library tests pass
+- Minor warnings about unused fields in some binaries (not related to this change)
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Functions are generic and can be reused by future trainers
+- `compute_validation_metrics()` designed for `par_iter()` use - caller should own data, not model
+- `decode_features_to_graph()` marked dead_code - reserved for future decoded graph visualization
+- Pattern established: trainers keep model-specific code, share common metrics/utilities

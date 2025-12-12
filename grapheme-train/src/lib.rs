@@ -129,6 +129,13 @@ pub use cortex_mesh::{
 pub mod semantic_decoder;
 pub use semantic_decoder::{SemanticDecoder, SemanticDecoderConfig, VocabStats};
 
+/// Training utilities for CortexMesh trainers (backend-220)
+pub mod training_utils;
+pub use training_utils::{
+    semantic_accuracy, decode_features_to_graph, prepare_decoder_batch,
+    hash_based_features, char_accuracy, exact_match,
+};
+
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{
     Equation, Expr, MathEngine, MathFn, MathOp, Solution, SymbolicEngine, Value,
