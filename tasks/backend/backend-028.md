@@ -1,7 +1,7 @@
 ---
 id: backend-028
 title: Implement gradient descent training loop
-status: done
+status: todo
 priority: high
 tags:
 - backend
@@ -38,13 +38,13 @@ The training loop orchestrates: forward pass → loss computation (GED) → back
 - Support curriculum learning (levels 1-7)
 
 ## Tasks
-- [x] Implement `Optimizer` trait (step, zero_grad)
-- [x] Implement SGD optimizer with momentum
-- [x] Implement Adam optimizer
-- [x] Create training loop: batch → forward → loss → backward → step
-- [x] Add learning rate scheduler (step, cosine, warmup)
-- [x] Integrate with DataGenerator from grapheme-train
-- [x] Add training metrics logging
+- [ ] Implement `Optimizer` trait (step, zero_grad)
+- [ ] Implement SGD optimizer with momentum
+- [ ] Implement Adam optimizer
+- [ ] Create training loop: batch → forward → loss → backward → step
+- [ ] Add learning rate scheduler (step, cosine, warmup)
+- [ ] Integrate with DataGenerator from grapheme-train
+- [ ] Add training metrics logging
 
 ## Acceptance Criteria
 ✅ **Training Loop:**
@@ -89,61 +89,30 @@ The training loop orchestrates: forward pass → loss computation (GED) → back
 
 ## Updates
 - 2025-12-06: Task created
-- 2025-12-06: Task completed - Training loop with optimizers and schedulers
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Added `Optimizer` trait with step, zero_grad, get_lr, set_lr methods
-- Added `SGD` struct with momentum and weight decay support
-- Added `Adam` struct with bias correction and AdamW-style weight decay
-- Added `LRScheduler` enum: Constant, StepLR, ExponentialLR, CosineAnnealingLR, WarmupLR, WarmupCosineDecay
-- Added `TrainingState` and `TrainingMetrics` for tracking training progress
-- Added `TrainingLoop` struct for orchestrating training
-- Added `compute_ged_loss` function for loss computation
-- Added ndarray dependency to grapheme-train
-- Added 19 new tests for optimizers, schedulers, and training loop
-
-### Key APIs
-```rust
-// Optimizers
-let mut sgd = SGD::new(0.01).with_momentum(0.9).with_weight_decay(1e-4);
-let mut adam = Adam::new(0.001).with_beta1(0.9).with_beta2(0.999);
-optimizer.step(&mut weights, &gradients);
-
-// Learning rate schedulers
-let scheduler = LRScheduler::CosineAnnealingLR { t_max: 100, eta_min: 1e-5 };
-let lr = scheduler.get_lr(base_lr, epoch);
-
-// Training loop
-let mut loop_ = TrainingLoop::new(config).with_scheduler(scheduler);
-loop_.record_batch(loss);
-let avg_loss = loop_.complete_epoch();
-let is_best = loop_.record_validation(val_loss, val_acc);
-if loop_.should_stop() { break; }  // Early stopping
-```
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
 ### Causality Impact
-- TrainingLoop.record_batch() accumulates loss for epoch averaging
-- TrainingLoop.complete_epoch() resets counters, updates LR, records metrics
-- Validation tracking enables early stopping via epochs_without_improvement
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- Added ndarray = "0.15" to grapheme-train/Cargo.toml
-- Integrates with existing TrainingConfig, Dataset, BatchIterator
-- compute_ged_loss uses GraphEditDistance for loss computation
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-- 19 new tests: test_sgd_*, test_adam_*, test_lr_scheduler_*, test_training_*
-- Run: `cargo test -p grapheme-train`
-- 55 tests in grapheme-train, 361 total across workspace
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- For backend-029 (learnable graph transform):
-  - Use Optimizer trait to update transformation weights
-  - Use TrainingLoop to orchestrate training
-  - Use compute_ged_loss for loss between predicted and target graphs
-- SGD with momentum is often faster for graph neural networks
-- Adam with warmup (WarmupCosineDecay) is recommended for transformers
-- Early stopping patience is configurable in TrainingConfig
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

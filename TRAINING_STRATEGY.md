@@ -1,48 +1,5 @@
 # GRAPHEME Local Training Strategy
 
-## Implementation Status
-
-**✅ Complete**: Pure structural loss with Sinkhorn optimal transport (backend-096, 097, 098)
-- 1139 tests passing, zero warnings
-- O(n) DAG clique metric (no NP-hard enumeration)
-- Differentiable graph matching via Sinkhorn algorithm
-- All cross-entropy code removed
-
-**✅ Complete**: Training infrastructure (backend-101, 102)
-- Unified `train` command supports both math curriculum and QA text pairs
-- Auto-format detection from JSONL files
-- Multi-task learning without catastrophic forgetting
-
-**✅ Complete**: Domain brain training
-- `grapheme-vision`: Image classification (MNIST >90% accuracy)
-- `grapheme-time`: Time series forecasting (87% improvement over baseline)
-- `grapheme-router`: AGI-ready cognitive router (8µs latency)
-
-**✅ Complete**: Router-to-training integration (backend-165)
-- `route_for_training()`: Returns `TrainingPair` with (input_graph, output_graph)
-- `generate_training_batch()`: Batch processing for multi-modal training
-- All Input variants supported: Text, Sequence, Image, CSV, Raw
-
-**✅ Complete**: Unified AGI Training (backend-166, 167, 168)
-- `train_unified_agi`: Single binary trains all modules at once
-- `SharedAGIModel`: Single DagNN with BrainSlice allocation per domain
-- `generate_mixed_agi`: Multi-modal dataset generator (math, text, timeseries, vision)
-- 160 shared nodes, 4 brain slices with disjoint input/output ranges
-- 30K+ examples/sec training throughput
-
-**🔄 Planned**: Text/Web Learning (backend-169 to 174, data-001 to 003)
-- Text file ingestion (TXT, MD, JSON, CSV)
-- Web content fetcher (HTTP/HTTPS)
-- Text preprocessing pipeline (tokenization, cleaning, chunking)
-- HTML/web content parser
-- `train_from_text` and `train_from_web` binaries
-
-**🔄 Planned**: LLM Collaboration (integration-001 to 004)
-- LLM API client (Claude, OpenAI, Gemini)
-- Bidirectional graph↔LLM translation
-- Collaborative learning from LLM interactions
-- Knowledge distillation from LLMs to GRAPHEME graphs
-
 ## Quick Start Guide
 
 This document provides a step-by-step guide for training GRAPHEME on your local machine.
@@ -177,11 +134,14 @@ epsilon = 1e-8
 weight_decay = 0.0001
 
 [loss]
-# Structural loss weights (Sinkhorn optimal transport)
-# Formula: loss = α·node_cost + β·edge_cost + γ·clique_cost
-node_insertion_cost = 1.0  # α (node alignment via Sinkhorn)
-edge_insertion_cost = 0.5  # β (edge alignment from soft assignments)
-clique_weight = 2.0        # γ (DAG density distribution, O(n) complexity)
+# Graph Edit Distance weights
+node_insertion_cost = 1.0
+node_deletion_cost = 1.0
+edge_insertion_cost = 0.5
+edge_deletion_cost = 0.5
+
+# Clique mismatch penalty
+clique_weight = 2.0
 
 [curriculum]
 # Start level (1-7)
@@ -352,10 +312,8 @@ cargo run --release -p grapheme-train --bin train -- \
 │                                                              │
 │  3. LOSS COMPUTATION                                         │
 │     ┌─────────────────────────────────────────┐             │
-│     │ Loss = α·node + β·edge + γ·clique        │            │
-│     │   Sinkhorn optimal transport (O(nmk))    │            │
-│     │   DAG density distribution (O(n))        │            │
-│     │   Pure structural loss (no cross-entropy)│            │
+│     │ Loss = α·node_ins + β·edge_del + γ·clique │            │
+│     │       (Graph Edit Distance, NOT cross-entropy)        │
 │     └─────────────────────────────────────────┘             │
 │                                                              │
 │  4. VALIDATION                                               │

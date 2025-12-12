@@ -18,7 +18,6 @@ petgraph = { workspace = true, features = ["serde-1"] }
 # Core crates
 grapheme-core = { path = "../grapheme-core" }
 grapheme-reason = { path = "../grapheme-reason" }
-grapheme-safety = { path = "../grapheme-safety" }
 
 [dev-dependencies]
 criterion.workspace = true

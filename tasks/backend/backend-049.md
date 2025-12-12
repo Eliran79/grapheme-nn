@@ -1,7 +1,7 @@
 ---
 id: backend-049
 title: Add NaN validation to loss computation
-status: done
+status: todo
 priority: medium
 tags:
 - backend

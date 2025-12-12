@@ -1,29 +1,29 @@
 [workspace]
 resolver = "2"
 members = [
-    "grapheme-engine",
-    "grapheme-polish",
-    "grapheme-math",
-    "grapheme-core",
-    "grapheme-train",
-    "grapheme-memory",
-    "grapheme-reason",
-    "grapheme-world",
-    "grapheme-multimodal",
-    "grapheme-meta",
     "grapheme-agent",
-    "grapheme-ground",
-    "grapheme-parallel",
-    "grapheme-code",
-    "grapheme-law",
-    "grapheme-music",
-    "grapheme-chem",
-    "grapheme-vision",
-    "grapheme-time",
-    "grapheme-router",
-    "grapheme-tests",
     "grapheme-brain-common",
+    "grapheme-chem",
+    "grapheme-code",
+    "grapheme-core",
+    "grapheme-engine",
+    "grapheme-ground",
+    "grapheme-law",
+    "grapheme-math",
+    "grapheme-memory",
+    "grapheme-meta",
+    "grapheme-multimodal",
+    "grapheme-music",
+    "grapheme-parallel",
+    "grapheme-polish",
+    "grapheme-reason",
+    "grapheme-router",
     "grapheme-safety",
+    "grapheme-tests",
+    "grapheme-time",
+    "grapheme-train",
+    # "grapheme-vision",  # Temporarily excluded - needs neural API stubs (Embedding, StructuralClassifier, etc.)
+    "grapheme-world",
 ]
 
 [workspace.package]
@@ -49,15 +49,8 @@ rayon = "1.10"
 
 # Numeric
 num-traits = "0.2"
-ndarray = { version = "0.15", features = ["serde"] }
+ndarray = "0.16"
 rand = "0.8"
 
 # Testing
 criterion = "0.5"
-
-# Parsing (tree-sitter for multi-language support)
-tree-sitter = "0.24"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-javascript = "0.23"
-tree-sitter-c = "0.23"

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "AGI-ready cognitive router for GRAPHEME multi-modal processing"
 
+[features]
+default = []
+# vision = ["grapheme-vision"]  # Disabled until grapheme-vision compiles
+
 [dependencies]
 thiserror.workspace = true
 anyhow.workspace = true
@@ -14,7 +18,7 @@ serde_json.workspace = true
 grapheme-core = { path = "../grapheme-core" }
 grapheme-time = { path = "../grapheme-time" }
 grapheme-math = { path = "../grapheme-math" }
-grapheme-vision = { path = "../grapheme-vision" }
+# grapheme-vision = { path = "../grapheme-vision", optional = true }  # Disabled until grapheme-vision compiles
 grapheme-safety = { path = "../grapheme-safety" }
 
 [dev-dependencies]

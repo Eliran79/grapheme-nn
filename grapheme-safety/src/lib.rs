@@ -595,8 +595,8 @@ impl SafetyGuard {
             }
 
             // Physical actions require extra scrutiny
-            if matches!(action.action_type, ActionType::Physical) {
-                if action.harm_estimate > 0.0 || action.uncertainty > 0.05 {
+            if matches!(action.action_type, ActionType::Physical)
+                && (action.harm_estimate > 0.0 || action.uncertainty > 0.05) {
                     return Some(SafetyViolation::new(
                         AsimovLaw::FirstLaw,
                         HarmCategory::Physical,
@@ -606,7 +606,6 @@ impl SafetyGuard {
                         timestamp,
                     ));
                 }
-            }
         }
 
         // Check for content that could harm individuals

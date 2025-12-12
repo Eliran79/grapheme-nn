@@ -2,8 +2,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use grapheme_memory::{
-    Episode, EpisodicMemory, Graph, GraphFingerprint, SemanticGraph, SimpleEpisodicMemory,
-    SimpleSemanticGraph, SimpleWorkingMemory, WorkingMemory,
+    Episode, EpisodicMemory, Graph, GraphFingerprint, SimpleEpisodicMemory,
+    SimpleSemanticGraph, SemanticGraph, SimpleWorkingMemory, WorkingMemory,
 };
 
 fn make_graph(text: &str) -> Graph {

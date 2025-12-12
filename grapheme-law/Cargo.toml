@@ -13,7 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 petgraph.workspace = true
 grapheme-core = { path = "../grapheme-core" }
-grapheme-brain-common = { path = "../grapheme-brain-common" }
 
 [dev-dependencies]
 criterion.workspace = true

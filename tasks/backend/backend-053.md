@@ -1,7 +1,7 @@
 ---
 id: backend-053
 title: Fix greedy_coloring empty collection handling
-status: done
+status: todo
 priority: medium
 tags:
 - backend
@@ -96,20 +96,25 @@ Empty or degenerate graphs cause panic during graph coloring.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- **NO CHANGES REQUIRED** - The `greedy_coloring()` function does not exist in the codebase
-- This task was created based on outdated analysis
-- Grep confirms no references to "greedy_coloring" or graph coloring anywhere in the code
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
 ### Causality Impact
-- None - no code changes made
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- None - task was not applicable
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-- Verified via `grep -r "greedy_coloring" .` - no matches found
-- No graph coloring functionality exists in the codebase
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- This task can be ignored - it references non-existent code
-- If graph coloring is needed in the future, create a new task with proper context
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

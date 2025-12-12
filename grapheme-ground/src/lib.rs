@@ -22,10 +22,7 @@
 //! - Simulated interaction (compromise)
 //! - Embodied interaction (ideal but hard)
 
-use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
-    LearnableParam, Persistable, PersistenceError,
-};
+use grapheme_core::DagNN;
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -177,12 +174,7 @@ pub struct Grounding {
 
 impl Grounding {
     /// Create a new grounding
-    pub fn new(
-        symbol: NodeId,
-        referent: Referent,
-        confidence: f32,
-        source: GroundingSource,
-    ) -> Self {
+    pub fn new(symbol: NodeId, referent: Referent, confidence: f32, source: GroundingSource) -> Self {
         Self {
             symbol,
             referent,
@@ -361,9 +353,7 @@ impl WorldInterface {
                 return actuator.execute(action);
             }
         }
-        Err(ActionError::CannotExecute(
-            "No suitable actuator".to_string(),
-        ))
+        Err(ActionError::CannotExecute("No suitable actuator".to_string()))
     }
 
     /// Number of sensors
@@ -446,10 +436,7 @@ impl GroundedGraph for SimpleGroundedGraph {
     }
 
     fn groundings(&self, node: NodeId) -> Vec<&Grounding> {
-        self.groundings
-            .iter()
-            .filter(|g| g.symbol == node)
-            .collect()
+        self.groundings.iter().filter(|g| g.symbol == node).collect()
     }
 
     fn get_grounding(&self, id: GroundingId) -> Option<&Grounding> {
@@ -623,212 +610,6 @@ pub fn create_default_embodied_agent() -> SimpleEmbodiedAgent {
 }
 
 // ============================================================================
-// Learnable Grounding
-// ============================================================================
-
-/// Learnable grounding with trainable binding thresholds
-///
-/// This module learns to ground symbols to referents by adjusting
-/// binding thresholds and exploration behavior.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearnableGrounding {
-    /// Threshold for grounding confidence
-    pub grounding_threshold: LearnableParam,
-    /// Weight for perception-based grounding
-    pub perception_weight: LearnableParam,
-    /// Weight for action-based grounding
-    pub action_weight: LearnableParam,
-    /// Exploration bonus for novel referents
-    pub exploration_bonus: LearnableParam,
-    /// Co-occurrence learning rate
-    pub cooccurrence_rate: LearnableParam,
-}
-
-impl LearnableGrounding {
-    /// Create a new learnable grounding module
-    pub fn new() -> Self {
-        Self {
-            grounding_threshold: LearnableParam::new(0.5),
-            perception_weight: LearnableParam::new(0.6),
-            action_weight: LearnableParam::new(0.4),
-            exploration_bonus: LearnableParam::new(0.1),
-            cooccurrence_rate: LearnableParam::new(0.01),
-        }
-    }
-
-    /// Check if a grounding is confident enough
-    pub fn is_grounded(&self, confidence: f32) -> bool {
-        confidence >= self.grounding_threshold.value
-    }
-
-    /// Compute weighted grounding score from perception and action
-    pub fn grounding_score(&self, perception_confidence: f32, action_confidence: f32) -> f32 {
-        let pw = self.perception_weight.value.max(0.0);
-        let aw = self.action_weight.value.max(0.0);
-        let total = pw + aw;
-        if total > 0.0 {
-            (pw * perception_confidence + aw * action_confidence) / total
-        } else {
-            (perception_confidence + action_confidence) / 2.0
-        }
-    }
-
-    /// Compute exploration bonus for a novel referent
-    pub fn novelty_bonus(&self, novelty: f32) -> f32 {
-        self.exploration_bonus.value.max(0.0) * novelty.clamp(0.0, 1.0)
-    }
-
-    /// Update co-occurrence strength
-    pub fn update_cooccurrence(&self, current_strength: f32, observed: bool) -> f32 {
-        let rate = self.cooccurrence_rate.value.clamp(0.0, 1.0);
-        let target = if observed { 1.0 } else { 0.0 };
-        current_strength + rate * (target - current_strength)
-    }
-}
-
-impl Default for LearnableGrounding {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Learnable for LearnableGrounding {
-    fn zero_grad(&mut self) {
-        self.grounding_threshold.zero_grad();
-        self.perception_weight.zero_grad();
-        self.action_weight.zero_grad();
-        self.exploration_bonus.zero_grad();
-        self.cooccurrence_rate.zero_grad();
-    }
-
-    fn step(&mut self, lr: f32) {
-        self.grounding_threshold.step(lr);
-        self.perception_weight.step(lr);
-        self.action_weight.step(lr);
-        self.exploration_bonus.step(lr);
-        self.cooccurrence_rate.step(lr);
-
-        // Ensure valid ranges
-        self.grounding_threshold.value = self.grounding_threshold.value.clamp(0.0, 1.0);
-        self.cooccurrence_rate.value = self.cooccurrence_rate.value.clamp(0.0, 1.0);
-    }
-
-    fn num_parameters(&self) -> usize {
-        5
-    }
-
-    fn has_gradients(&self) -> bool {
-        self.grounding_threshold.grad != 0.0
-            || self.perception_weight.grad != 0.0
-            || self.action_weight.grad != 0.0
-            || self.exploration_bonus.grad != 0.0
-            || self.cooccurrence_rate.grad != 0.0
-    }
-
-    fn gradient_norm(&self) -> f32 {
-        (self.grounding_threshold.grad.powi(2)
-            + self.perception_weight.grad.powi(2)
-            + self.action_weight.grad.powi(2)
-            + self.exploration_bonus.grad.powi(2)
-            + self.cooccurrence_rate.grad.powi(2))
-        .sqrt()
-    }
-}
-
-impl Persistable for LearnableGrounding {
-    fn persist_type_id() -> &'static str {
-        "LearnableGrounding"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        // Validate grounding threshold is in valid range
-        if self.grounding_threshold.value < 0.0 || self.grounding_threshold.value > 1.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Grounding threshold must be between 0 and 1".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Brain-Aware Grounding
-// ============================================================================
-
-/// Brain-aware grounding that uses domain brains for embodied interaction
-pub struct BrainAwareGrounding {
-    /// The cognitive-brain bridge for domain routing
-    pub bridge: DefaultCognitiveBridge,
-}
-
-impl Debug for BrainAwareGrounding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BrainAwareGrounding")
-            .field("available_domains", &self.bridge.available_domains())
-            .finish()
-    }
-}
-
-impl BrainAwareGrounding {
-    /// Create a new brain-aware grounding
-    pub fn new() -> Self {
-        Self {
-            bridge: DefaultCognitiveBridge::new(),
-        }
-    }
-
-    /// Register a domain brain
-    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
-        self.bridge.register(brain);
-    }
-
-    /// Check if a domain brain can help with grounding
-    pub fn can_ground(&self, percept_text: &str) -> bool {
-        self.bridge.route_to_multiple_brains(percept_text).success
-    }
-
-    /// Get domains relevant to a percept
-    pub fn domains_for_percept(&self, percept_text: &str) -> Vec<String> {
-        self.bridge
-            .route_to_multiple_brains(percept_text)
-            .domains()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    /// Get available domains
-    pub fn available_domains(&self) -> Vec<String> {
-        self.bridge.available_domains()
-    }
-}
-
-impl Default for BrainAwareGrounding {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CognitiveBrainBridge for BrainAwareGrounding {
-    fn get_registry(&self) -> &BrainRegistry {
-        self.bridge.get_registry()
-    }
-
-    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
-        self.bridge.get_registry_mut()
-    }
-}
-
-/// Factory function to create brain-aware grounding
-pub fn create_brain_aware_grounding() -> BrainAwareGrounding {
-    BrainAwareGrounding::new()
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
@@ -849,8 +630,8 @@ mod tests {
 
     #[test]
     fn test_procedure_spec() {
-        let proc =
-            ProcedureSpec::new("make_coffee").with_steps(vec!["grind beans", "add water", "brew"]);
+        let proc = ProcedureSpec::new("make_coffee")
+            .with_steps(vec!["grind beans", "add water", "brew"]);
         assert_eq!(proc.name, "make_coffee");
         assert_eq!(proc.steps.len(), 3);
     }

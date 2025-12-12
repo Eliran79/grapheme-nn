@@ -1,7 +1,7 @@
 ---
 id: backend-046
 title: Fix NaN handling in GED pair sorting
-status: done
+status: todo
 priority: high
 tags:
 - backend

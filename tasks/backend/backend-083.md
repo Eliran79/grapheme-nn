@@ -1,7 +1,7 @@
 ---
 id: backend-083
 title: Implement actual math validation in grapheme-math validate()
-status: done
+status: todo
 priority: low
 tags:
 - backend

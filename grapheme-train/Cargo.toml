@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Training infrastructure for GRAPHEME neural network"
 
+[features]
+default = []
+# vision = ["grapheme-vision"]  # Disabled until grapheme-vision compiles
+
 [dependencies]
 thiserror.workspace = true
 anyhow.workspace = true
@@ -15,34 +19,37 @@ rayon.workspace = true
 petgraph.workspace = true
 ndarray.workspace = true
 rand.workspace = true
-clap = { version = "4.4", features = ["derive"] }
-toml = "0.8"
-mnist = "0.6"
-indicatif = "0.17"
+clap = { version = "4.0", features = ["derive"] }
+
+# Core GRAPHEME crates
+grapheme-core = { path = "../grapheme-core" }
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-math = { path = "../grapheme-math" }
-grapheme-core = { path = "../grapheme-core" }
-grapheme-code = { path = "../grapheme-code", features = ["tree-sitter-parsing"] }
+
+# Domain brains
+grapheme-code = { path = "../grapheme-code" }
 grapheme-law = { path = "../grapheme-law" }
 grapheme-music = { path = "../grapheme-music" }
 grapheme-chem = { path = "../grapheme-chem" }
-grapheme-vision = { path = "../grapheme-vision" }
 grapheme-time = { path = "../grapheme-time" }
+grapheme-brain-common = { path = "../grapheme-brain-common" }
+
+# Router
 grapheme-router = { path = "../grapheme-router" }
-grapheme-safety = { path = "../grapheme-safety" }
-grapheme-memory = { path = "../grapheme-memory" }
-grapheme-meta = { path = "../grapheme-meta" }
+
+# Cognitive systems
 grapheme-reason = { path = "../grapheme-reason" }
-grapheme-ground = { path = "../grapheme-ground" }
+grapheme-meta = { path = "../grapheme-meta" }
+grapheme-memory = { path = "../grapheme-memory" }
+grapheme-safety = { path = "../grapheme-safety" }
 grapheme-world = { path = "../grapheme-world" }
+grapheme-ground = { path = "../grapheme-ground" }
 grapheme-agent = { path = "../grapheme-agent" }
 grapheme-multimodal = { path = "../grapheme-multimodal" }
-grapheme-parallel = { path = "../grapheme-parallel" }
-regex = "1.10"
-ureq = { version = "2.9", features = ["native-tls"] }
-parquet = "54.0"
-arrow = { version = "54.0", features = ["json"] }
+
+# Optional vision (disabled until grapheme-vision compiles)
+# grapheme-vision = { path = "../grapheme-vision", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -50,99 +57,3 @@ criterion.workspace = true
 [[bench]]
 name = "train_bench"
 harness = false
-
-[[bin]]
-name = "generate"
-path = "src/bin/generate.rs"
-
-[[bin]]
-name = "train"
-path = "src/bin/train.rs"
-
-[[bin]]
-name = "validate"
-path = "src/bin/validate.rs"
-
-[[bin]]
-name = "repl"
-path = "src/bin/repl.rs"
-
-[[bin]]
-name = "train_mnist"
-path = "src/bin/train_mnist.rs"
-
-[[bin]]
-name = "train_timeseries"
-path = "src/bin/train_timeseries.rs"
-
-[[bin]]
-name = "train_multitask"
-path = "src/bin/train_multitask.rs"
-
-[[bin]]
-name = "demo_agi_router"
-path = "src/bin/demo_agi_router.rs"
-
-[[bin]]
-name = "train_online"
-path = "src/bin/train_online.rs"
-
-[[bin]]
-name = "query"
-path = "src/bin/query.rs"
-
-[[bin]]
-name = "infer"
-path = "src/bin/infer.rs"
-
-[[bin]]
-name = "agi_infer"
-path = "src/bin/agi_infer.rs"
-
-[[bin]]
-name = "train_with_llm"
-path = "src/bin/train_with_llm.rs"
-
-[[bin]]
-name = "build_kb"
-path = "src/bin/build_kb.rs"
-
-[[bin]]
-name = "import_datasets"
-path = "src/bin/import_datasets.rs"
-
-[[bin]]
-name = "generate_code_training"
-path = "src/bin/generate_code_training.rs"
-
-[[bin]]
-name = "train_code"
-path = "src/bin/train_code.rs"
-
-[[bin]]
-name = "train_code_gen"
-path = "src/bin/train_code_gen.rs"
-
-[[bin]]
-name = "train_code_graph"
-path = "src/bin/train_code_graph.rs"
-
-[[bin]]
-name = "train_unified_code"
-path = "src/bin/train_unified_code.rs"
-
-[[bin]]
-name = "eval_humaneval"
-path = "src/bin/eval_humaneval.rs"
-
-[[bin]]
-name = "train_ast_code"
-path = "src/bin/train_ast_code.rs"
-
-[[bin]]
-name = "train_ast_gen"
-path = "src/bin/train_ast_gen.rs"
-
-[[bin]]
-name = "train_cortex_mesh"
-path = "src/bin/train_cortex_mesh.rs"

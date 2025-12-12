@@ -1,7 +1,7 @@
 ---
 id: backend-081
 title: Implement domain-specific from_core/to_core conversions
-status: done
+status: todo
 priority: medium
 tags:
 - backend

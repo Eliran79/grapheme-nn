@@ -1,7 +1,7 @@
 ---
 id: backend-038
 title: Add learnable grounding with embodied interaction learning
-status: done
+status: todo
 priority: medium
 tags:
 - backend

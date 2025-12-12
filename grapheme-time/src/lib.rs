@@ -442,7 +442,7 @@ impl DomainBrain for TimeBrain {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Warning,
                 message: "Time series graph has very few nodes".to_string(),
-                node: None,
+                location: None,
             });
         }
 
@@ -450,7 +450,7 @@ impl DomainBrain for TimeBrain {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Error,
                 message: "Time series graph has no edges".to_string(),
-                node: None,
+                location: None,
             });
         }
 
@@ -498,18 +498,13 @@ impl DomainBrain for TimeBrain {
                 Err(_) => continue,
             };
 
-            // Create output graph with single node containing target value
-            let mut output_dag = DagNN::new();
-            let mut output_node = Node::output();
-            output_node.activation = target_val;
-            output_dag.graph.add_node(output_node);
+            // Store input and output as serialized JSON
+            let input_json = serde_json::to_string(&input_dag).unwrap_or_default();
+            let output_json = format!("{}", target_val);
 
-            examples.push(DomainExample {
-                input: input_dag,
-                output: output_dag,
-                domain: "time".to_string(),
-                difficulty: 1,
-            });
+            examples.push(DomainExample::new(input_json, output_json)
+                .with_metadata("domain", "time")
+                .with_metadata("difficulty", "1"));
         }
 
         examples
@@ -922,9 +917,9 @@ mod tests {
 
         assert!(!examples.is_empty());
         for example in examples {
-            assert!(example.input.node_count() > 0);
-            assert!(example.output.node_count() > 0);
-            assert_eq!(example.domain, "time");
+            assert!(!example.input.is_empty());
+            assert!(!example.output.is_empty());
+            assert_eq!(example.metadata.get("domain").map(|s| s.as_str()), Some("time"));
         }
     }
 }

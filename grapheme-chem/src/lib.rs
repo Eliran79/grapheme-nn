@@ -7,18 +7,10 @@
 //! - Chemical reaction representation
 //! - Molecular graph construction
 //! - Chemical property analysis
-//!
-//! ## Migration to brain-common
-//!
-//! This crate uses shared abstractions from `grapheme-brain-common`:
-//! - `ActivatedNode<ChemNodeType>` - Generic node wrapper (aliased as `ChemNode`)
-//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
-//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
-use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
-    ValidationIssue,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
+    ExecutionResult, ValidationIssue, ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -42,33 +34,13 @@ pub type ChemGraphResult<T> = Result<T, ChemGraphError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Element {
     // First row
-    H,
-    He,
+    H, He,
     // Second row
-    Li,
-    Be,
-    B,
-    C,
-    N,
-    O,
-    F,
-    Ne,
+    Li, Be, B, C, N, O, F, Ne,
     // Third row
-    Na,
-    Mg,
-    Al,
-    Si,
-    P,
-    S,
-    Cl,
-    Ar,
+    Na, Mg, Al, Si, P, S, Cl, Ar,
     // Fourth row (common)
-    K,
-    Ca,
-    Fe,
-    Cu,
-    Zn,
-    Br,
+    K, Ca, Fe, Cu, Zn, Br,
     // Generic placeholder
     Unknown,
 }
@@ -154,7 +126,7 @@ impl Element {
 
 /// Chemistry node types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ChemNodeType {
+pub enum ChemNode {
     /// An atom
     Atom {
         element: Element,
@@ -164,46 +136,13 @@ pub enum ChemNodeType {
     /// A functional group
     FunctionalGroup(FunctionalGroupType),
     /// A molecule (container)
-    Molecule {
-        name: Option<String>,
-        formula: Option<String>,
-    },
+    Molecule { name: Option<String>, formula: Option<String> },
     /// A reaction
     Reaction { name: Option<String> },
     /// A catalyst
     Catalyst(String),
     /// Reaction conditions
-    Conditions {
-        temperature: Option<f32>,
-        pressure: Option<f32>,
-    },
-}
-
-/// Get default activation value based on chemistry node type importance.
-///
-/// Used by `new_chem_node()` to compute initial activation from type.
-pub fn chem_type_activation(node_type: &ChemNodeType) -> f32 {
-    match node_type {
-        // Structural elements - high importance
-        ChemNodeType::Atom { .. } => 0.7,
-        ChemNodeType::FunctionalGroup(_) => 0.8,
-        // Container/organization nodes
-        ChemNodeType::Molecule { .. } => 0.9,
-        ChemNodeType::Reaction { .. } => 0.85,
-        // Process-related nodes
-        ChemNodeType::Catalyst(_) => 0.75,
-        ChemNodeType::Conditions { .. } => 0.5,
-    }
-}
-
-/// A chemistry node with activation for gradient flow.
-///
-/// This is a type alias for `ActivatedNode<ChemNodeType>` from brain-common.
-pub type ChemNode = ActivatedNode<ChemNodeType>;
-
-/// Create a new chemistry node with default activation based on type.
-pub fn new_chem_node(node_type: ChemNodeType) -> ChemNode {
-    ActivatedNode::with_type_activation(node_type, chem_type_activation)
+    Conditions { temperature: Option<f32>, pressure: Option<f32> },
 }
 
 /// Bond types
@@ -222,16 +161,16 @@ pub enum BondType {
 /// Common functional groups
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FunctionalGroupType {
-    Hydroxyl, // -OH
-    Carbonyl, // C=O
-    Carboxyl, // -COOH
-    Amino,    // -NH2
-    Methyl,   // -CH3
-    Phenyl,   // C6H5-
-    Aldehyde, // -CHO
-    Ketone,   // R-CO-R
-    Ester,    // R-COO-R
-    Ether,    // R-O-R
+    Hydroxyl,    // -OH
+    Carbonyl,    // C=O
+    Carboxyl,    // -COOH
+    Amino,       // -NH2
+    Methyl,      // -CH3
+    Phenyl,      // C6H5-
+    Aldehyde,    // -CHO
+    Ketone,      // R-CO-R
+    Ester,       // R-COO-R
+    Ether,       // R-O-R
 }
 
 /// Edge types in chemistry graphs
@@ -293,10 +232,10 @@ impl MolecularGraph {
         let mut graph = Self::new();
 
         // Create molecule container
-        let mol = graph.add_node(new_chem_node(ChemNodeType::Molecule {
+        let mol = graph.add_node(ChemNode::Molecule {
             name: None,
             formula: Some(formula.to_string()),
-        }));
+        });
         graph.root = Some(mol);
 
         // Simple parser for formulas like H2O, CO2, CH4
@@ -321,9 +260,7 @@ impl MolecularGraph {
             // Get count
             let mut count = 0u32;
             while i < chars.len() && chars[i].is_ascii_digit() {
-                if let Some(digit) = chars[i].to_digit(10) {
-                    count = count * 10 + digit;
-                }
+                count = count * 10 + chars[i].to_digit(10).unwrap();
                 i += 1;
             }
             if count == 0 {
@@ -333,11 +270,11 @@ impl MolecularGraph {
             // Add atoms
             if let Some(element) = Element::from_symbol(&symbol) {
                 for _ in 0..count {
-                    let atom = graph.add_node(new_chem_node(ChemNodeType::Atom {
+                    let atom = graph.add_node(ChemNode::Atom {
                         element,
                         charge: 0,
                         isotope: None,
-                    }));
+                    });
                     graph.add_edge(mol, atom, ChemEdge::PartOf);
                 }
             }
@@ -351,42 +288,8 @@ impl MolecularGraph {
 // Chemistry Brain
 // ============================================================================
 
-/// Create the chemistry domain configuration.
-fn create_chem_config() -> DomainConfig {
-    // Chemistry keywords for can_process detection
-    let keywords = vec![
-        "molecule", "atom", "bond", "element", "reaction", "compound",
-        "formula", "acid", "base", "salt", "ion", "carbon", "hydrogen",
-        "oxygen", "nitrogen", "organic", "inorganic", "polymer",
-        "catalyst", "enzyme", "solution", "molar", "mol", "pH", "concentration",
-    ];
-
-    // Create normalizer for chemistry notation
-    let normalizer = TextNormalizer::new()
-        .add_replacements(vec![
-            ("->", "→"),
-            ("=>", "→"),
-            ("<->", "⇌"),
-            ("<=>", "⇌"),
-            ("water", "H₂O"),
-            ("carbon dioxide", "CO₂"),
-            ("methane", "CH₄"),
-        ])
-        .trim_whitespace(true);
-
-    DomainConfig::new("chemistry", "Chemistry", keywords)
-        .with_version("0.1.0")
-        .with_normalizer(normalizer)
-        .with_annotation_prefix("@chem:")
-}
-
-/// The Chemistry Brain for molecular analysis.
-///
-/// Uses DomainConfig from brain-common for keyword detection and normalization.
-pub struct ChemBrain {
-    /// Domain configuration
-    config: DomainConfig,
-}
+/// The Chemistry Brain for molecular analysis
+pub struct ChemBrain;
 
 impl Default for ChemBrain {
     fn default() -> Self {
@@ -405,26 +308,31 @@ impl std::fmt::Debug for ChemBrain {
 impl ChemBrain {
     /// Create a new chemistry brain
     pub fn new() -> Self {
-        Self {
-            config: create_chem_config(),
-        }
+        Self
     }
 
-    /// Check for molecular formula patterns (e.g., H2O, CO2, C6H12O6)
-    fn has_formula_pattern(&self, input: &str) -> bool {
+    /// Check if text looks like chemistry content
+    fn looks_like_chemistry(&self, input: &str) -> bool {
+        let chem_patterns = [
+            "molecule", "atom", "bond", "element",
+            "reaction", "compound", "formula",
+            "acid", "base", "salt", "ion",
+            "carbon", "hydrogen", "oxygen", "nitrogen",
+            "organic", "inorganic", "polymer",
+            "catalyst", "enzyme", "solution",
+            "molar", "mol", "pH", "concentration",
+        ];
+        let lower = input.to_lowercase();
+
+        // Check for patterns
+        if chem_patterns.iter().any(|p| lower.contains(p)) {
+            return true;
+        }
+
+        // Check for molecular formula patterns (e.g., H2O, CO2, C6H12O6)
         let has_element = input.chars().any(|c| "HCNOS".contains(c));
         let has_subscript = input.chars().any(|c| c.is_ascii_digit());
         has_element && has_subscript
-    }
-}
-
-// ============================================================================
-// BaseDomainBrain Implementation
-// ============================================================================
-
-impl BaseDomainBrain for ChemBrain {
-    fn config(&self) -> &DomainConfig {
-        &self.config
     }
 }
 
@@ -434,94 +342,69 @@ impl BaseDomainBrain for ChemBrain {
 
 impl DomainBrain for ChemBrain {
     fn domain_id(&self) -> &str {
-        &self.config.domain_id
+        "chemistry"
     }
 
     fn domain_name(&self) -> &str {
-        &self.config.domain_name
+        "Chemistry"
     }
 
     fn version(&self) -> &str {
-        &self.config.version
+        "0.1.0"
     }
 
     fn can_process(&self, input: &str) -> bool {
-        // Use default keyword-based detection, plus chemistry-specific formula patterns
-        self.default_can_process(input) || self.has_formula_pattern(input)
+        self.looks_like_chemistry(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        self.default_parse(input)
+        DagNN::from_text(input).map_err(|e| e.into())
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        self.default_from_core(graph)
+        Ok(graph.clone())
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        self.default_to_core(graph)
+        Ok(graph.clone())
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        self.default_validate(graph)
+        let mut issues = Vec::new();
+
+        if graph.input_nodes().is_empty() {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Empty chemistry graph".to_string(),
+                location: None,
+            });
+        }
+
+        Ok(issues)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        self.default_execute(graph)
+        let text = graph.to_text();
+        Ok(ExecutionResult::Text(format!("Chemistry: {}", text)))
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {
         vec![
-            DomainRule {
-                id: 0,
-                domain: "chemistry".to_string(),
-                name: "Balance Equation".to_string(),
-                description: "Balance a chemical equation".to_string(),
-                category: "reaction".to_string(),
-            },
-            DomainRule {
-                id: 1,
-                domain: "chemistry".to_string(),
-                name: "Valence Check".to_string(),
-                description: "Verify atom valence is satisfied".to_string(),
-                category: "validation".to_string(),
-            },
-            DomainRule {
-                id: 2,
-                domain: "chemistry".to_string(),
-                name: "IUPAC Naming".to_string(),
-                description: "Generate IUPAC name for molecule".to_string(),
-                category: "naming".to_string(),
-            },
-            DomainRule {
-                id: 3,
-                domain: "chemistry".to_string(),
-                name: "Molecular Weight".to_string(),
-                description: "Calculate molecular weight".to_string(),
-                category: "calculation".to_string(),
-            },
-            DomainRule {
-                id: 4,
-                domain: "chemistry".to_string(),
-                name: "Functional Group Detection".to_string(),
-                description: "Identify functional groups".to_string(),
-                category: "analysis".to_string(),
-            },
+            DomainRule::new(0, "Balance Equation", "Balance a chemical equation"),
+            DomainRule::new(1, "Valence Check", "Verify atom valence is satisfied"),
+            DomainRule::new(2, "IUPAC Naming", "Generate IUPAC name for molecule"),
+            DomainRule::new(3, "Molecular Weight", "Calculate molecular weight"),
+            DomainRule::new(4, "Functional Group Detection", "Identify functional groups"),
         ]
     }
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0 => self.apply_balance_equation(graph),
-            1 => self.apply_valence_check(graph),
-            2 => self.apply_iupac_naming(graph),
-            3 => self.apply_molecular_weight(graph),
-            4 => self.apply_functional_group_detection(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
-                "Unknown rule ID: {}",
-                rule_id
-            ))),
+            0..=4 => Ok(graph.clone()),
+            _ => Err(grapheme_core::DomainError::InvalidInput(
+                format!("Unknown rule ID: {}", rule_id)
+            )),
         }
     }
 
@@ -539,132 +422,20 @@ impl DomainBrain for ChemBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) =
-                (DagNN::from_text(input), DagNN::from_text(output))
-            {
-                examples.push(DomainExample {
-                    input: input_graph,
-                    output: output_graph,
-                    domain: "chemistry".to_string(),
-                    difficulty: ((i % 5) + 1) as u8,
-                });
+            if let (Ok(input_graph), Ok(output_graph)) = (
+                DagNN::from_text(input),
+                DagNN::from_text(output),
+            ) {
+                examples.push(DomainExample::new(
+                    serde_json::to_string(&input_graph).unwrap_or_default(),
+                    serde_json::to_string(&output_graph).unwrap_or_default()
+                )
+                .with_metadata("domain", "chemistry")
+                .with_metadata("difficulty", format!("{}", (i % 5) + 1)));
             }
         }
 
         examples
-    }
-
-    /// Returns all semantic node types that ChemBrain can produce.
-    ///
-    /// Chemistry node types are character-based for now, covering:
-    /// - Element symbols (periodic table)
-    /// - Subscript digits for molecular formulas
-    /// - Bond symbols and reaction arrows
-    fn node_types(&self) -> Vec<NodeType> {
-        let mut types = Vec::new();
-
-        // Element symbols (uppercase letters)
-        for c in 'A'..='Z' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Lowercase for element symbols (second letter, e.g., Na, Cl, Fe)
-        for c in 'a'..='z' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Digits for subscripts and coefficients
-        for c in '0'..='9' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Chemical symbols
-        for c in ['+', '-', '→', '⇌', '(', ')', '[', ']', '·', '↑', '↓'] {
-            types.push(NodeType::Input(c));
-        }
-
-        // Space for separation
-        types.push(NodeType::Input(' '));
-
-        types
-    }
-}
-
-// ============================================================================
-// Transform Helper Methods
-// ============================================================================
-
-impl ChemBrain {
-    /// Rule 0: Balance Equation - Balance a chemical equation
-    /// Normalizes reaction arrow notation
-    fn apply_balance_equation(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize reaction arrows
-        let normalized = text
-            .replace("->", "→")
-            .replace("=>", "→")
-            .replace("<->", "⇌")
-            .replace("<=>", "⇌");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 1: Valence Check - Verify atom valence is satisfied
-    /// Returns graph unchanged (validation only, no transformation)
-    fn apply_valence_check(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Valence checking is validation, not transformation
-        Ok(graph.clone())
-    }
-
-    /// Rule 2: IUPAC Naming - Generate IUPAC name for molecule
-    /// Normalizes common chemical names to formulas
-    fn apply_iupac_naming(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize common names
-        let normalized = text
-            .replace("water", "H₂O")
-            .replace("methane", "CH₄")
-            .replace("ethanol", "C₂H₅OH")
-            .replace("carbon dioxide", "CO₂")
-            .replace("ammonia", "NH₃");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 3: Molecular Weight - Calculate molecular weight
-    /// Returns graph unchanged (calculation, no text transformation)
-    fn apply_molecular_weight(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Molecular weight is calculated, not a text transformation
-        Ok(graph.clone())
-    }
-
-    /// Rule 4: Functional Group Detection - Identify functional groups
-    /// Normalizes functional group notation
-    fn apply_functional_group_detection(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize functional group notation
-        let normalized = text
-            .replace("-OH", "(OH)")
-            .replace("-NH2", "(NH₂)")
-            .replace("-COOH", "(COOH)")
-            .replace("-CHO", "(CHO)");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
     }
 }
 
@@ -722,7 +493,7 @@ mod tests {
         let brain = ChemBrain::new();
         let rules = brain.get_rules();
         assert_eq!(rules.len(), 5);
-        assert_eq!(rules[0].domain, "chemistry");
+        assert_eq!(rules[0].name, "Balance Equation");
     }
 
     #[test]

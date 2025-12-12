@@ -30,19 +30,22 @@
 //! ```
 //!
 //! ## Adding New Components
-//! - Add new brains to `BRAIN_FACTORIES`
+//! - Add new brains to `get_brain_factories()`
 //! - Add new modules to `MODULE_FACTORIES`
 //! - Add new cognitive systems to `COGNITIVE_SYSTEM_FACTORIES`
 
 use grapheme_chem::ChemBrain;
 use grapheme_code::CodeBrain;
-use grapheme_core::{BrainRegistry, DomainBrain, GraphemeGraph, GraphTransformNet, NodeType};
+use grapheme_core::{BrainRegistry, DomainBrain, GraphemeGraph, NodeType};
 use grapheme_law::LawBrain;
 use grapheme_math::MathBrain;
 use grapheme_music::MusicBrain;
 use grapheme_router::{CognitiveModule, CognitiveRouter, MathModule, TextModule, TimeSeriesModule, VisionModule as RouterVisionModule};
 use grapheme_time::TimeBrain;
-use grapheme_vision::{ClassificationBrain, ClassificationConfig, VisionBrain};
+
+// Vision brains disabled until grapheme-vision compiles
+// #[cfg(feature = "vision")]
+// use grapheme_vision::{ClassificationBrain, ClassificationConfig, VisionBrain};
 
 // Cognitive Systems imports
 use grapheme_reason::{ReasoningEngine, create_default_reasoning_engine};
@@ -114,19 +117,31 @@ pub fn parallel_threads() -> usize {
 // Brain Factory - Add new brains here for auto-discovery
 // ============================================================================
 
-/// All known brain factories - ADD NEW BRAINS HERE
-const BRAIN_FACTORIES: &[(&str, fn() -> Box<dyn DomainBrain>)] = &[
-    ("math", || Box::new(MathBrain::new())),
-    ("code", || Box::new(CodeBrain::new())),
-    ("vision", || Box::new(VisionBrain::new())),
-    ("classification", || Box::new(ClassificationBrain::new(ClassificationConfig::new(10)))),
-    ("law", || Box::new(LawBrain::new())),
-    ("music", || Box::new(MusicBrain::new())),
-    ("chem", || Box::new(ChemBrain::new())),
-    ("time", || Box::new(TimeBrain::default_config())),
-    // ADD NEW BRAINS HERE:
-    // ("new_brain", || Box::new(NewBrain::new())),
-];
+/// Get all known brain factories - ADD NEW BRAINS HERE
+///
+/// Returns a Vec of (brain_id, factory_fn) tuples. Vision brains are only
+/// included when compiled with the "vision" feature.
+fn get_brain_factories() -> Vec<(&'static str, fn() -> Box<dyn DomainBrain>)> {
+    let mut factories: Vec<(&'static str, fn() -> Box<dyn DomainBrain>)> = vec![
+        ("math", || Box::new(MathBrain::new())),
+        ("code", || Box::new(CodeBrain::new())),
+        ("law", || Box::new(LawBrain::new())),
+        ("music", || Box::new(MusicBrain::new())),
+        ("chem", || Box::new(ChemBrain::new())),
+        ("time", || Box::new(TimeBrain::default_config())),
+        // ADD NEW BRAINS HERE:
+        // ("new_brain", || Box::new(NewBrain::new())),
+    ];
+
+    // Vision brains disabled until grapheme-vision compiles
+    // #[cfg(feature = "vision")]
+    // {
+    //     factories.push(("vision", || Box::new(VisionBrain::new())));
+    //     factories.push(("classification", || Box::new(ClassificationBrain::new(ClassificationConfig::new(10)))));
+    // }
+
+    factories
+}
 
 /// All known router module factories - ADD NEW MODULES HERE
 const MODULE_FACTORIES: &[(&str, fn() -> Box<dyn CognitiveModule>)] = &[
@@ -333,7 +348,8 @@ impl CortexMesh {
         // Discover brains
         println!("Discovering domain brains...");
         let mut brains = BrainRegistry::new();
-        for (id, factory) in BRAIN_FACTORIES {
+        let brain_factories = get_brain_factories();
+        for (id, factory) in &brain_factories {
             let brain = factory();
             println!("  [+] {} - {}", id, brain.domain_name());
             brains.register(brain);
@@ -732,9 +748,9 @@ impl CortexMesh {
 // Convenience Functions
 // ============================================================================
 
-/// List all discoverable brain IDs (compile-time)
+/// List all discoverable brain IDs
 pub fn list_all_brains() -> Vec<&'static str> {
-    BRAIN_FACTORIES.iter().map(|(id, _)| *id).collect()
+    get_brain_factories().iter().map(|(id, _)| *id).collect()
 }
 
 /// List all discoverable module IDs (compile-time)
@@ -744,7 +760,7 @@ pub fn list_all_modules() -> Vec<&'static str> {
 
 /// Count of all discoverable brains
 pub fn brain_count() -> usize {
-    BRAIN_FACTORIES.len()
+    get_brain_factories().len()
 }
 
 /// Count of all discoverable modules
@@ -774,7 +790,7 @@ pub fn collect_all_node_types() -> Vec<NodeType> {
     let mut all_types: Vec<NodeType> = Vec::new();
 
     // Collect node types from all brains
-    for (_id, factory) in BRAIN_FACTORIES {
+    for (_id, factory) in get_brain_factories() {
         let brain = factory();
         let types = brain.node_types();
         all_types.extend(types);
@@ -801,9 +817,12 @@ mod tests {
     #[test]
     fn test_list_brains() {
         let brains = list_all_brains();
-        assert!(brains.len() >= 8);
+        // Base brains (without vision feature): math, code, law, music, chem, time = 6
+        assert!(brains.len() >= 6);
         assert!(brains.contains(&"math"));
         assert!(brains.contains(&"code"));
+        // Vision brains only present with "vision" feature
+        #[cfg(feature = "vision")]
         assert!(brains.contains(&"vision"));
     }
 
@@ -832,7 +851,7 @@ mod tests {
     #[test]
     fn test_mesh_discovery() {
         let mesh = CortexMesh::discover();
-        assert_eq!(mesh.brain_count(), BRAIN_FACTORIES.len());
+        assert_eq!(mesh.brain_count(), get_brain_factories().len());
         assert_eq!(mesh.module_count(), MODULE_FACTORIES.len());
         assert_eq!(mesh.cognitive_system_count(), 8);
     }

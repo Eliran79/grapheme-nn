@@ -15,10 +15,7 @@
 //!
 //! This enables planning, counterfactual reasoning, and mental simulation.
 
-use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
-    LearnableParam, Persistable, PersistenceError, TransformRule,
-};
+use grapheme_core::{DagNN, TransformRule};
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -205,7 +202,7 @@ impl Dynamics {
 // ============================================================================
 
 /// A snapshot of the world state
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WorldState {
     /// Current entities in the world
     pub entities: Graph,
@@ -279,15 +276,11 @@ pub struct WorldModel {
     /// Configuration
     pub config: WorldConfig,
     /// History of past states
+    #[allow(dead_code)]
     history: Vec<WorldState>,
-    /// Maximum history size
-    max_history: usize,
 }
 
 impl WorldModel {
-    /// Default maximum history size
-    const DEFAULT_MAX_HISTORY: usize = 100;
-
     /// Create a new world model
     pub fn new(initial_state: WorldState) -> Self {
         Self {
@@ -296,7 +289,6 @@ impl WorldModel {
             counterfactuals: Vec::new(),
             config: WorldConfig::default(),
             history: Vec::new(),
-            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -308,7 +300,6 @@ impl WorldModel {
             counterfactuals: Vec::new(),
             config,
             history: Vec::new(),
-            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -321,53 +312,6 @@ impl WorldModel {
     pub fn current_time(&self) -> usize {
         self.state.time
     }
-
-    /// Record current state to history before transitioning
-    pub fn record_history(&mut self) {
-        // Clone current state and add to history
-        let snapshot = self.state.clone();
-        self.history.push(snapshot);
-
-        // Trim history if it exceeds maximum size
-        if self.history.len() > self.max_history {
-            self.history.remove(0);
-        }
-    }
-
-    /// Get the history of past states
-    pub fn get_history(&self) -> &[WorldState] {
-        &self.history
-    }
-
-    /// Get history length
-    pub fn history_len(&self) -> usize {
-        self.history.len()
-    }
-
-    /// Clear history
-    pub fn clear_history(&mut self) {
-        self.history.clear();
-    }
-
-    /// Get state at a specific time in history
-    pub fn get_state_at(&self, time: usize) -> Option<&WorldState> {
-        self.history.iter().find(|s| s.time == time)
-    }
-
-    /// Set maximum history size
-    pub fn set_max_history(&mut self, max: usize) {
-        self.max_history = max;
-        // Trim if needed
-        while self.history.len() > self.max_history {
-            self.history.remove(0);
-        }
-    }
-
-    /// Update state and record history
-    pub fn transition_to(&mut self, new_state: WorldState) {
-        self.record_history();
-        self.state = new_state;
-    }
 }
 
 // ============================================================================
@@ -379,12 +323,8 @@ pub trait WorldModeling: Send + Sync + Debug {
     /// Predict future states given current state and action
     ///
     /// Returns multiple predictions representing possible outcomes.
-    fn predict(
-        &self,
-        state: &Graph,
-        action: &Graph,
-        horizon: usize,
-    ) -> WorldResult<Vec<Prediction>>;
+    fn predict(&self, state: &Graph, action: &Graph, horizon: usize)
+        -> WorldResult<Vec<Prediction>>;
 
     /// Explain an observation via causal graph
     ///
@@ -461,24 +401,15 @@ pub struct SimpleWorldModel {
     state: WorldState,
     dynamics: Dynamics,
     config: WorldConfig,
-    /// History of past states
-    history: Vec<WorldState>,
-    /// Maximum history size
-    max_history: usize,
 }
 
 impl SimpleWorldModel {
-    /// Default maximum history size
-    const DEFAULT_MAX_HISTORY: usize = 100;
-
     /// Create a new simple world model
     pub fn new(initial_state: WorldState) -> Self {
         Self {
             state: initial_state,
             dynamics: Dynamics::new(),
             config: WorldConfig::default(),
-            history: Vec::new(),
-            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -491,34 +422,11 @@ impl SimpleWorldModel {
         let text = graph.to_text();
         DagNN::from_text(&text).unwrap_or_else(|_| DagNN::new())
     }
-
-    /// Record current state to history
-    fn record_history(&mut self) {
-        let snapshot = self.state.clone();
-        self.history.push(snapshot);
-        if self.history.len() > self.max_history {
-            self.history.remove(0);
-        }
-    }
-
-    /// Get the history of past states
-    pub fn get_history(&self) -> &[WorldState] {
-        &self.history
-    }
-
-    /// Get history length
-    pub fn history_len(&self) -> usize {
-        self.history.len()
-    }
 }
 
 impl WorldModeling for SimpleWorldModel {
-    fn predict(
-        &self,
-        state: &Graph,
-        _action: &Graph,
-        horizon: usize,
-    ) -> WorldResult<Vec<Prediction>> {
+    fn predict(&self, state: &Graph, _action: &Graph, horizon: usize)
+        -> WorldResult<Vec<Prediction>> {
         if horizon > self.config.max_prediction_horizon {
             return Err(WorldError::SimulationLimitExceeded(horizon));
         }
@@ -528,7 +436,11 @@ impl WorldModeling for SimpleWorldModel {
         let mut prob = 1.0f32;
 
         for t in 0..=horizon {
-            predictions.push(Prediction::new(Self::clone_graph(state), prob, t));
+            predictions.push(Prediction::new(
+                Self::clone_graph(state),
+                prob,
+                t,
+            ));
             prob *= 0.9; // Probability decreases over time
         }
 
@@ -546,8 +458,6 @@ impl WorldModeling for SimpleWorldModel {
     }
 
     fn update(&mut self, observation: &Graph) -> WorldResult<()> {
-        // Record current state to history before updating
-        self.record_history();
         // Update entities with observation
         self.state.entities = Self::clone_graph(observation);
         self.state.advance();
@@ -591,220 +501,6 @@ pub fn create_default_world_model() -> SimpleWorldModel {
 }
 
 // ============================================================================
-// Learnable World Model
-// ============================================================================
-
-/// Learnable world model with trainable transition dynamics
-///
-/// This module learns to predict state transitions and adjust
-/// uncertainty estimates based on experience.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearnableWorldModel {
-    /// Bias for transition probability estimation
-    pub transition_bias: LearnableParam,
-    /// Confidence in predictions
-    pub prediction_confidence: LearnableParam,
-    /// Temporal discount factor for multi-step predictions
-    pub temporal_discount: LearnableParam,
-    /// Weight for entity changes in state updates
-    pub entity_weight: LearnableParam,
-    /// Weight for relation changes in state updates
-    pub relation_weight: LearnableParam,
-    /// Uncertainty scaling factor
-    pub uncertainty_scale: LearnableParam,
-}
-
-impl LearnableWorldModel {
-    /// Create a new learnable world model with default weights
-    pub fn new() -> Self {
-        Self {
-            transition_bias: LearnableParam::new(0.0),
-            prediction_confidence: LearnableParam::new(0.8),
-            temporal_discount: LearnableParam::new(0.9),
-            entity_weight: LearnableParam::new(0.5),
-            relation_weight: LearnableParam::new(0.5),
-            uncertainty_scale: LearnableParam::new(1.0),
-        }
-    }
-
-    /// Compute transition probability with learned parameters
-    pub fn transition_probability(&self, base_prob: f32) -> f32 {
-        (base_prob + self.transition_bias.value).clamp(0.0, 1.0)
-    }
-
-    /// Compute prediction confidence with temporal decay
-    pub fn decayed_confidence(&self, time_steps: usize) -> f32 {
-        let base = self.prediction_confidence.value;
-        let discount = self.temporal_discount.value.clamp(0.0, 1.0);
-        base * discount.powi(time_steps as i32)
-    }
-
-    /// Compute combined state change score
-    pub fn state_change_score(&self, entity_change: f32, relation_change: f32) -> f32 {
-        let ew = self.entity_weight.value.clamp(0.0, 1.0);
-        let rw = self.relation_weight.value.clamp(0.0, 1.0);
-        let total = ew + rw;
-        if total > 0.0 {
-            (ew * entity_change + rw * relation_change) / total
-        } else {
-            0.5 * entity_change + 0.5 * relation_change
-        }
-    }
-
-    /// Compute uncertainty for a prediction
-    pub fn prediction_uncertainty(&self, base_uncertainty: f32) -> f32 {
-        (base_uncertainty * self.uncertainty_scale.value).clamp(0.0, 1.0)
-    }
-}
-
-impl Default for LearnableWorldModel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Learnable for LearnableWorldModel {
-    fn zero_grad(&mut self) {
-        self.transition_bias.zero_grad();
-        self.prediction_confidence.zero_grad();
-        self.temporal_discount.zero_grad();
-        self.entity_weight.zero_grad();
-        self.relation_weight.zero_grad();
-        self.uncertainty_scale.zero_grad();
-    }
-
-    fn step(&mut self, lr: f32) {
-        self.transition_bias.step(lr);
-        self.prediction_confidence.step(lr);
-        self.temporal_discount.step(lr);
-        self.entity_weight.step(lr);
-        self.relation_weight.step(lr);
-        self.uncertainty_scale.step(lr);
-
-        // Ensure values stay in valid ranges
-        self.prediction_confidence.value = self.prediction_confidence.value.clamp(0.0, 1.0);
-        self.temporal_discount.value = self.temporal_discount.value.clamp(0.0, 1.0);
-        self.uncertainty_scale.value = self.uncertainty_scale.value.max(0.01);
-    }
-
-    fn num_parameters(&self) -> usize {
-        6 // transition_bias, prediction_confidence, temporal_discount, entity/relation weights, uncertainty_scale
-    }
-
-    fn has_gradients(&self) -> bool {
-        self.transition_bias.grad != 0.0
-            || self.prediction_confidence.grad != 0.0
-            || self.temporal_discount.grad != 0.0
-            || self.entity_weight.grad != 0.0
-            || self.relation_weight.grad != 0.0
-            || self.uncertainty_scale.grad != 0.0
-    }
-
-    fn gradient_norm(&self) -> f32 {
-        (self.transition_bias.grad.powi(2)
-            + self.prediction_confidence.grad.powi(2)
-            + self.temporal_discount.grad.powi(2)
-            + self.entity_weight.grad.powi(2)
-            + self.relation_weight.grad.powi(2)
-            + self.uncertainty_scale.grad.powi(2))
-        .sqrt()
-    }
-}
-
-impl Persistable for LearnableWorldModel {
-    fn persist_type_id() -> &'static str {
-        "LearnableWorldModel"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        // Validate uncertainty_scale is positive
-        if self.uncertainty_scale.value <= 0.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Uncertainty scale must be positive".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Brain-Aware World Model
-// ============================================================================
-
-/// Brain-aware world model that uses domain brains for predictions
-pub struct BrainAwareWorldModel {
-    /// The cognitive-brain bridge for domain routing
-    pub bridge: DefaultCognitiveBridge,
-}
-
-impl Debug for BrainAwareWorldModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BrainAwareWorldModel")
-            .field("available_domains", &self.bridge.available_domains())
-            .finish()
-    }
-}
-
-impl BrainAwareWorldModel {
-    /// Create a new brain-aware world model
-    pub fn new() -> Self {
-        Self {
-            bridge: DefaultCognitiveBridge::new(),
-        }
-    }
-
-    /// Register a domain brain
-    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
-        self.bridge.register(brain);
-    }
-
-    /// Check if a domain brain can help with prediction
-    pub fn can_predict(&self, state_text: &str) -> bool {
-        self.bridge.route_to_multiple_brains(state_text).success
-    }
-
-    /// Get domains relevant to a state
-    pub fn domains_for_state(&self, state_text: &str) -> Vec<String> {
-        self.bridge
-            .route_to_multiple_brains(state_text)
-            .domains()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    /// Get available domains
-    pub fn available_domains(&self) -> Vec<String> {
-        self.bridge.available_domains()
-    }
-}
-
-impl Default for BrainAwareWorldModel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CognitiveBrainBridge for BrainAwareWorldModel {
-    fn get_registry(&self) -> &BrainRegistry {
-        self.bridge.get_registry()
-    }
-
-    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
-        self.bridge.get_registry_mut()
-    }
-}
-
-/// Factory function to create brain-aware world model
-pub fn create_brain_aware_world_model() -> BrainAwareWorldModel {
-    BrainAwareWorldModel::new()
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
@@ -842,7 +538,8 @@ mod tests {
         let action = make_graph("action");
         let effect = make_graph("effect");
 
-        let rule = TransitionRule::new(1, "test_rule", pre, action, effect).with_probability(0.9);
+        let rule = TransitionRule::new(1, "test_rule", pre, action, effect)
+            .with_probability(0.9);
 
         assert_eq!(rule.id, 1);
         assert_eq!(rule.probability, 0.9);
@@ -854,8 +551,7 @@ mod tests {
         assert!(dynamics.is_empty());
 
         let rule = TransitionRule::new(
-            1,
-            "rule1",
+            1, "rule1",
             make_graph("pre"),
             make_graph("act"),
             make_graph("eff"),
@@ -912,7 +608,10 @@ mod tests {
     fn test_simple_world_model_simulate() {
         let model = create_default_world_model();
         let initial = make_graph("initial");
-        let actions = vec![make_graph("action1"), make_graph("action2")];
+        let actions = vec![
+            make_graph("action1"),
+            make_graph("action2"),
+        ];
 
         let states = model.simulate(&initial, &actions).unwrap();
         assert_eq!(states.len(), 3); // initial + 2 actions
@@ -925,55 +624,6 @@ mod tests {
 
         model.update(&observation).unwrap();
         assert_eq!(model.state.time, 1);
-    }
-
-    #[test]
-    fn test_world_model_history_tracking() {
-        let initial = WorldState::new(make_graph("initial"), DagNN::new());
-        let mut model = SimpleWorldModel::new(initial);
-
-        // Initially no history
-        assert_eq!(model.history_len(), 0);
-
-        // Update adds to history
-        let obs1 = make_graph("observation_1");
-        model.update(&obs1).unwrap();
-        assert_eq!(model.history_len(), 1);
-        assert_eq!(model.get_history()[0].time, 0); // Initial state was at time 0
-
-        // Another update
-        let obs2 = make_graph("observation_2");
-        model.update(&obs2).unwrap();
-        assert_eq!(model.history_len(), 2);
-        assert_eq!(model.get_history()[1].time, 1); // Previous state was at time 1
-
-        // Current state should be at time 2
-        assert_eq!(model.state.time, 2);
-    }
-
-    #[test]
-    fn test_world_model_struct_history() {
-        let initial = WorldState::new(make_graph("initial"), DagNN::new());
-        let mut model = WorldModel::new(initial);
-
-        // Initially no history
-        assert_eq!(model.history_len(), 0);
-
-        // Record history manually
-        model.record_history();
-        assert_eq!(model.history_len(), 1);
-
-        // Transition to new state
-        let new_state = WorldState::new(make_graph("new_state"), DagNN::new());
-        model.transition_to(new_state);
-        assert_eq!(model.history_len(), 2);
-
-        // Test get_state_at
-        assert!(model.get_state_at(0).is_some());
-
-        // Clear history
-        model.clear_history();
-        assert_eq!(model.history_len(), 0);
     }
 
     #[test]

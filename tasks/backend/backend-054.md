@@ -1,7 +1,7 @@
 ---
 id: backend-054
 title: Optimize excessive cloning in training loop
-status: done
+status: todo
 priority: low
 tags:
 - backend
@@ -98,24 +98,25 @@ For large graphs, this adds significant memory allocation overhead during traini
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- **NO CHANGES NEEDED** - The cloning patterns mentioned don't exist in the code
-- `example.input_graph.clone()` and `example.target_graph.clone()` patterns not found
-- Existing clones (engine.clone, params.clone) are necessary for:
-  - Engine isolation when binding symbols for evaluation
-  - Arithmetic operations with ndarray that require ownership
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
 ### Causality Impact
-- None - no code changes made
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- None - task was not applicable
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-- Verified via grep: no `input_graph.clone()` or `target_graph.clone()` patterns
-- Existing clones analyzed and found to be necessary for Rust ownership
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- The task was based on incorrect analysis
-- Cloning is necessary in ndarray arithmetic operations
-- Engine cloning is required for symbol binding isolation
-- Future optimization: consider Arc<MathEngine> if cloning becomes a bottleneck
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

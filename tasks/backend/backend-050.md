@@ -1,7 +1,7 @@
 ---
 id: backend-050
 title: Fix silent string parsing failures in dataset validation
-status: done
+status: todo
 priority: medium
 tags:
 - backend
@@ -97,20 +97,25 @@ Invalid dataset entries go unnoticed, potentially causing training on malformed 
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- **NO CHANGES NEEDED** - The patterns mentioned in the task description don't exist
-- The `.unwrap_or("")` patterns are for `strip_prefix()` operations (returning Option), not parse() failures
-- Code inspection confirmed no `if let Ok(parsed) = expr.parse()` patterns exist
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
 ### Causality Impact
-- None - no code changes made
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- None - task was not applicable
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-- Verified via grep: no `if let Ok.*parse()` patterns found
-- The existing `.unwrap_or("")` patterns are correct usage for Option handling
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- This task was based on incorrect analysis
-- The string prefix stripping code is correct as-is
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

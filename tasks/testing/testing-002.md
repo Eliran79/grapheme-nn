@@ -1,7 +1,7 @@
 ---
 id: testing-002
 title: Review Dataset Generation Strategy (GRAPHEME_Math_Dataset)
-status: done
+status: todo
 priority: medium
 tags:
 - testing
@@ -19,184 +19,94 @@ area: testing
 
 # Review Dataset Generation Strategy (GRAPHEME_Math_Dataset)
 
+> **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
+>
+> **This task should be completed in ONE dedicated session.**
+>
+> When you mark this task as `done`, you MUST:
+> 1. Fill the "Session Handoff" section at the bottom with complete implementation details
+> 2. Document what was changed, what runtime behavior to expect, and what dependencies were affected
+> 3. Create a clear handoff for the developer/next AI agent working on dependent tasks
+>
+> **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
+
 ## Context
-Reviewed the GRAPHEME_Math_Dataset.md specification against the grapheme-train implementation and analyzed polynomial-time alternatives for NP-hard graph operations.
+Brief description of what needs to be done and why.
 
 ## Objectives
-- [x] Review GRAPHEME_Math_Dataset.md specification
-- [x] Verify grapheme-train implementation matches spec
-- [x] Analyze polynomial-time alternatives for GED and clique detection
-- [x] Document implementation gaps and recommendations
+- Clear, actionable objectives
+- Measurable outcomes
+- Success criteria
 
-## Specification Compliance Review
-
-### LevelSpec Implementation ✅
-| Spec Field | Implementation | Status |
-|------------|----------------|--------|
-| `ops: Vec<MathOp>` | ✅ Implemented | Match |
-| `functions: Vec<MathFn>` | ✅ Implemented | Match |
-| `max_depth: usize` | ✅ Implemented | Match |
-| `allow_symbols: bool` | ✅ Implemented | Match |
-| `output: OutputType` | ✅ Numeric/Symbolic/Both | Match |
-| `samples: usize` | ✅ Implemented | Match |
-
-### Curriculum Levels
-| Level | Spec | Implementation | Status |
-|-------|------|----------------|--------|
-| 1 | Basic arithmetic | ✅ BasicArithmetic | Complete |
-| 2 | Nested ops | ✅ NestedOperations | Complete |
-| 3 | Symbol substitution | ✅ SymbolSubstitution | Complete |
-| 4 | Basic functions | ✅ BasicFunctions | Complete |
-| 5 | Differentiation | ✅ Differentiation | Complete |
-| 6 | Integration | ⚠️ Placeholder | Partial |
-| 7 | Equation solving | ⚠️ Placeholder | Partial |
-
-### Dataset Features
-| Feature | Spec | Implementation | Status |
-|---------|------|----------------|--------|
-| JSONL save/load | ✅ Required | ✅ save_jsonl/load_jsonl | Complete |
-| Train/Val/Test split | ✅ Required | ✅ split(train, val) | Complete |
-| Batch iteration | ✅ Required | ✅ batches() | Complete |
-| Level filtering | ✅ Required | ✅ filter_by_level() | Complete |
-| Validation | ✅ Required | ✅ validate_dataset() | Complete |
-
-## Graph Algorithm Analysis
-
-### Current GED Implementation (grapheme-train/src/lib.rs:822)
-```rust
-// Current: O(1) - only compares counts, no alignment
-node_insertion_cost: node_diff.max(0) as f32,
-node_deletion_cost: (-node_diff).max(0) as f32,
-clique_mismatch: 0.0,    // TODO: implement clique comparison
-```
-
-**Gap**: No actual graph edit distance computation or node alignment.
-
-### Polynomial-Time Alternatives (Research)
-
-#### For Graph Edit Distance:
-
-| Algorithm | Complexity | Use Case |
-|-----------|------------|----------|
-| **Weisfeiler-Leman Kernel** | O(n·m·k) | GNN-native loss, graph similarity |
-| **BP2 (Hausdorff + Greedy)** | O(n²) | Fast training loss, upper bound |
-| **Hungarian Algorithm** | O(n³) | Optimal node assignment |
-| **Spectral Methods** | O(n³) approx | Eigenvalue comparison |
-
-**Recommendation**: Use Weisfeiler-Leman for loss computation - it's already the theoretical foundation for GNNs and provides polynomial-time graph similarity.
-
-#### For Clique Detection:
-
-| Algorithm | Complexity | Use Case |
-|-----------|------------|----------|
-| **Fixed-k Enumeration** | O(n^k · k²) | Small cliques k≤6 (tractable) |
-| **k-Clique Percolation (CPM)** | O(m · d^(k-2)) | Overlapping communities |
-| **Degeneracy-Based** | Fast for sparse | Text graphs (sparse) |
-| **k-Clique Densest Subgraph** | Polynomial for fixed k | Concept density |
-
-**Recommendation**: Use k-Clique Percolation for concept detection - linear in clique count, supports overlapping communities (matches "cliques = concepts" design).
-
-### Key Insight
-GRAPHEME graphs are **sparse** (characters don't fully connect) with **small cliques** (k=3-6 for concepts). This means:
-- Worst-case exponential bounds rarely apply
-- Fixed-k algorithms are practical
-- Degeneracy-based methods excel
-
-## Implementation Recommendations
-
-### Priority 1: Enhance GED (grapheme-train)
-```rust
-impl GraphEditDistance {
-    /// Weisfeiler-Leman based graph similarity
-    pub fn compute_wl(g1: &MathGraph, g2: &MathGraph, iterations: usize) -> f32 {
-        // 1-WL color refinement
-        // Compare color histograms
-        // O(n·m·iterations)
-    }
-
-    /// Fast quadratic upper bound
-    pub fn compute_bp2(g1: &MathGraph, g2: &MathGraph) -> Self {
-        // Hausdorff matching + greedy assignment
-        // O(n²)
-    }
-}
-```
-
-### Priority 2: Clique Detection (grapheme-core)
-```rust
-impl GraphemeGraph {
-    /// Find k-cliques using fixed-k enumeration
-    pub fn find_cliques(&self, k: usize) -> Vec<Vec<NodeIndex>> {
-        // O(n^k) for small k
-    }
-
-    /// k-Clique Percolation for concept communities
-    pub fn find_concept_communities(&self, k: usize) -> Vec<Community> {
-        // Linear in clique count
-    }
-}
-```
-
-### Priority 3: Complete Levels 6-7
-- Integration: Symbolic integration rules
-- Equation solving: Algebraic manipulation
+## Tasks
+- [ ] Break down the work into specific tasks
+- [ ] Each task should be clear and actionable
+- [ ] Mark tasks as completed when done
 
 ## Acceptance Criteria
-✅ **Specification Review**: LevelSpec, CurriculumLevel, Dataset match spec
-✅ **Gap Analysis**: Identified GED and clique detection gaps
-✅ **Alternatives**: Documented polynomial-time algorithms
-✅ **Recommendations**: Prioritized implementation plan
+✅ **Criteria 1:**
+- Specific, testable criteria
+
+✅ **Criteria 2:**
+- Additional criteria as needed
 
 ## Technical Notes
-- Weisfeiler-Leman is GNN-native (same theoretical foundation)
-- BP2 provides O(n²) upper bound for fast training
-- k-Clique Percolation supports overlapping concepts
-- Sparse graphs make worst-case bounds irrelevant
+- Implementation details
+- Architecture considerations
+- Dependencies and constraints
 
 ## Testing
-- [x] Reviewed spec compliance
-- [x] Identified implementation gaps
-- [x] Documented polynomial alternatives
+- [ ] Write unit tests for new functionality
+- [ ] Write integration tests if applicable
+- [ ] Ensure all tests pass before marking task complete
+- [ ] Consider edge cases and error conditions
+
+## Version Control
+
+**⚠️ CRITICAL: Always test AND run before committing!**
+
+- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
+  - Run `cargo build --release` (or `cargo build` for debug)
+  - Run `cargo test` to ensure tests pass
+  - **Actually run/execute the code** to verify runtime behavior
+  - Fix all errors, warnings, and runtime issues
+- [ ] Commit changes incrementally with clear messages
+- [ ] Use descriptive commit messages that explain the "why"
+- [ ] Consider creating a feature branch for complex changes
+- [ ] Review changes before committing
+
+**Testing requirements by change type:**
+- Code changes: Build + test + **run the actual program/command** to verify behavior
+- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
+- New features: Test the feature works as intended by executing it
+- Minor changes: At minimum build, check warnings, and run basic functionality
 
 ## Updates
 - 2025-12-05: Task created
-- 2025-12-05: Completed spec review and algorithm analysis
 
-## Session Handoff
+## Session Handoff (AI: Complete this when marking task done)
+**For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Reviewed GRAPHEME_Math_Dataset.md against implementation
-- Analyzed current GED implementation (O(1) count-based)
-- Documented polynomial-time alternatives from research
-- Created prioritized recommendations
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
-### Implementation Gaps Identified
-1. **GED compute()**: Only compares node/edge counts, no alignment
-2. **clique_mismatch**: Set to 0.0 with TODO comment
-3. **Clique detection**: Data structure exists, no algorithm
-4. **Levels 6-7**: Integration and Solve are placeholders
-
-### Recommended Algorithms
-| Operation | Algorithm | Complexity | File |
-|-----------|-----------|------------|------|
-| Loss function | Weisfeiler-Leman | O(n·m·k) | grapheme-train |
-| Fast training | BP2 | O(n²) | grapheme-train |
-| Concept detection | k-Clique Percolation | ~Linear | grapheme-core |
-| Small cliques | Fixed-k enumeration | O(n^k) | grapheme-core |
+### Causality Impact
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- WL kernel integrates with existing GNN architecture
-- Clique detection feeds into `clique_mismatch` loss term
-- No new crate dependencies needed (implement in pure Rust)
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-```bash
-cargo test                    # 106 tests pass
-cargo bench --bench train_bench -- --test  # Benchmarks work
-```
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- GED enhancement should be a new task (backend-level)
-- Clique detection should be added to grapheme-core
-- Consider adding WL kernel benchmark once implemented
-- Levels 6-7 depend on symbolic integration (SymbolicEngine)
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

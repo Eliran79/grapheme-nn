@@ -108,15 +108,15 @@ fn test_complex_expression_graph() {
 fn test_float_expression_pipeline() {
     let engine = MathEngine::new();
 
-    // Test: 2.5 * 2.0 = 5.0
+    // Test: 3.14 * 2.0 = 6.28
     let expr = Expr::BinOp {
         op: MathOp::Mul,
-        left: Box::new(Expr::Value(Value::Float(2.5))),
+        left: Box::new(Expr::Value(Value::Float(3.14))),
         right: Box::new(Expr::Value(Value::Float(2.0))),
     };
 
     let result = engine.evaluate(&expr).expect("should evaluate");
-    assert!((result - 5.0).abs() < 1e-10);
+    assert!((result - 6.28).abs() < 1e-10);
 }
 
 /// Test division operations

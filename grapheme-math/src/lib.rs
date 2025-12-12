@@ -10,25 +10,9 @@
 //!
 //! Unlike traditional NLP, we use typed nodes rather than embeddings,
 //! but remain vocabulary-free through the type system.
-//!
-//! ## Migration to brain-common
-//!
-//! This crate uses shared abstractions from `grapheme-brain-common`:
-//! - `ActivatedNode<MathNodeType>` - Generic node wrapper (aliased as `MathNode`)
-//! - `TypedGraph` - Used internally in MathGraph
-//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
-//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
-// Allow &self in recursive methods for API consistency
-#![allow(clippy::only_used_in_recursion)]
-
-use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
-use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
-    ValidationIssue, ValidationSeverity,
-};
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
-use petgraph::graph::NodeIndex;
+use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -50,7 +34,7 @@ pub type MathGraphResult<T> = Result<T, MathGraphError>;
 /// Typed node for mathematical expressions
 /// These are semantic types, not embeddings - still vocabulary-free
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum MathNodeType {
+pub enum MathNode {
     /// Integer literal
     Integer(i64),
     /// Floating-point literal
@@ -63,84 +47,6 @@ pub enum MathNodeType {
     Function(MathFn),
     /// Result placeholder
     Result,
-}
-
-/// Get default activation based on node type.
-/// This provides initial differentiation between node categories.
-///
-/// Used by `MathNode::new()` to compute initial activation from type.
-pub fn math_type_activation(node_type: &MathNodeType) -> f32 {
-    match node_type {
-        MathNodeType::Integer(_) => 0.1,
-        MathNodeType::Float(_) => 0.2,
-        MathNodeType::Symbol(_) => 0.3,
-        MathNodeType::Operator(_) => 0.5,
-        MathNodeType::Function(_) => 0.7,
-        MathNodeType::Result => 0.9,
-    }
-}
-
-/// Math node with activation for gradient flow (Backend-104)
-///
-/// This is a type alias for `ActivatedNode<MathNodeType>` from brain-common.
-/// The generic wrapper handles activation storage and propagation while
-/// maintaining the domain-specific node type.
-///
-/// ## Migration Note
-///
-/// Previously this was a standalone struct. Now it uses the shared
-/// `ActivatedNode<T>` abstraction. All existing APIs are preserved via
-/// extension trait `MathNodeExt`.
-pub type MathNode = ActivatedNode<MathNodeType>;
-
-/// Create a new math node with default activation based on type.
-///
-/// This is the primary constructor for MathNode, providing backward
-/// compatibility with the previous `MathNode::new()` API.
-pub fn new_math_node(node_type: MathNodeType) -> MathNode {
-    ActivatedNode::with_type_activation(node_type, math_type_activation)
-}
-
-/// Extension trait for MathNode-specific convenience methods.
-///
-/// Provides domain-specific helper methods for `ActivatedNode<MathNodeType>`.
-pub trait MathNodeExt {
-    /// Check if this is an integer node
-    fn is_integer(&self) -> bool;
-
-    /// Check if this is a float node
-    fn is_float(&self) -> bool;
-
-    /// Check if this is a symbol node
-    fn is_symbol(&self) -> bool;
-
-    /// Check if this is an operator node
-    fn is_operator(&self) -> bool;
-
-    /// Check if this is a function node
-    fn is_function(&self) -> bool;
-}
-
-impl MathNodeExt for MathNode {
-    fn is_integer(&self) -> bool {
-        matches!(self.node_type, MathNodeType::Integer(_))
-    }
-
-    fn is_float(&self) -> bool {
-        matches!(self.node_type, MathNodeType::Float(_))
-    }
-
-    fn is_symbol(&self) -> bool {
-        matches!(self.node_type, MathNodeType::Symbol(_))
-    }
-
-    fn is_operator(&self) -> bool {
-        matches!(self.node_type, MathNodeType::Operator(_))
-    }
-
-    fn is_function(&self) -> bool {
-        matches!(self.node_type, MathNodeType::Function(_))
-    }
 }
 
 /// Edge types in the math graph
@@ -156,17 +62,11 @@ pub enum MathEdge {
     Produces,
 }
 
-/// A mathematical expression represented as a graph.
-///
-/// ## Migration Note
-///
-/// This struct now uses `TypedGraph<MathNode, MathEdge>` internally from
-/// brain-common. The `graph` and `root` fields are exposed publicly for
-/// backward compatibility with external code.
+/// A mathematical expression represented as a graph
 #[derive(Debug)]
 pub struct MathGraph {
-    /// The underlying petgraph DiGraph (exposed for external access)
-    pub graph: petgraph::graph::DiGraph<MathNode, MathEdge>,
+    /// The underlying directed graph
+    pub graph: DiGraph<MathNode, MathEdge>,
     /// Root node of the expression
     pub root: Option<NodeIndex>,
 }
@@ -181,7 +81,7 @@ impl MathGraph {
     /// Create a new empty math graph
     pub fn new() -> Self {
         Self {
-            graph: petgraph::graph::DiGraph::new(),
+            graph: DiGraph::new(),
             root: None,
         }
     }
@@ -189,8 +89,7 @@ impl MathGraph {
     /// Build a graph from an expression
     pub fn from_expr(expr: &Expr) -> Self {
         let mut graph = Self::new();
-        let root = graph.add_expr(expr);
-        graph.root = Some(root);
+        graph.root = Some(graph.add_expr(expr));
         graph
     }
 
@@ -199,24 +98,27 @@ impl MathGraph {
         match expr {
             Expr::Value(v) => self.add_value(v),
             Expr::BinOp { op, left, right } => {
-                let op_node = self.graph.add_node(new_math_node(MathNodeType::Operator(*op)));
+                let op_node = self.graph.add_node(MathNode::Operator(*op));
                 let left_node = self.add_expr(left);
                 let right_node = self.add_expr(right);
                 self.graph.add_edge(op_node, left_node, MathEdge::LeftOperand);
-                self.graph.add_edge(op_node, right_node, MathEdge::RightOperand);
+                self.graph
+                    .add_edge(op_node, right_node, MathEdge::RightOperand);
                 op_node
             }
             Expr::UnaryOp { op, operand } => {
-                let op_node = self.graph.add_node(new_math_node(MathNodeType::Operator(*op)));
+                let op_node = self.graph.add_node(MathNode::Operator(*op));
                 let operand_node = self.add_expr(operand);
-                self.graph.add_edge(op_node, operand_node, MathEdge::LeftOperand);
+                self.graph
+                    .add_edge(op_node, operand_node, MathEdge::LeftOperand);
                 op_node
             }
             Expr::Function { func, args } => {
-                let func_node = self.graph.add_node(new_math_node(MathNodeType::Function(*func)));
+                let func_node = self.graph.add_node(MathNode::Function(*func));
                 for (i, arg) in args.iter().enumerate() {
                     let arg_node = self.add_expr(arg);
-                    self.graph.add_edge(func_node, arg_node, MathEdge::Argument(i));
+                    self.graph
+                        .add_edge(func_node, arg_node, MathEdge::Argument(i));
                 }
                 func_node
             }
@@ -224,13 +126,13 @@ impl MathGraph {
     }
 
     fn add_value(&mut self, value: &Value) -> NodeIndex {
-        let node_type = match value {
-            Value::Integer(i) => MathNodeType::Integer(*i),
-            Value::Float(f) => MathNodeType::Float(*f),
-            Value::Symbol(s) => MathNodeType::Symbol(s.clone()),
-            Value::Rational(n, d) => MathNodeType::Float(*n as f64 / *d as f64),
+        let node = match value {
+            Value::Integer(i) => MathNode::Integer(*i),
+            Value::Float(f) => MathNode::Float(*f),
+            Value::Symbol(s) => MathNode::Symbol(s.clone()),
+            Value::Rational(n, d) => MathNode::Float(*n as f64 / *d as f64),
         };
-        self.graph.add_node(new_math_node(node_type))
+        self.graph.add_node(node)
     }
 
     /// Convert the graph back to an expression
@@ -244,11 +146,11 @@ impl MathGraph {
     fn node_to_expr(&self, node: NodeIndex) -> MathGraphResult<Expr> {
         let math_node = &self.graph[node];
 
-        match &math_node.node_type {
-            MathNodeType::Integer(i) => Ok(Expr::Value(Value::Integer(*i))),
-            MathNodeType::Float(f) => Ok(Expr::Value(Value::Float(*f))),
-            MathNodeType::Symbol(s) => Ok(Expr::Value(Value::Symbol(s.clone()))),
-            MathNodeType::Operator(op) => {
+        match math_node {
+            MathNode::Integer(i) => Ok(Expr::Value(Value::Integer(*i))),
+            MathNode::Float(f) => Ok(Expr::Value(Value::Float(*f))),
+            MathNode::Symbol(s) => Ok(Expr::Value(Value::Symbol(s.clone()))),
+            MathNode::Operator(op) => {
                 let mut left = None;
                 let mut right = None;
 
@@ -264,9 +166,8 @@ impl MathGraph {
                     }
                 }
 
-                let left = left.ok_or_else(|| {
-                    MathGraphError::InvalidStructure("Missing left operand".into())
-                })?;
+                let left =
+                    left.ok_or_else(|| MathGraphError::InvalidStructure("Missing left operand".into()))?;
 
                 if let Some(right) = right {
                     Ok(Expr::BinOp {
@@ -281,7 +182,7 @@ impl MathGraph {
                     })
                 }
             }
-            MathNodeType::Function(func) => {
+            MathNode::Function(func) => {
                 let mut args: Vec<(usize, Expr)> = Vec::new();
 
                 for edge in self.graph.edges(node) {
@@ -295,7 +196,7 @@ impl MathGraph {
 
                 Ok(Expr::Function { func: *func, args })
             }
-            MathNodeType::Result => Err(MathGraphError::InvalidStructure(
+            MathNode::Result => Err(MathGraphError::InvalidStructure(
                 "Result node cannot be converted to expression".into(),
             )),
         }
@@ -446,14 +347,12 @@ impl MathTransformer {
                     MathOp::Add => {
                         // x + 0 = x
                         if self.is_zero(&right_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
                             return left_simplified;
                         }
                         // 0 + x = x
                         if self.is_zero(&left_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
                             return right_simplified;
                         }
                     }
@@ -462,14 +361,12 @@ impl MathTransformer {
                     MathOp::Sub => {
                         // x - 0 = x
                         if self.is_zero(&right_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::ADDITIVE_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_IDENTITY);
                             return left_simplified;
                         }
                         // x - x = 0
                         if self.exprs_equal(&left_simplified, &right_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::ADDITIVE_INVERSE);
+                            self.applied_rules.push(SimplificationRule::ADDITIVE_INVERSE);
                             return Expr::Value(Value::Integer(0));
                         }
                     }
@@ -483,14 +380,12 @@ impl MathTransformer {
                         }
                         // x * 1 = x
                         if self.is_one(&right_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
                             return left_simplified;
                         }
                         // 1 * x = x
                         if self.is_one(&left_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::MULTIPLICATIVE_IDENTITY);
                             return right_simplified;
                         }
                     }
@@ -499,8 +394,7 @@ impl MathTransformer {
                     MathOp::Div => {
                         // x / 1 = x
                         if self.is_one(&right_simplified) {
-                            self.applied_rules
-                                .push(SimplificationRule::DIVISION_IDENTITY);
+                            self.applied_rules.push(SimplificationRule::DIVISION_IDENTITY);
                             return left_simplified;
                         }
                         // 0 / x = 0 (when x != 0)
@@ -544,8 +438,10 @@ impl MathTransformer {
             }
 
             Expr::Function { func, args } => {
-                let args_simplified: Vec<Expr> =
-                    args.iter().map(|a| self.simplify_recursive(a)).collect();
+                let args_simplified: Vec<Expr> = args
+                    .iter()
+                    .map(|a| self.simplify_recursive(a))
+                    .collect();
                 Expr::Function {
                     func: *func,
                     args: args_simplified,
@@ -573,12 +469,14 @@ impl MathTransformer {
     fn exprs_equal(&self, a: &Expr, b: &Expr) -> bool {
         // Simple structural equality check
         match (a, b) {
-            (Expr::Value(va), Expr::Value(vb)) => match (va, vb) {
-                (Value::Integer(ia), Value::Integer(ib)) => ia == ib,
-                (Value::Float(fa), Value::Float(fb)) => (fa - fb).abs() < 1e-10,
-                (Value::Symbol(sa), Value::Symbol(sb)) => sa == sb,
-                _ => false,
-            },
+            (Expr::Value(va), Expr::Value(vb)) => {
+                match (va, vb) {
+                    (Value::Integer(ia), Value::Integer(ib)) => ia == ib,
+                    (Value::Float(fa), Value::Float(fb)) => (fa - fb).abs() < 1e-10,
+                    (Value::Symbol(sa), Value::Symbol(sb)) => sa == sb,
+                    _ => false,
+                }
+            }
             _ => false, // More complex equality would require deeper comparison
         }
     }
@@ -589,6 +487,7 @@ impl MathTransformer {
     }
 
     /// Constant folding - evaluate constant subexpressions
+    #[allow(clippy::only_used_in_recursion)]
     pub fn fold_constants(&self, expr: &Expr, engine: &MathEngine) -> Expr {
         match expr {
             Expr::Value(_) => expr.clone(),
@@ -648,69 +547,19 @@ impl MathTransformer {
 // Math Brain
 // ============================================================================
 
-/// Create the math domain configuration.
-///
-/// This configures keywords for capability detection, text normalization,
-/// and other domain-specific settings using brain-common utilities.
-fn create_math_config() -> DomainConfig {
-    // Math keywords for can_process detection
-    let keywords = vec![
-        "calculate", "compute", "solve", "simplify", "evaluate",
-        "derive", "differentiate", "integrate", "factor",
-        "+", "-", "*", "/", "^", "=",
-        "sin", "cos", "tan", "sqrt", "log", "exp",
-    ];
-
-    // Create normalizer for math notation
-    let normalizer = TextNormalizer::new()
-        .add_replacements(vec![
-            (" + ", "+"),
-            (" - ", "-"),
-            (" * ", "*"),
-            (" / ", "/"),
-            ("**", "^"),
-            (" ^ ", "^"),
-            ("pi", "π"),
-            ("PI", "π"),
-            ("inf", "∞"),
-            ("infinity", "∞"),
-        ])
-        .trim_whitespace(true);
-
-    DomainConfig::new("math", "Mathematics", keywords)
-        .with_version("0.1.0")
-        .with_normalizer(normalizer)
-        .with_annotation_prefix("@math:")
-}
-
-/// The math brain that learns graph transformations.
-///
-/// ## Migration Note
-///
-/// This brain now uses `DomainConfig` from brain-common for keyword
-/// detection and text normalization. It implements `BaseDomainBrain`
-/// to access default implementations, but overrides most methods with
-/// math-specific logic.
+/// The math brain that learns graph transformations
+#[derive(Debug, Default)]
 pub struct MathBrain {
-    /// Domain configuration (keywords, normalizer, etc.)
-    config: DomainConfig,
     /// The underlying engine for validation
     engine: MathEngine,
     /// The transformer for algebraic simplifications
     transformer: MathTransformer,
 }
 
-impl Default for MathBrain {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MathBrain {
     /// Create a new math brain
     pub fn new() -> Self {
         Self {
-            config: create_math_config(),
             engine: MathEngine::new(),
             transformer: MathTransformer::new(),
         }
@@ -736,20 +585,15 @@ impl MathBrain {
     pub fn extract_intent(&self, expr: &Expr) -> MathIntent {
         // Analyze the expression structure to determine intent
         match expr {
-            Expr::Function { func, .. } => match func {
-                MathFn::Sin
-                | MathFn::Cos
-                | MathFn::Tan
-                | MathFn::Sqrt
-                | MathFn::Abs
-                | MathFn::Log
-                | MathFn::Ln
-                | MathFn::Exp
-                | MathFn::Floor
-                | MathFn::Ceil => MathIntent::Compute,
-                MathFn::Derive => MathIntent::Differentiate,
-                MathFn::Integrate => MathIntent::Integrate,
-            },
+            Expr::Function { func, .. } => {
+                match func {
+                    MathFn::Sin | MathFn::Cos | MathFn::Tan |
+                    MathFn::Sqrt | MathFn::Abs | MathFn::Log | MathFn::Ln |
+                    MathFn::Exp | MathFn::Floor | MathFn::Ceil => MathIntent::Compute,
+                    MathFn::Derive => MathIntent::Differentiate,
+                    MathFn::Integrate => MathIntent::Integrate,
+                }
+            }
             Expr::BinOp { .. } | Expr::UnaryOp { .. } => {
                 // Check if it contains symbols (needs evaluation/simplification)
                 if self.contains_symbol(expr) {
@@ -763,6 +607,7 @@ impl MathBrain {
         }
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn contains_symbol(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Value(Value::Symbol(_)) => true,
@@ -800,673 +645,6 @@ impl MathBrain {
     pub fn solve(&self, problem: &MathProblem) -> MathGraphResult<f64> {
         let graph = self.process(&problem.expression)?;
         graph.evaluate(&self.engine)
-    }
-
-}
-
-// Implement BaseDomainBrain trait for access to default implementations
-impl BaseDomainBrain for MathBrain {
-    fn config(&self) -> &DomainConfig {
-        &self.config
-    }
-}
-
-// ============================================================================
-// DomainBrain Implementation
-// ============================================================================
-
-impl std::fmt::Debug for MathBrain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MathBrain")
-            .field("domain", &"mathematics")
-            .finish()
-    }
-}
-
-impl DomainBrain for MathBrain {
-    fn domain_id(&self) -> &str {
-        &self.config.domain_id
-    }
-
-    fn domain_name(&self) -> &str {
-        &self.config.domain_name
-    }
-
-    fn version(&self) -> &str {
-        &self.config.version
-    }
-
-    fn can_process(&self, input: &str) -> bool {
-        // Use config's keyword detector, but also check for digits
-        // which are a strong indicator of math content
-        self.default_can_process(input) || input.chars().any(|c| c.is_ascii_digit())
-    }
-
-    fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        // Use default parse from BaseDomainBrain
-        self.default_parse(input)
-    }
-
-    #[allow(clippy::wrong_self_convention)]
-    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Use default from_core which applies config's normalizer
-        self.default_from_core(graph)
-    }
-
-    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Use default to_core which filters by annotation prefix
-        self.default_to_core(graph)
-    }
-
-    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        let mut issues = Vec::new();
-
-        // Check for empty graph
-        if graph.input_nodes().is_empty() {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Warning,
-                message: "Empty math expression graph".to_string(),
-                node: None,
-            });
-            return Ok(issues);
-        }
-
-        // Get text representation for parsing-based validation
-        let text = graph.to_text();
-
-        // Validate balanced parentheses
-        issues.extend(self.validate_parentheses(&text));
-
-        // Validate operator usage
-        issues.extend(self.validate_operators(&text));
-
-        // Check for division by zero
-        issues.extend(self.validate_division(&text));
-
-        // Validate function arity
-        issues.extend(self.validate_functions(&text));
-
-        // Validate numeric literals
-        issues.extend(self.validate_literals(&text));
-
-        Ok(issues)
-    }
-
-    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        // Try to evaluate the graph as a mathematical expression
-        // For now, return the graph text representation
-        let text = graph.to_text();
-
-        // Try to parse and evaluate if possible
-        if let Ok(result) = self.parse_and_evaluate(&text) {
-            Ok(ExecutionResult::Numeric(result))
-        } else {
-            Ok(ExecutionResult::Text(text))
-        }
-    }
-
-    fn get_rules(&self) -> Vec<DomainRule> {
-        // Return simplification rules
-        vec![
-            DomainRule {
-                id: 0,
-                domain: "math".to_string(),
-                name: "Zero Addition".to_string(),
-                description: "x + 0 = x".to_string(),
-                category: "simplification".to_string(),
-            },
-            DomainRule {
-                id: 1,
-                domain: "math".to_string(),
-                name: "Zero Multiplication".to_string(),
-                description: "x * 0 = 0".to_string(),
-                category: "simplification".to_string(),
-            },
-            DomainRule {
-                id: 2,
-                domain: "math".to_string(),
-                name: "One Multiplication".to_string(),
-                description: "x * 1 = x".to_string(),
-                category: "simplification".to_string(),
-            },
-            DomainRule {
-                id: 3,
-                domain: "math".to_string(),
-                name: "Power Zero".to_string(),
-                description: "x^0 = 1".to_string(),
-                category: "simplification".to_string(),
-            },
-            DomainRule {
-                id: 4,
-                domain: "math".to_string(),
-                name: "Power One".to_string(),
-                description: "x^1 = x".to_string(),
-                category: "simplification".to_string(),
-            },
-            DomainRule {
-                id: 5,
-                domain: "math".to_string(),
-                name: "Constant Folding".to_string(),
-                description: "Evaluate constant subexpressions".to_string(),
-                category: "optimization".to_string(),
-            },
-        ]
-    }
-
-    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
-        match rule_id {
-            0 => self.apply_zero_addition(graph),
-            1 => self.apply_zero_multiplication(graph),
-            2 => self.apply_one_multiplication(graph),
-            3 => self.apply_power_zero(graph),
-            4 => self.apply_power_one(graph),
-            5 => self.apply_constant_folding(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
-                "Unknown rule ID: {}",
-                rule_id
-            ))),
-        }
-    }
-
-    fn generate_examples(&self, count: usize) -> Vec<DomainExample> {
-        let mut examples = Vec::with_capacity(count);
-
-        for i in 0..count {
-            // Generate simple arithmetic examples
-            let a = (i % 10) as i32 + 1;
-            let b = ((i / 10) % 10) as i32 + 1;
-            let ops = ["+", "-", "*"];
-            let op = ops[i % 3];
-
-            let input = format!("{} {} {}", a, op, b);
-            let output = match op {
-                "+" => format!("{}", a + b),
-                "-" => format!("{}", a - b),
-                "*" => format!("{}", a * b),
-                _ => unreachable!(),
-            };
-
-            if let (Ok(input_graph), Ok(output_graph)) =
-                (DagNN::from_text(&input), DagNN::from_text(&output))
-            {
-                examples.push(DomainExample {
-                    input: input_graph,
-                    output: output_graph,
-                    domain: "math".to_string(),
-                    difficulty: ((i % 5) + 1) as u8,
-                });
-            }
-        }
-
-        examples
-    }
-
-    /// Returns all semantic node types that MathBrain can produce.
-    ///
-    /// Math node types use the base Input(char) type for now since mathematical
-    /// expressions are typically represented at the character level (digits, operators).
-    /// Future work may add specialized math node types.
-    fn node_types(&self) -> Vec<NodeType> {
-        let mut types = Vec::new();
-
-        // Digits 0-9
-        for c in '0'..='9' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Math operators
-        for c in ['+', '-', '*', '/', '^', '=', '<', '>', '(', ')', '[', ']', '{', '}'] {
-            types.push(NodeType::Input(c));
-        }
-
-        // Decimal point
-        types.push(NodeType::Input('.'));
-
-        // Common math symbols (space, comma)
-        types.push(NodeType::Input(' '));
-        types.push(NodeType::Input(','));
-
-        // Letters for variables (x, y, z, etc.)
-        for c in 'a'..='z' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Capital letters for constants (E, PI, etc.)
-        for c in 'A'..='Z' {
-            types.push(NodeType::Input(c));
-        }
-
-        types
-    }
-}
-
-// ============================================================================
-// Transform Helper Methods
-// ============================================================================
-
-impl MathBrain {
-    /// Rule 0: Zero Addition - x + 0 = x
-    fn apply_zero_addition(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Apply x + 0 = x and 0 + x = x
-        let normalized = text
-            .replace(" + 0", "")
-            .replace("+ 0", "")
-            .replace("0 + ", "")
-            .replace("0 +", "");
-
-        if normalized != text && !normalized.is_empty() {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 1: Zero Multiplication - x * 0 = 0
-    fn apply_zero_multiplication(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Check for multiplication by zero patterns
-        if text.contains(" * 0")
-            || text.contains("* 0")
-            || text.contains("0 * ")
-            || text.contains("0 *")
-        {
-            DagNN::from_text("0").map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 2: One Multiplication - x * 1 = x
-    fn apply_one_multiplication(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Apply x * 1 = x and 1 * x = x
-        let normalized = text
-            .replace(" * 1", "")
-            .replace("* 1", "")
-            .replace("1 * ", "")
-            .replace("1 *", "");
-
-        if normalized != text && !normalized.is_empty() {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 3: Power Zero - x^0 = 1
-    fn apply_power_zero(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Check for power of zero
-        if text.contains("^0") || text.contains("^ 0") {
-            DagNN::from_text("1").map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 4: Power One - x^1 = x
-    fn apply_power_one(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Remove power of one
-        let normalized = text.replace("^1", "").replace("^ 1", "");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 5: Constant Folding - evaluate constant subexpressions
-    fn apply_constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Try to evaluate as a simple expression
-        if let Ok(result) = self.parse_and_evaluate(&text) {
-            if result.fract() == 0.0 {
-                DagNN::from_text(&format!("{}", result as i64)).map_err(|e| e.into())
-            } else {
-                DagNN::from_text(&format!("{}", result)).map_err(|e| e.into())
-            }
-        } else {
-            Ok(graph.clone())
-        }
-    }
-}
-
-impl MathBrain {
-    /// Parse and evaluate a simple expression string
-    fn parse_and_evaluate(&self, text: &str) -> Result<f64, MathGraphError> {
-        // Simple parser for basic arithmetic
-        let trimmed = text.trim();
-
-        // Try to parse as a number first
-        if let Ok(n) = trimmed.parse::<f64>() {
-            return Ok(n);
-        }
-
-        // Try simple binary operations
-        for (op_str, op) in [
-            ("+", MathOp::Add),
-            ("-", MathOp::Sub),
-            ("*", MathOp::Mul),
-            ("/", MathOp::Div),
-        ] {
-            if let Some(idx) = trimmed.rfind(op_str) {
-                if idx > 0 && idx < trimmed.len() - 1 {
-                    let left = trimmed[..idx].trim().parse::<f64>();
-                    let right = trimmed[idx + 1..].trim().parse::<f64>();
-
-                    if let (Ok(l), Ok(r)) = (left, right) {
-                        let result = match op {
-                            MathOp::Add => l + r,
-                            MathOp::Sub => l - r,
-                            MathOp::Mul => l * r,
-                            MathOp::Div => {
-                                if r == 0.0 {
-                                    return Err(MathGraphError::InvalidStructure(
-                                        "Division by zero".to_string(),
-                                    ));
-                                }
-                                l / r
-                            }
-                            _ => {
-                                return Err(MathGraphError::InvalidStructure(
-                                    "Unsupported operation".to_string(),
-                                ))
-                            }
-                        };
-                        return Ok(result);
-                    }
-                }
-            }
-        }
-
-        Err(MathGraphError::InvalidStructure(format!(
-            "Cannot parse: {}",
-            text
-        )))
-    }
-}
-
-// ============================================================================
-// Validation Helper Methods
-// ============================================================================
-
-impl MathBrain {
-    /// Validate balanced parentheses
-    fn validate_parentheses(&self, text: &str) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-        let mut depth = 0i32;
-        let mut position = 0usize;
-
-        for (i, ch) in text.chars().enumerate() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth < 0 {
-                        position = i;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if depth > 0 {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Error,
-                message: format!("Unbalanced parentheses: {} unclosed '('", depth),
-                node: None,
-            });
-        } else if depth < 0 {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Error,
-                message: format!("Unbalanced parentheses: extra ')' at position {}", position),
-                node: None,
-            });
-        }
-
-        issues
-    }
-
-    /// Validate operator usage (no consecutive operators, proper placement)
-    fn validate_operators(&self, text: &str) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-        let binary_operators = ['+', '*', '/', '^', '%']; // Exclude unary minus
-
-        let chars: Vec<char> = text.chars().collect();
-
-        for (i, &ch) in chars.iter().enumerate() {
-            if binary_operators.contains(&ch) {
-                // Check for consecutive binary operators (excluding unary minus after operator)
-                if i > 0 {
-                    let prev = chars[i - 1];
-                    if binary_operators.contains(&prev) {
-                        issues.push(ValidationIssue {
-                            severity: ValidationSeverity::Error,
-                            message: format!(
-                                "Invalid consecutive operators '{}{}' at position {}",
-                                prev, ch, i
-                            ),
-                            node: None,
-                        });
-                    }
-                }
-
-                // Check for operator at start (only * / ^ % are errors)
-                if i == 0 && ch != '+' && ch != '-' {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!("Expression cannot start with '{}'", ch),
-                        node: None,
-                    });
-                }
-
-                // Check for operator at end
-                if i == chars.len() - 1 {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!("Expression cannot end with '{}'", ch),
-                        node: None,
-                    });
-                }
-
-                // Check for operator after open paren (except unary minus)
-                if i > 0 && chars[i - 1] == '(' && ch != '-' && ch != '+' {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!("Invalid operator '{}' after '('", ch),
-                        node: None,
-                    });
-                }
-
-                // Check for operator before close paren
-                if i + 1 < chars.len() && chars[i + 1] == ')' {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!("Invalid operator '{}' before ')'", ch),
-                        node: None,
-                    });
-                }
-            }
-        }
-
-        issues
-    }
-
-    /// Check for potential division by zero
-    fn validate_division(&self, text: &str) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-
-        // Check for literal division by zero patterns
-        let patterns = [
-            "/0", "/ 0", "/0.0", "/ 0.0", "/ (0)", "/(0)", "/ ( 0 )", "/( 0 )",
-        ];
-
-        for pattern in patterns {
-            if let Some(idx) = text.find(pattern) {
-                // Check if followed by more digits (would not be zero)
-                let after_pattern = idx + pattern.len();
-                if after_pattern >= text.len()
-                    || !text
-                        .chars()
-                        .nth(after_pattern)
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
-                {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: "Division by zero detected".to_string(),
-                        node: None,
-                    });
-                    break;
-                }
-            }
-        }
-
-        issues
-    }
-
-    /// Validate function arity
-    fn validate_functions(&self, text: &str) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-
-        // Single-argument functions
-        let single_arg_fns = [
-            "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "sqrt", "cbrt",
-            "exp", "log", "ln", "abs", "floor", "ceil", "round",
-        ];
-
-        // Two-argument functions
-        let two_arg_fns = ["pow", "log_base", "max", "min", "atan2"];
-
-        for func in single_arg_fns {
-            // Find function calls like "sin(...)"
-            let pattern = format!("{}(", func);
-            if let Some(start) = text.find(&pattern) {
-                let after = start + pattern.len();
-                let rest = &text[after..];
-                // Count commas until matching paren
-                let mut depth = 1;
-                let mut commas = 0;
-                for ch in rest.chars() {
-                    match ch {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        ',' if depth == 1 => commas += 1,
-                        _ => {}
-                    }
-                }
-                if commas > 0 {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!(
-                            "Function '{}' expects 1 argument, got {}",
-                            func,
-                            commas + 1
-                        ),
-                        node: None,
-                    });
-                }
-            }
-        }
-
-        for func in two_arg_fns {
-            let pattern = format!("{}(", func);
-            if let Some(start) = text.find(&pattern) {
-                let after = start + pattern.len();
-                let rest = &text[after..];
-                let mut depth = 1;
-                let mut commas = 0;
-                for ch in rest.chars() {
-                    match ch {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        ',' if depth == 1 => commas += 1,
-                        _ => {}
-                    }
-                }
-                if commas != 1 {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!(
-                            "Function '{}' expects 2 arguments, got {}",
-                            func,
-                            commas + 1
-                        ),
-                        node: None,
-                    });
-                }
-            }
-        }
-
-        issues
-    }
-
-    /// Validate numeric literals are well-formed
-    fn validate_literals(&self, text: &str) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-
-        // Check for multiple decimal points in a number
-        let mut in_number = false;
-        let mut decimal_count = 0;
-        let mut number_start = 0;
-
-        for (i, ch) in text.chars().enumerate() {
-            if ch.is_ascii_digit() {
-                if !in_number {
-                    in_number = true;
-                    number_start = i;
-                    decimal_count = 0;
-                }
-            } else if ch == '.' && in_number {
-                decimal_count += 1;
-                if decimal_count > 1 {
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Error,
-                        message: format!("Invalid numeric literal with multiple decimal points starting at position {}", number_start),
-                        node: None,
-                    });
-                }
-            } else if in_number {
-                in_number = false;
-                decimal_count = 0;
-            }
-        }
-
-        // Check for leading zeros followed by digits (not valid in many contexts)
-        for (i, _) in text.match_indices("00") {
-            if i > 0 {
-                let prev = text.chars().nth(i - 1);
-                if prev.is_some_and(|c| !c.is_ascii_digit() && c != '.') {
-                    // This is a standalone 00 - warn about it
-                    issues.push(ValidationIssue {
-                        severity: ValidationSeverity::Info,
-                        message: format!("Leading zeros in number at position {}", i),
-                        node: None,
-                    });
-                }
-            }
-        }
-
-        issues
     }
 }
 
@@ -1685,209 +863,5 @@ mod tests {
 
         let simplified = brain.simplify(&expr);
         assert_eq!(simplified, Expr::Value(Value::Symbol("x".into())));
-    }
-
-    // DomainBrain implementation tests
-    #[test]
-    fn test_domain_brain_id() {
-        let brain = MathBrain::new();
-        assert_eq!(brain.domain_id(), "math");
-        assert_eq!(brain.domain_name(), "Mathematics");
-        assert_eq!(brain.version(), "0.1.0");
-    }
-
-    #[test]
-    fn test_domain_brain_can_process() {
-        let brain = MathBrain::new();
-        assert!(brain.can_process("calculate 2 + 2"));
-        assert!(brain.can_process("sin(x)"));
-        assert!(brain.can_process("5 * 3"));
-        assert!(!brain.can_process("hello world")); // No math keywords or digits
-    }
-
-    #[test]
-    fn test_domain_brain_parse() {
-        let brain = MathBrain::new();
-        let result = brain.parse("2 + 3");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_domain_brain_get_rules() {
-        let brain = MathBrain::new();
-        let rules = brain.get_rules();
-        assert_eq!(rules.len(), 6);
-        assert_eq!(rules[0].name, "Zero Addition");
-        assert_eq!(rules[0].domain, "math");
-    }
-
-    #[test]
-    fn test_domain_brain_generate_examples() {
-        let brain = MathBrain::new();
-        let examples = brain.generate_examples(10);
-        assert_eq!(examples.len(), 10);
-        for example in &examples {
-            assert_eq!(example.domain, "math");
-            assert!(example.difficulty >= 1 && example.difficulty <= 5);
-        }
-    }
-
-    #[test]
-    fn test_domain_brain_execute() {
-        let brain = MathBrain::new();
-        let graph = DagNN::from_text("42").unwrap();
-        let result = brain.execute(&graph);
-        assert!(result.is_ok());
-    }
-
-    // Math validation tests
-    #[test]
-    fn test_validate_balanced_parentheses() {
-        let brain = MathBrain::new();
-
-        // Valid parentheses
-        let graph = DagNN::from_text("(2 + 3) * 4").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let paren_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("parentheses"))
-            .collect();
-        assert!(paren_errors.is_empty());
-
-        // Unbalanced - unclosed paren
-        let graph = DagNN::from_text("(2 + 3").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("Unbalanced")));
-
-        // Unbalanced - extra close paren
-        let graph = DagNN::from_text("2 + 3)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("Unbalanced")));
-    }
-
-    #[test]
-    fn test_validate_operators() {
-        let brain = MathBrain::new();
-
-        // Valid operators
-        let graph = DagNN::from_text("2 + 3 * 4").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let op_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("operator"))
-            .collect();
-        assert!(op_errors.is_empty());
-
-        // Expression ending with operator
-        let graph = DagNN::from_text("2 +").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("end with")));
-
-        // Expression starting with * (invalid)
-        let graph = DagNN::from_text("* 2").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("start with")));
-    }
-
-    #[test]
-    fn test_validate_division_by_zero() {
-        let brain = MathBrain::new();
-
-        // Valid division
-        let graph = DagNN::from_text("10 / 2").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let div_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("Division by zero"))
-            .collect();
-        assert!(div_errors.is_empty());
-
-        // Division by zero
-        let graph = DagNN::from_text("10 / 0").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues
-            .iter()
-            .any(|i| i.message.contains("Division by zero")));
-    }
-
-    #[test]
-    fn test_validate_function_arity() {
-        let brain = MathBrain::new();
-
-        // Valid single-arg function
-        let graph = DagNN::from_text("sin(x)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let arity_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("expects"))
-            .collect();
-        assert!(arity_errors.is_empty());
-
-        // Invalid: sin with 2 args
-        let graph = DagNN::from_text("sin(x, y)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues
-            .iter()
-            .any(|i| i.message.contains("sin") && i.message.contains("expects 1")));
-
-        // Valid two-arg function
-        let graph = DagNN::from_text("pow(x, 2)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let arity_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("pow"))
-            .collect();
-        assert!(arity_errors.is_empty());
-
-        // Invalid: pow with 1 arg
-        let graph = DagNN::from_text("pow(x)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues
-            .iter()
-            .any(|i| i.message.contains("pow") && i.message.contains("expects 2")));
-    }
-
-    #[test]
-    fn test_validate_literals() {
-        let brain = MathBrain::new();
-
-        // Valid literals
-        let graph = DagNN::from_text("3.14").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        let literal_errors: Vec<_> = issues
-            .iter()
-            .filter(|i| i.message.contains("decimal"))
-            .collect();
-        assert!(literal_errors.is_empty());
-
-        // Invalid: multiple decimal points
-        let graph = DagNN::from_text("3.14.15").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues
-            .iter()
-            .any(|i| i.message.contains("multiple decimal")));
-    }
-
-    #[test]
-    fn test_validate_empty_graph() {
-        let brain = MathBrain::new();
-        let graph = DagNN::new();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        assert!(issues.iter().any(|i| i.message.contains("Empty")));
-    }
-
-    #[test]
-    fn test_validate_valid_complex_expression() {
-        let brain = MathBrain::new();
-
-        // Complex but valid expression
-        let graph = DagNN::from_text("(2 + 3) * sin(x) / (y - 1)").unwrap();
-        let issues = DomainBrain::validate(&brain, &graph).unwrap();
-        // Should have no errors (only possible infos about leading zeros, which shouldn't be here)
-        let errors: Vec<_> = issues
-            .iter()
-            .filter(|i| matches!(i.severity, ValidationSeverity::Error))
-            .collect();
-        assert!(errors.is_empty(), "Unexpected errors: {:?}", errors);
     }
 }

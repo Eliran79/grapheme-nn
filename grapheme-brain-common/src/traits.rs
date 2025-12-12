@@ -178,7 +178,7 @@ pub trait BaseDomainBrain: Send + Sync + std::fmt::Debug {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Warning,
                 message: "Graph has no input nodes".to_string(),
-                node: None,
+                location: None,
             });
         }
 

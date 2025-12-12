@@ -19,7 +19,6 @@ petgraph = { workspace = true, features = ["serde-1"] }
 grapheme-core = { path = "../grapheme-core" }
 grapheme-world = { path = "../grapheme-world" }
 grapheme-meta = { path = "../grapheme-meta" }
-grapheme-safety = { path = "../grapheme-safety" }
 
 [dev-dependencies]
 criterion.workspace = true

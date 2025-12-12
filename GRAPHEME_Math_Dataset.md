@@ -146,23 +146,6 @@ const CURRICULUM: &[LevelSpec] = &[
 
 ---
 
-## Mixed AGI Dataset
-
-Multi-modal training data combining math, text, timeseries, and vision for unified AGI training.
-
-| Domain | Examples | Description |
-|--------|----------|-------------|
-| Math | 400 | Polish notation arithmetic/algebra |
-| Text | 400 | Character-level Q&A pairs |
-| Timeseries | 400 | Sequence prediction patterns |
-| Vision | 400 | Feature graph classification |
-
-**Location:** `data/mixed_agi/` (train: 1600, val: 200, test: 200)
-
-**Format:** Same JSON structure with `domain` field for routing.
-
----
-
 ## External Datasets (NL Layer)
 
 For training Layer 4 (Natural Language → Math Intent):
@@ -174,88 +157,6 @@ For training Layer 4 (Natural Language → Math Intent):
 | [MathQA](https://math-qa.github.io/) | Multi-step problems | 37K | Operation sequences |
 | [MAWPS](https://github.com/sroy9/mawps) | Arithmetic word problems | 3.3K | Simple NL patterns |
 | [DeepMind Math](https://github.com/google-deepmind/mathematics_dataset) | Synthetic algebra/calculus | 2M+ | Broad coverage |
-
-### Vision Datasets
-
-| Dataset | Description | Size | Use |
-|---------|-------------|------|-----|
-| [MNIST](http://yann.lecun.com/exdb/mnist/) | Handwritten digits | 70K | Basic vision training |
-| [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist) | Clothing items | 70K | Object classification |
-| [CIFAR-10](https://www.cs.toronto.edu/~kriz/cifar.html) | Natural images | 60K | Complex features |
-
-### Text/NLP Datasets
-
-| Dataset | Description | Size | Use |
-|---------|-------------|------|-----|
-| [WikiText](https://huggingface.co/datasets/wikitext) | Wikipedia articles | 100M+ tokens | Language modeling |
-| [OpenWebText](https://huggingface.co/datasets/openwebtext) | Web text corpus | 8M docs | General NL understanding |
-| [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/) | Reading comprehension | 100K Q&A | Question answering |
-
----
-
-## Dataset Loaders (Rust Implementation)
-
-GRAPHEME includes production-ready dataset loaders in `grapheme-train/src/datasets/`:
-
-### GSM8K Loader (`gsm8k.rs`)
-
-```rust
-use grapheme_train::datasets::{Gsm8kLoader, Gsm8kExample};
-
-let loader = Gsm8kLoader::new("data/external/gsm8k");
-let examples = loader.load("train")?;  // Load train split
-
-// Convert to GRAPHEME training format
-loader.to_grapheme_format(&examples, "data/gsm8k.jsonl")?;
-
-// Get statistics
-let stats = loader.stats(&examples);
-println!("{}", stats);  // Total examples, avg lengths, etc.
-```
-
-### MATH Competition Loader (`math_comp.rs`)
-
-```rust
-use grapheme_train::datasets::{MathLoader, MathExample, MathCategory};
-
-let loader = MathLoader::new("data/external/math");
-let examples = loader.load("train")?;  // 7 categories: algebra, geometry, etc.
-
-// Filter by category or difficulty
-let algebra = loader.filter_by_category(&examples, "algebra");
-let hard = loader.filter_by_level(&examples, 4, 5);  // Levels 4-5
-
-// Automatic \boxed{} answer extraction
-for ex in &examples {
-    println!("Answer: {}", ex.final_answer);  // Extracted from solution
-}
-```
-
-### SQuAD Loader (`squad.rs`)
-
-```rust
-use grapheme_train::datasets::{SquadLoader, SquadExample};
-
-let loader = SquadLoader::new("data/external/squad");
-let examples = loader.load("dev")?;  // Supports v1.1 and v2.0
-
-// Filter by context length
-let short = loader.filter_by_context_length(&examples, 0, 500);
-let answerable = loader.filter_possible(&examples);  // Skip "impossible" questions
-
-// Automatic difficulty calculation based on:
-// - Context length
-// - Answer position
-// - Answer length
-```
-
-### Common Features
-
-All loaders share:
-- **JSONL export**: `to_grapheme_format()` for unified training
-- **Statistics**: `stats()` returns detailed dataset metrics
-- **Filtering**: By difficulty, category, length, etc.
-- **Error handling**: Graceful handling of malformed entries
 
 ---
 
@@ -344,22 +245,15 @@ data/
 
 ```bash
 # Generate level 2 training data
-cargo run --release -p grapheme-train --bin generate -- \
-    --level 2 --samples 50000 --output data/generated/level_2/
+grapheme-train generate --level 2 --samples 50000 --output data/generated/level_2/
 
-# Generate all levels
-cargo run --release -p grapheme-train --bin generate -- \
-    --all-levels --output data/generated/
+# Augment with NL variants
+grapheme-train augment --input data/generated/ --output data/augmented/
 
 # Validate dataset integrity
-cargo run --release -p grapheme-train --bin validate -- \
-    --input data/generated/
-
-# Train on generated data
-cargo run --release -p grapheme-train --bin train -- \
-    --config train_config.toml
+grapheme-train validate --input data/
 ```
 
 ---
 
-*Self-generating, verified, curriculum-based. Core implementation complete (232/250 tasks done).*
+*Self-generating, verified, curriculum-based.*

@@ -5,15 +5,10 @@
 ```bash
 # Essential Commands (use every session)
 taskguard init                                    # Initialize project
-taskguard create --title "Task" --area backend    # Create task (basic)
+taskguard create --title "Task" --area backend    # Create task
 taskguard list                                    # View all tasks
 taskguard validate                                # Check dependencies
 taskguard update status <task-id> doing           # Update status
-
-# Create with all options (recommended for AI agents)
-taskguard create --title "Task" --area backend --priority high \
-  --complexity 7 --tags "api,v2" --dependencies "setup-001" \
-  --assignee "developer" --estimate "4h"
 
 # Frequent Commands
 taskguard update dependencies <task-id> "dep1,dep2"  # Set dependencies
@@ -38,7 +33,7 @@ taskguard import-md file.md --area github --prefix gh [--dry-run]
 
 **CRITICAL**: TaskGuard is designed for **deterministic, programmatic operations**. Use CLI update commands for atomic task modifications instead of manual file editing.
 
-## 🎯 Core 6-Step Workflow for AI Agents
+## 🎯 Core 5-Step Workflow for AI Agents
 
 ### Step 1: Initialize and Assess (30 seconds)
 ```bash
@@ -52,33 +47,17 @@ Create **ONE task per area initially** to avoid ID conflicts:
 
 ```bash
 # Foundation layer (no dependencies)
-taskguard create --title "Verify existing system status" --area setup --priority high --complexity 3
-taskguard create --title "Analyze project requirements" --area docs --priority high --complexity 4
+taskguard create --title "Verify existing system status" --area setup --priority high
+taskguard create --title "Analyze project requirements" --area docs --priority high
 
-# Implementation layer (with dependencies set at creation)
-taskguard create --title "Extract core patterns" --area backend --priority medium \
-  --complexity 6 --dependencies "setup-001" --estimate "4h"
-taskguard create --title "Implement API endpoints" --area api --priority medium \
-  --complexity 7 --dependencies "setup-001,backend-001" --tags "rest,v2"
-taskguard create --title "Create UI components" --area frontend --priority medium \
-  --complexity 5 --dependencies "setup-001"
+# Implementation layer (will depend on foundation)
+taskguard create --title "Extract core patterns" --area backend --priority medium
+taskguard create --title "Implement API endpoints" --area api --priority medium
+taskguard create --title "Create UI components" --area frontend --priority medium
 
-# Validation layer (depends on implementation)
-taskguard create --title "Create integration tests" --area testing --priority medium \
-  --complexity 6 --dependencies "api-001,frontend-001" --estimate "3h"
+# Validation layer (will depend on implementation)
+taskguard create --title "Create integration tests" --area testing --priority medium
 ```
-
-**Create command options:**
-| Flag | Short | Description | Example |
-|------|-------|-------------|---------|
-| `--title` | `-t` | Task title (required) | `"Implement feature"` |
-| `--area` | `-a` | Task area | `backend` |
-| `--priority` | `-p` | Priority level | `low`, `medium`, `high`, `critical` |
-| `--complexity` | - | Complexity 1-10 | `7` |
-| `--tags` | - | Comma-separated tags | `"api,security,v2"` |
-| `--dependencies` | `-d` | Comma-separated task IDs | `"setup-001,auth-001"` |
-| `--assignee` | - | Task assignee | `"john"` |
-| `--estimate` | `-e` | Time estimate | `"4h"`, `"2d"` |
 
 ### Step 3: Validate After Each Creation
 ```bash
@@ -88,10 +67,7 @@ taskguard validate
 
 ### Step 4: Update with CLI Commands
 ```bash
-# Note: dependencies, priority, assignee can be set at creation with flags
-# Use update commands for modifications after task exists
-
-# Update dependencies (if not set at creation)
+# Update dependencies immediately after creation
 taskguard update dependencies api-001 "setup-001,backend-001"
 
 # Adjust priority and ownership
@@ -107,30 +83,6 @@ taskguard update status api-001 doing
 taskguard validate
 # Should show clear dependency blocking and available tasks
 ```
-
-### Step 6: Commit Your Work
-After completing implementation work, **proactively commit changes** with descriptive messages:
-
-```bash
-# Stage and commit with conventional commit format
-git add -A
-git commit -m "feat(area): Brief description of changes
-
-- Detail 1
-- Detail 2
-
-Closes task-id"
-```
-
-**Commit conventions:**
-- `feat`: New feature or functionality
-- `fix`: Bug fix
-- `chore`: Maintenance, dependencies, config
-- `docs`: Documentation changes
-- `refactor`: Code restructuring without behavior change
-- `test`: Adding or updating tests
-
-**Best practice**: Commit after each task completion, not in batches. This preserves clear history and enables easy rollback.
 
 ## 📋 Available Areas for Task Distribution
 
@@ -186,7 +138,7 @@ taskguard task update <task-id> <item-index> todo  # Mark item incomplete
 
 ### ❌ Ignoring Dependencies
 **Problem**: Creating tasks without proper dependency chains
-**Solution**: Use `--dependencies` flag at creation or `taskguard update dependencies` after
+**Solution**: Use `taskguard update dependencies` immediately after creation
 
 ### ❌ Manual File Editing
 **Problem**: Editing YAML metadata manually instead of using CLI
@@ -300,13 +252,13 @@ taskguard validate
 # 1. Initialize
 taskguard init
 
-# 2. Create foundation task
-taskguard create --title "Verify API endpoints" --area setup --priority high --complexity 3
+# 2. Create foundation
+taskguard create --title "Verify API endpoints" --area setup --priority high
 taskguard update status setup-001 doing
 
-# 3. Create dependent task with all options at creation
-taskguard create --title "Extract data patterns" --area data --priority medium \
-  --complexity 6 --dependencies "setup-001" --estimate "4h" --tags "extraction,analysis"
+# 3. Create dependent tasks
+taskguard create --title "Extract data patterns" --area data --priority medium
+taskguard update dependencies data-001 "setup-001"
 
 # 4. Validate chain
 taskguard validate
@@ -343,9 +295,8 @@ project_number = 1
 
 **1. Create and Sync Tasks**
 ```bash
-# Create tasks locally (with all metadata)
-taskguard create --title "Feature X" --area backend --priority high \
-  --complexity 7 --tags "feature,v2" --estimate "8h"
+# Create tasks locally
+taskguard create --title "Feature X" --area backend --priority high
 
 # Sync to GitHub (creates issues and adds to Projects v2 board)
 taskguard sync --github
@@ -403,8 +354,8 @@ taskguard restore backend-001
 
 #### Recommended GitHub Workflow
 ```bash
-# 1. Create and sync tasks (with full metadata)
-taskguard create --title "Feature X" --area backend --priority high --complexity 6
+# 1. Create and sync tasks
+taskguard create --title "Feature X" --area backend
 taskguard sync --github
 
 # 2. Work on tasks, sync updates

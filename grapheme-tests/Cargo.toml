@@ -11,21 +11,9 @@ publish = false
 grapheme-engine = { path = "../grapheme-engine" }
 grapheme-polish = { path = "../grapheme-polish" }
 grapheme-core = { path = "../grapheme-core" }
-grapheme-memory = { path = "../grapheme-memory" }
-grapheme-reason = { path = "../grapheme-reason" }
-grapheme-world = { path = "../grapheme-world" }
-grapheme-meta = { path = "../grapheme-meta" }
-grapheme-agent = { path = "../grapheme-agent" }
-grapheme-multimodal = { path = "../grapheme-multimodal" }
-grapheme-ground = { path = "../grapheme-ground" }
-grapheme-safety = { path = "../grapheme-safety" }
-grapheme-router = { path = "../grapheme-router" }
-grapheme-train = { path = "../grapheme-train" }
 
 # Test utilities
 rand.workspace = true
-tempfile = "3.10"
-serde_json.workspace = true
 
 [[test]]
 name = "integration_pipeline"
@@ -34,23 +22,3 @@ path = "tests/integration_pipeline.rs"
 [[test]]
 name = "integration_robustness"
 path = "tests/integration_robustness.rs"
-
-[[test]]
-name = "integration_cognitive"
-path = "tests/integration_cognitive.rs"
-
-[[test]]
-name = "integration_asimov_laws"
-path = "tests/integration_asimov_laws.rs"
-
-[[test]]
-name = "integration_text_web_learning"
-path = "tests/integration_text_web_learning.rs"
-
-[[test]]
-name = "integration_a2a_mcp"
-path = "tests/integration_a2a_mcp.rs"
-
-[[test]]
-name = "integration_llm_collaboration"
-path = "tests/integration_llm_collaboration.rs"

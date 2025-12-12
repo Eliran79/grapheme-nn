@@ -10,8 +10,8 @@ fn make_graph(text: &str) -> Graph {
 }
 
 fn bench_fuse(c: &mut Criterion) {
-    let _visual = ModalGraph::new(make_graph("visual content"), Modality::Visual);
-    let _linguistic = ModalGraph::new(make_graph("text content"), Modality::Linguistic);
+    let visual = ModalGraph::new(make_graph("visual content"), Modality::Visual);
+    let linguistic = ModalGraph::new(make_graph("text content"), Modality::Linguistic);
 
     c.bench_function("multimodal_fuse", |b| {
         b.iter(|| {

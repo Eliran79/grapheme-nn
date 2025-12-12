@@ -1,7 +1,7 @@
 ---
 id: backend-051
 title: Add logging for dropped examples in data generation
-status: done
+status: todo
 priority: medium
 tags:
 - backend
@@ -99,28 +99,25 @@ Users have no visibility into how many examples are being dropped or why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- Added `GenerationStats` struct to `DataGenerator` in grapheme-train/src/lib.rs
-- Tracks: `attempted`, `generated`, `dropped_eval_error` counts
-- Added `stats()` and `reset_stats()` methods to DataGenerator
-- Added `success_rate()` and `print_summary()` methods to GenerationStats
-- Updated all generation functions (basic_arithmetic, nested_operations, symbol_substitution, basic_functions, differentiation) to track statistics
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
 
 ### Causality Impact
-- `generate_*` functions now increment stats counters
-- Users can call `generator.stats()` to get generation statistics
-- `print_summary()` outputs to stderr for visibility
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
 
 ### Dependencies & Integration
-- No new dependencies
-- Statistics integrated into existing DataGenerator struct
-- Backward compatible - no API changes required
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
 
 ### Verification & Testing
-- All workspace tests pass
-- Stats are tracked during data generation
-- Use `generator.stats().print_summary()` to see results
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
 
 ### Context for Next Task
-- Statistics tracking is opt-in (call print_summary explicitly)
-- Uses eprintln! for output (no logging framework added)
-- Consider adding structured logging (tracing crate) in future
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

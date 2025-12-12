@@ -1,9 +1,9 @@
 //! Benchmarks for grapheme-parallel
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use grapheme_parallel::{
-    make_parallel, BatchProcessor, Graph, GraphBatchProcessor, ParallelGraph, ParallelGraphExt,
-    ShardedGraph,
+    make_parallel, make_sharded, BatchProcessor, GraphBatchProcessor, ParallelDagNN,
+    ParallelGraph, ParallelGraphExt, ShardedGraph, Graph,
 };
 
 fn make_graph(text: &str) -> Graph {
@@ -55,7 +55,9 @@ fn bench_batch_processing(c: &mut Criterion) {
 }
 
 fn bench_sharded_parallel(c: &mut Criterion) {
-    let graphs: Vec<Graph> = (0..8).map(|_| make_large_graph()).collect();
+    let graphs: Vec<Graph> = (0..8)
+        .map(|_| make_large_graph())
+        .collect();
     let sharded = ShardedGraph::from_shards(graphs);
 
     c.bench_function("sharded_par_map", |b| {

@@ -1,7 +1,7 @@
 ---
 id: testing-005
 title: 'Integration test: End-to-end cognitive module training'
-status: done
+status: todo
 priority: high
 tags:
 - testing

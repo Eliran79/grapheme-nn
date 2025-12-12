@@ -26,10 +26,7 @@
 //! - Feature-based hashing for O(n) approximate retrieval
 //! - Index by structural features (node count, edge count, degree histogram)
 
-use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
-    LearnableParam, MultiBrainResult, Persistable, PersistenceError, TransformRule,
-};
+use grapheme_core::{DagNN, TransformRule};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -346,12 +343,7 @@ pub trait SemanticGraph: Send + Sync + Debug {
     fn about(&self, entity: NodeId) -> Vec<FactId>;
 
     /// Update/revise a fact with provenance tracking
-    fn revise(
-        &mut self,
-        old_fact_id: FactId,
-        new_fact: Graph,
-        source: Source,
-    ) -> MemoryResult<FactId>;
+    fn revise(&mut self, old_fact_id: FactId, new_fact: Graph, source: Source) -> MemoryResult<FactId>;
 
     /// Get a fact by ID
     fn get(&self, id: FactId) -> Option<&Graph>;
@@ -506,7 +498,11 @@ pub trait ContinualLearning: Send + Sync + Debug {
     fn consolidate(&mut self, new_experience: Graph);
 
     /// Detect and resolve contradictions with existing knowledge
-    fn reconcile(&mut self, new_fact: Graph, existing: &dyn SemanticGraph) -> ReconciliationResult;
+    fn reconcile(
+        &mut self,
+        new_fact: Graph,
+        existing: &dyn SemanticGraph,
+    ) -> ReconciliationResult;
 
     /// Sleep-like offline processing (replay and integrate)
     ///
@@ -584,14 +580,8 @@ impl Debug for MemorySystem {
         f.debug_struct("MemorySystem")
             .field("episodic", &format!("{} episodes", self.episodic.len()))
             .field("semantic", &format!("{} facts", self.semantic.len()))
-            .field(
-                "procedural",
-                &format!("{} procedures", self.procedural.len()),
-            )
-            .field(
-                "working",
-                &format!("{}/{} items", self.working.len(), self.working.capacity()),
-            )
+            .field("procedural", &format!("{} procedures", self.procedural.len()))
+            .field("working", &format!("{}/{} items", self.working.len(), self.working.capacity()))
             .finish()
     }
 }
@@ -661,13 +651,11 @@ impl GraphFingerprint {
     /// Compute similarity between two fingerprints (0.0 to 1.0)
     pub fn similarity(&self, other: &GraphFingerprint) -> f32 {
         // Jaccard-like similarity on features
-        let node_sim = 1.0
-            - (self.node_count as f32 - other.node_count as f32).abs()
-                / (self.node_count.max(other.node_count).max(1) as f32);
+        let node_sim = 1.0 - (self.node_count as f32 - other.node_count as f32).abs()
+            / (self.node_count.max(other.node_count).max(1) as f32);
 
-        let edge_sim = 1.0
-            - (self.edge_count as f32 - other.edge_count as f32).abs()
-                / (self.edge_count.max(other.edge_count).max(1) as f32);
+        let edge_sim = 1.0 - (self.edge_count as f32 - other.edge_count as f32).abs()
+            / (self.edge_count.max(other.edge_count).max(1) as f32);
 
         // Degree histogram similarity
         let mut degree_diff = 0.0f32;
@@ -735,31 +723,30 @@ impl EpisodicMemory for SimpleEpisodicMemory {
     fn recall(&self, query: &Graph, limit: usize) -> Vec<EpisodeId> {
         let query_fp = GraphFingerprint::from_graph(query);
 
-        let mut scored: Vec<_> = self
-            .episodes
-            .iter()
+        let mut scored: Vec<_> = self.episodes.iter()
             .map(|e| {
                 let fp = GraphFingerprint::from_graph(&e.content);
                 (fp.similarity(&query_fp), e.id)
             })
             .collect();
 
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        scored.into_iter().take(limit).map(|(_, id)| id).collect()
+        scored.into_iter()
+            .take(limit)
+            .map(|(_, id)| id)
+            .collect()
     }
 
     fn recall_temporal(&self, start: Timestamp, end: Timestamp) -> Vec<EpisodeId> {
-        self.episodes
-            .iter()
+        self.episodes.iter()
             .filter(|e| e.timestamp >= start && e.timestamp <= end)
             .map(|e| e.id)
             .collect()
     }
 
     fn recall_by_tags(&self, tags: &[String], limit: usize) -> Vec<EpisodeId> {
-        self.episodes
-            .iter()
+        self.episodes.iter()
             .filter(|e| tags.iter().any(|t| e.tags.contains(t)))
             .take(limit)
             .map(|e| e.id)
@@ -776,17 +763,14 @@ impl EpisodicMemory for SimpleEpisodicMemory {
 
     fn consolidate(&mut self, policy: &RetentionPolicy) {
         // Remove episodes below importance threshold
-        self.episodes
-            .retain(|e| e.importance >= policy.min_importance);
+        self.episodes.retain(|e| e.importance >= policy.min_importance);
 
         // Enforce max episodes
         if let Some(max) = policy.max_episodes {
             if self.episodes.len() > max {
                 // Sort by importance and keep top N
                 self.episodes.sort_by(|a, b| {
-                    b.importance
-                        .partial_cmp(&a.importance)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 self.episodes.truncate(max);
             }
@@ -830,9 +814,7 @@ impl SemanticGraph for SimpleSemanticGraph {
     fn query(&self, pattern: &Graph, limit: usize) -> Vec<FactId> {
         let pattern_fp = GraphFingerprint::from_graph(pattern);
 
-        let mut scored: Vec<_> = self
-            .facts
-            .iter()
+        let mut scored: Vec<_> = self.facts.iter()
             .enumerate()
             .map(|(idx, (g, _))| {
                 let fp = GraphFingerprint::from_graph(g);
@@ -840,9 +822,12 @@ impl SemanticGraph for SimpleSemanticGraph {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        scored.into_iter().take(limit).map(|(_, id)| id).collect()
+        scored.into_iter()
+            .take(limit)
+            .map(|(_, id)| id)
+            .collect()
     }
 
     fn contains(&self, fact: &Graph) -> bool {
@@ -858,12 +843,7 @@ impl SemanticGraph for SimpleSemanticGraph {
         (0..self.facts.len() as FactId).collect()
     }
 
-    fn revise(
-        &mut self,
-        old_fact_id: FactId,
-        new_fact: Graph,
-        source: Source,
-    ) -> MemoryResult<FactId> {
+    fn revise(&mut self, old_fact_id: FactId, new_fact: Graph, source: Source) -> MemoryResult<FactId> {
         let idx = old_fact_id as usize;
         if idx < self.facts.len() {
             self.facts[idx] = (new_fact, source);
@@ -910,8 +890,10 @@ impl SimpleProceduralMemory {
 
 impl ProceduralMemory for SimpleProceduralMemory {
     fn learn(&mut self, name: &str, procedure: TransformRule) {
-        self.procedures
-            .insert(name.to_string(), (procedure, ProcedureStats::default()));
+        self.procedures.insert(
+            name.to_string(),
+            (procedure, ProcedureStats::default()),
+        );
     }
 
     fn recall(&self, name: &str) -> Option<&TransformRule> {
@@ -920,8 +902,7 @@ impl ProceduralMemory for SimpleProceduralMemory {
 
     fn applicable(&self, _situation: &Graph, limit: usize) -> Vec<(&str, &TransformRule)> {
         // Simplified: return all procedures (proper implementation would match patterns)
-        self.procedures
-            .iter()
+        self.procedures.iter()
             .take(limit)
             .map(|(name, (rule, _))| (name.as_str(), rule))
             .collect()
@@ -1106,575 +1087,6 @@ pub fn create_default_memory_system() -> MemorySystem {
         Box::new(SimpleWorkingMemory::new(7)),
         Box::new(SimpleContinualLearning::new(1000)),
     )
-}
-
-// ============================================================================
-// Learnable Memory Retrieval
-// ============================================================================
-
-/// Learnable memory retrieval with trainable similarity weights
-///
-/// This module learns to weight different aspects of graph similarity
-/// for memory retrieval (node count, edge count, degree distribution, type distribution).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearnableMemoryRetrieval {
-    /// Weight for node count similarity
-    pub node_weight: LearnableParam,
-    /// Weight for edge count similarity
-    pub edge_weight: LearnableParam,
-    /// Weight for degree histogram similarity
-    pub degree_weight: LearnableParam,
-    /// Weight for node type distribution similarity
-    pub type_weight: LearnableParam,
-    /// Bias term for importance scoring
-    pub importance_bias: LearnableParam,
-    /// Temperature for softmax-like retrieval
-    pub temperature: LearnableParam,
-}
-
-impl LearnableMemoryRetrieval {
-    /// Create a new learnable memory retrieval with default weights
-    pub fn new() -> Self {
-        Self {
-            node_weight: LearnableParam::new(0.25),
-            edge_weight: LearnableParam::new(0.25),
-            degree_weight: LearnableParam::new(0.25),
-            type_weight: LearnableParam::new(0.25),
-            importance_bias: LearnableParam::new(0.0),
-            temperature: LearnableParam::new(1.0),
-        }
-    }
-
-    /// Compute weighted similarity between two fingerprints
-    pub fn weighted_similarity(&self, a: &GraphFingerprint, b: &GraphFingerprint) -> f32 {
-        // Node count similarity
-        let node_sim = 1.0
-            - (a.node_count as f32 - b.node_count as f32).abs()
-                / (a.node_count.max(b.node_count).max(1) as f32);
-
-        // Edge count similarity
-        let edge_sim = 1.0
-            - (a.edge_count as f32 - b.edge_count as f32).abs()
-                / (a.edge_count.max(b.edge_count).max(1) as f32);
-
-        // Degree histogram similarity
-        let mut degree_diff = 0.0f32;
-        let mut degree_total = 0.0f32;
-        for i in 0..8 {
-            degree_diff += (a.degree_hist[i] as f32 - b.degree_hist[i] as f32).abs();
-            degree_total += (a.degree_hist[i] + b.degree_hist[i]) as f32;
-        }
-        let degree_sim = if degree_total > 0.0 {
-            1.0 - degree_diff / degree_total
-        } else {
-            1.0
-        };
-
-        // Node type distribution similarity
-        let mut type_diff = 0.0f32;
-        let mut type_total = 0.0f32;
-        for i in 0..8 {
-            type_diff += (a.node_types[i] as f32 - b.node_types[i] as f32).abs();
-            type_total += (a.node_types[i] + b.node_types[i]) as f32;
-        }
-        let type_sim = if type_total > 0.0 {
-            1.0 - type_diff / type_total
-        } else {
-            1.0
-        };
-
-        // Weighted sum with softmax-normalized weights
-        let weights = [
-            self.node_weight.value.exp(),
-            self.edge_weight.value.exp(),
-            self.degree_weight.value.exp(),
-            self.type_weight.value.exp(),
-        ];
-        let weight_sum: f32 = weights.iter().sum();
-
-        (weights[0] * node_sim
-            + weights[1] * edge_sim
-            + weights[2] * degree_sim
-            + weights[3] * type_sim)
-            / weight_sum
-            + self.importance_bias.value
-    }
-
-    /// Score an episode for retrieval given a query
-    pub fn score_episode(&self, query_fp: &GraphFingerprint, episode: &Episode) -> f32 {
-        let content_fp = GraphFingerprint::from_graph(&episode.content);
-        let sim = self.weighted_similarity(query_fp, &content_fp);
-
-        // Apply temperature scaling
-        (sim / self.temperature.value.max(0.01)).clamp(-10.0, 10.0)
-    }
-}
-
-impl Default for LearnableMemoryRetrieval {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Learnable for LearnableMemoryRetrieval {
-    fn zero_grad(&mut self) {
-        self.node_weight.zero_grad();
-        self.edge_weight.zero_grad();
-        self.degree_weight.zero_grad();
-        self.type_weight.zero_grad();
-        self.importance_bias.zero_grad();
-        self.temperature.zero_grad();
-    }
-
-    fn step(&mut self, lr: f32) {
-        self.node_weight.step(lr);
-        self.edge_weight.step(lr);
-        self.degree_weight.step(lr);
-        self.type_weight.step(lr);
-        self.importance_bias.step(lr);
-        self.temperature.step(lr);
-        // Ensure temperature stays positive
-        self.temperature.value = self.temperature.value.max(0.01);
-    }
-
-    fn num_parameters(&self) -> usize {
-        6 // node, edge, degree, type weights + importance_bias + temperature
-    }
-
-    fn has_gradients(&self) -> bool {
-        self.node_weight.grad != 0.0
-            || self.edge_weight.grad != 0.0
-            || self.degree_weight.grad != 0.0
-            || self.type_weight.grad != 0.0
-            || self.importance_bias.grad != 0.0
-            || self.temperature.grad != 0.0
-    }
-
-    fn gradient_norm(&self) -> f32 {
-        (self.node_weight.grad.powi(2)
-            + self.edge_weight.grad.powi(2)
-            + self.degree_weight.grad.powi(2)
-            + self.type_weight.grad.powi(2)
-            + self.importance_bias.grad.powi(2)
-            + self.temperature.grad.powi(2))
-        .sqrt()
-    }
-}
-
-impl Persistable for LearnableMemoryRetrieval {
-    fn persist_type_id() -> &'static str {
-        "LearnableMemoryRetrieval"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        // Validate temperature is positive
-        if self.temperature.value <= 0.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Temperature must be positive".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Domain-Aware Memory
-// ============================================================================
-
-/// Metadata for a domain-tagged memory item
-#[derive(Debug, Clone)]
-pub struct DomainMemoryMetadata {
-    /// The domain this memory is associated with (e.g., "math", "code", "chemistry")
-    pub domain_id: Option<String>,
-    /// Confidence in the domain classification
-    pub domain_confidence: f32,
-    /// Additional domains that might be relevant
-    pub related_domains: Vec<String>,
-    /// Source input text (for re-routing if needed)
-    pub source_text: Option<String>,
-}
-
-impl Default for DomainMemoryMetadata {
-    fn default() -> Self {
-        Self {
-            domain_id: None,
-            domain_confidence: 0.0,
-            related_domains: Vec::new(),
-            source_text: None,
-        }
-    }
-}
-
-impl DomainMemoryMetadata {
-    /// Create metadata for a specific domain
-    pub fn for_domain(domain_id: &str, confidence: f32) -> Self {
-        Self {
-            domain_id: Some(domain_id.to_string()),
-            domain_confidence: confidence.clamp(0.0, 1.0),
-            related_domains: Vec::new(),
-            source_text: None,
-        }
-    }
-
-    /// Add related domains
-    pub fn with_related(mut self, domains: Vec<String>) -> Self {
-        self.related_domains = domains;
-        self
-    }
-
-    /// Set source text
-    pub fn with_source(mut self, text: &str) -> Self {
-        self.source_text = Some(text.to_string());
-        self
-    }
-}
-
-/// Result of domain-aware memory storage
-#[derive(Debug)]
-pub struct DomainMemoryStorageResult {
-    /// ID of the stored item (episode or fact)
-    pub storage_id: u64,
-    /// Domain metadata
-    pub metadata: DomainMemoryMetadata,
-    /// Whether a brain was used to process the input
-    pub brain_processed: bool,
-}
-
-/// Result of domain-aware memory retrieval
-#[derive(Debug)]
-pub struct DomainMemoryRetrievalResult {
-    /// Retrieved IDs
-    pub ids: Vec<u64>,
-    /// Domain routing results (if domain filtering was used)
-    pub routing_result: Option<MultiBrainResult>,
-    /// Domain filter that was applied
-    pub domain_filter: Option<String>,
-}
-
-/// Domain-aware memory system that integrates with domain brains
-///
-/// This system can:
-/// - Automatically classify memories by domain
-/// - Store memories with domain metadata
-/// - Retrieve memories filtered by domain
-/// - Route queries to appropriate domain brains
-pub struct DomainAwareMemory {
-    /// The underlying memory system
-    pub memory: MemorySystem,
-    /// The cognitive-brain bridge for domain routing
-    pub bridge: DefaultCognitiveBridge,
-    /// Domain metadata for episodic memories
-    episodic_metadata: std::collections::HashMap<EpisodeId, DomainMemoryMetadata>,
-    /// Domain metadata for semantic facts
-    semantic_metadata: std::collections::HashMap<FactId, DomainMemoryMetadata>,
-    /// Whether to auto-classify memories by domain
-    pub auto_classify: bool,
-    /// Minimum confidence for domain classification
-    pub classification_threshold: f32,
-}
-
-impl Debug for DomainAwareMemory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DomainAwareMemory")
-            .field("episodic_count", &self.memory.episodic.len())
-            .field("semantic_count", &self.memory.semantic.len())
-            .field("available_domains", &self.bridge.available_domains())
-            .field("auto_classify", &self.auto_classify)
-            .finish()
-    }
-}
-
-impl DomainAwareMemory {
-    /// Create a new domain-aware memory system
-    pub fn new(memory: MemorySystem) -> Self {
-        Self {
-            memory,
-            bridge: DefaultCognitiveBridge::new(),
-            episodic_metadata: std::collections::HashMap::new(),
-            semantic_metadata: std::collections::HashMap::new(),
-            auto_classify: true,
-            classification_threshold: 0.5,
-        }
-    }
-
-    /// Create with a pre-configured bridge
-    pub fn with_bridge(memory: MemorySystem, bridge: DefaultCognitiveBridge) -> Self {
-        Self {
-            memory,
-            bridge,
-            episodic_metadata: std::collections::HashMap::new(),
-            semantic_metadata: std::collections::HashMap::new(),
-            auto_classify: true,
-            classification_threshold: 0.5,
-        }
-    }
-
-    /// Register a domain brain
-    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
-        self.bridge.register(brain);
-    }
-
-    /// Classify input text to a domain
-    pub fn classify_domain(&self, text: &str) -> Option<DomainMemoryMetadata> {
-        let result = self.bridge.route_to_multiple_brains(text);
-        if result.success {
-            if let Some(primary) = &result.primary {
-                if primary.confidence >= self.classification_threshold {
-                    return Some(DomainMemoryMetadata {
-                        domain_id: Some(primary.domain_id.clone()),
-                        domain_confidence: primary.confidence,
-                        related_domains: result
-                            .domains()
-                            .iter()
-                            .filter(|&d| *d != primary.domain_id)
-                            .map(|s| s.to_string())
-                            .collect(),
-                        source_text: Some(text.to_string()),
-                    });
-                }
-            }
-        }
-        None
-    }
-
-    /// Store an episode with automatic domain classification
-    pub fn store_episode_with_domain(
-        &mut self,
-        episode: Episode,
-        text_hint: Option<&str>,
-    ) -> DomainMemoryStorageResult {
-        // Classify domain from text hint or episode content
-        let metadata = if self.auto_classify {
-            let text = text_hint.unwrap_or("");
-            self.classify_domain(text).unwrap_or_default()
-        } else {
-            DomainMemoryMetadata::default()
-        };
-
-        // Store the episode
-        let id = self.memory.episodic.store(episode);
-
-        // Store metadata
-        let brain_processed = metadata.domain_id.is_some();
-        self.episodic_metadata.insert(id, metadata.clone());
-
-        DomainMemoryStorageResult {
-            storage_id: id,
-            metadata,
-            brain_processed,
-        }
-    }
-
-    /// Store a fact with automatic domain classification
-    pub fn assert_with_domain(
-        &mut self,
-        fact: Graph,
-        text_hint: Option<&str>,
-    ) -> DomainMemoryStorageResult {
-        // Classify domain from text hint
-        let metadata = if let Some(hint) = text_hint.filter(|_| self.auto_classify) {
-            self.classify_domain(hint).unwrap_or_default()
-        } else {
-            DomainMemoryMetadata::default()
-        };
-
-        // Store the fact
-        let id = self.memory.semantic.assert(fact);
-
-        // Store metadata
-        let brain_processed = metadata.domain_id.is_some();
-        self.semantic_metadata.insert(id, metadata.clone());
-
-        DomainMemoryStorageResult {
-            storage_id: id,
-            metadata,
-            brain_processed,
-        }
-    }
-
-    /// Store a fact with explicit domain
-    pub fn assert_in_domain(
-        &mut self,
-        fact: Graph,
-        domain_id: &str,
-        confidence: f32,
-    ) -> DomainMemoryStorageResult {
-        let metadata = DomainMemoryMetadata::for_domain(domain_id, confidence);
-        let id = self.memory.semantic.assert(fact);
-        self.semantic_metadata.insert(id, metadata.clone());
-
-        DomainMemoryStorageResult {
-            storage_id: id,
-            metadata,
-            brain_processed: false,
-        }
-    }
-
-    /// Recall episodes from a specific domain
-    pub fn recall_by_domain(
-        &self,
-        query: &Graph,
-        domain_id: &str,
-        limit: usize,
-    ) -> DomainMemoryRetrievalResult {
-        // Get episodes that match the query
-        let all_matches = self.memory.episodic.recall(query, limit * 2);
-
-        // Filter by domain
-        let filtered: Vec<_> = all_matches
-            .into_iter()
-            .filter(|id| {
-                self.episodic_metadata
-                    .get(id)
-                    .and_then(|m| m.domain_id.as_ref())
-                    .is_some_and(|d| d == domain_id)
-            })
-            .take(limit)
-            .collect();
-
-        DomainMemoryRetrievalResult {
-            ids: filtered,
-            routing_result: None,
-            domain_filter: Some(domain_id.to_string()),
-        }
-    }
-
-    /// Query facts from a specific domain
-    pub fn query_by_domain(
-        &self,
-        pattern: &Graph,
-        domain_id: &str,
-        limit: usize,
-    ) -> DomainMemoryRetrievalResult {
-        // Get facts that match the pattern
-        let all_matches = self.memory.semantic.query(pattern, limit * 2);
-
-        // Filter by domain
-        let filtered: Vec<_> = all_matches
-            .into_iter()
-            .filter(|id| {
-                self.semantic_metadata
-                    .get(id)
-                    .and_then(|m| m.domain_id.as_ref())
-                    .is_some_and(|d| d == domain_id)
-            })
-            .take(limit)
-            .collect();
-
-        DomainMemoryRetrievalResult {
-            ids: filtered,
-            routing_result: None,
-            domain_filter: Some(domain_id.to_string()),
-        }
-    }
-
-    /// Recall episodes using brain routing
-    ///
-    /// Routes the query text to domain brains first, then retrieves
-    /// memories from the matching domain
-    pub fn recall_with_brain_routing(
-        &self,
-        query: &Graph,
-        query_text: &str,
-        limit: usize,
-    ) -> DomainMemoryRetrievalResult {
-        // Route to brains
-        let routing = self.bridge.route_to_multiple_brains(query_text);
-
-        // If a domain brain matched, filter by that domain
-        if routing.success {
-            if let Some(primary) = &routing.primary {
-                let domain_id = primary.domain_id.clone();
-                let domain_results = self.recall_by_domain(query, &domain_id, limit);
-                return DomainMemoryRetrievalResult {
-                    ids: domain_results.ids,
-                    routing_result: Some(routing),
-                    domain_filter: Some(domain_id),
-                };
-            }
-        }
-
-        // No domain match - return all matching episodes
-        DomainMemoryRetrievalResult {
-            ids: self.memory.episodic.recall(query, limit),
-            routing_result: Some(routing),
-            domain_filter: None,
-        }
-    }
-
-    /// Get domain metadata for an episode
-    pub fn get_episode_domain(&self, id: EpisodeId) -> Option<&DomainMemoryMetadata> {
-        self.episodic_metadata.get(&id)
-    }
-
-    /// Get domain metadata for a fact
-    pub fn get_fact_domain(&self, id: FactId) -> Option<&DomainMemoryMetadata> {
-        self.semantic_metadata.get(&id)
-    }
-
-    /// Get all episodes in a domain
-    pub fn episodes_in_domain(&self, domain_id: &str) -> Vec<EpisodeId> {
-        self.episodic_metadata
-            .iter()
-            .filter(|(_, m)| m.domain_id.as_ref().is_some_and(|d| d == domain_id))
-            .map(|(&id, _)| id)
-            .collect()
-    }
-
-    /// Get all facts in a domain
-    pub fn facts_in_domain(&self, domain_id: &str) -> Vec<FactId> {
-        self.semantic_metadata
-            .iter()
-            .filter(|(_, m)| m.domain_id.as_ref().is_some_and(|d| d == domain_id))
-            .map(|(&id, _)| id)
-            .collect()
-    }
-
-    /// Get domain statistics
-    pub fn domain_stats(&self) -> std::collections::HashMap<String, (usize, usize)> {
-        let mut stats: std::collections::HashMap<String, (usize, usize)> =
-            std::collections::HashMap::new();
-
-        for meta in self.episodic_metadata.values() {
-            if let Some(domain) = &meta.domain_id {
-                let entry = stats.entry(domain.clone()).or_insert((0, 0));
-                entry.0 += 1;
-            }
-        }
-
-        for meta in self.semantic_metadata.values() {
-            if let Some(domain) = &meta.domain_id {
-                let entry = stats.entry(domain.clone()).or_insert((0, 0));
-                entry.1 += 1;
-            }
-        }
-
-        stats
-    }
-
-    /// Get all available domains from the registry
-    pub fn available_domains(&self) -> Vec<String> {
-        self.bridge.available_domains()
-    }
-}
-
-impl CognitiveBrainBridge for DomainAwareMemory {
-    fn get_registry(&self) -> &BrainRegistry {
-        self.bridge.get_registry()
-    }
-
-    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
-        self.bridge.get_registry_mut()
-    }
-}
-
-/// Factory function to create a domain-aware memory system with simple implementations
-pub fn create_domain_aware_memory() -> DomainAwareMemory {
-    DomainAwareMemory::new(create_default_memory_system())
 }
 
 // ============================================================================

@@ -11,18 +11,10 @@
 //! Future enhancements:
 //! - Tree-sitter integration for multi-language parsing
 //! - Full compilation and execution support
-//!
-//! ## Migration to brain-common
-//!
-//! This crate uses shared abstractions from `grapheme-brain-common`:
-//! - `ActivatedNode<CodeNodeType>` - Generic node wrapper (aliased as `CodeNode`)
-//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
-//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
-use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
-    SpaceType, ValidationIssue, ValidationSeverity,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
+    ExecutionResult, ValidationIssue, ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -64,9 +56,9 @@ pub enum Language {
     Generic,
 }
 
-/// AST node type variants for code representation
+/// AST node types for code representation
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum CodeNodeType {
+pub enum CodeNode {
     /// Module/file root
     Module { name: String, language: Language },
     /// Function definition
@@ -76,10 +68,7 @@ pub enum CodeNodeType {
         return_type: Option<String>,
     },
     /// Variable declaration
-    Variable {
-        name: String,
-        var_type: Option<String>,
-    },
+    Variable { name: String, var_type: Option<String> },
     /// Literal value
     Literal(LiteralValue),
     /// Binary operation
@@ -106,82 +95,6 @@ pub enum CodeNodeType {
     Assignment,
     /// Expression statement
     ExprStmt,
-}
-
-/// Get default activation based on code node type.
-/// Higher values for more semantically important constructs.
-///
-/// Used by `new_code_node()` to compute initial activation from type.
-pub fn code_type_activation(node_type: &CodeNodeType) -> f32 {
-    match node_type {
-        CodeNodeType::Module { .. } => 0.9,      // Root structure
-        CodeNodeType::Function { .. } => 0.8,   // Key construct
-        CodeNodeType::Variable { .. } => 0.4,   // Data storage
-        CodeNodeType::Literal(_) => 0.2,        // Constants
-        CodeNodeType::BinaryOp(_) => 0.5,       // Operations
-        CodeNodeType::UnaryOp(_) => 0.4,        // Operations
-        CodeNodeType::Call { .. } => 0.7,       // Function invocation
-        CodeNodeType::If => 0.6,                // Control flow
-        CodeNodeType::Loop { .. } => 0.6,       // Control flow
-        CodeNodeType::Return => 0.5,            // Control flow
-        CodeNodeType::Block => 0.3,             // Structural
-        CodeNodeType::Type(_) => 0.4,           // Type annotation
-        CodeNodeType::Comment(_) => 0.1,        // Documentation
-        CodeNodeType::Identifier(_) => 0.3,     // Reference
-        CodeNodeType::Assignment => 0.5,        // State change
-        CodeNodeType::ExprStmt => 0.3,          // Expression wrapper
-    }
-}
-
-/// Code node with activation for gradient flow (Backend-117)
-///
-/// This is a type alias for `ActivatedNode<CodeNodeType>` from brain-common.
-/// The generic wrapper handles activation storage and propagation while
-/// maintaining the domain-specific node type.
-///
-/// ## Migration Note
-///
-/// Previously this was a standalone struct. Now it uses the shared
-/// `ActivatedNode<T>` abstraction. The `new_code_node()` function provides
-/// backward compatibility with the previous `new_code_node()` API.
-pub type CodeNode = ActivatedNode<CodeNodeType>;
-
-/// Create a new code node with default activation based on type.
-///
-/// This is the primary constructor for CodeNode, providing backward
-/// compatibility with the previous `new_code_node()` API.
-pub fn new_code_node(node_type: CodeNodeType) -> CodeNode {
-    ActivatedNode::with_type_activation(node_type, code_type_activation)
-}
-
-/// Extension trait for CodeNode-specific convenience methods.
-pub trait CodeNodeExt {
-    /// Check if this is a literal node
-    fn is_literal(&self) -> bool;
-    /// Check if this is a function node
-    fn is_function(&self) -> bool;
-    /// Check if this is an identifier node
-    fn is_identifier(&self) -> bool;
-    /// Check if this is a binary operation node
-    fn is_binary_op(&self) -> bool;
-}
-
-impl CodeNodeExt for CodeNode {
-    fn is_literal(&self) -> bool {
-        matches!(self.node_type, CodeNodeType::Literal(_))
-    }
-
-    fn is_function(&self) -> bool {
-        matches!(self.node_type, CodeNodeType::Function { .. })
-    }
-
-    fn is_identifier(&self) -> bool {
-        matches!(self.node_type, CodeNodeType::Identifier(_))
-    }
-
-    fn is_binary_op(&self) -> bool {
-        matches!(self.node_type, CodeNodeType::BinaryOp(_))
-    }
 }
 
 /// Literal value types
@@ -234,646 +147,6 @@ pub enum LoopKind {
     While,
     Loop,
     DoWhile,
-}
-
-// ============================================================================
-// Type System for Type Inference
-// ============================================================================
-
-/// Type variable identifier for unification
-pub type TypeVar = usize;
-
-/// Types in the inference system
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum InferredType {
-    /// Unknown type (type variable for unification)
-    Unknown(TypeVar),
-    /// Integer type
-    Int,
-    /// Floating point type
-    Float,
-    /// Boolean type
-    Bool,
-    /// String type
-    String,
-    /// Unit/void type
-    Unit,
-    /// Null/None type
-    Null,
-    /// Function type: (param_types) -> return_type
-    Function {
-        params: Vec<InferredType>,
-        ret: Box<InferredType>,
-    },
-    /// Array/list type
-    Array(Box<InferredType>),
-    /// Tuple type
-    Tuple(Vec<InferredType>),
-    /// Reference type
-    Ref(Box<InferredType>),
-    /// Named/custom type
-    Named(String),
-    /// Error type (type inference failed)
-    Error,
-}
-
-impl Default for InferredType {
-    fn default() -> Self {
-        InferredType::Unknown(0)
-    }
-}
-
-impl std::fmt::Display for InferredType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InferredType::Unknown(v) => write!(f, "?T{}", v),
-            InferredType::Int => write!(f, "Int"),
-            InferredType::Float => write!(f, "Float"),
-            InferredType::Bool => write!(f, "Bool"),
-            InferredType::String => write!(f, "String"),
-            InferredType::Unit => write!(f, "()"),
-            InferredType::Null => write!(f, "Null"),
-            InferredType::Function { params, ret } => {
-                write!(f, "(")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", p)?;
-                }
-                write!(f, ") -> {}", ret)
-            }
-            InferredType::Array(inner) => write!(f, "[{}]", inner),
-            InferredType::Tuple(types) => {
-                write!(f, "(")?;
-                for (i, t) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", t)?;
-                }
-                write!(f, ")")
-            }
-            InferredType::Ref(inner) => write!(f, "&{}", inner),
-            InferredType::Named(name) => write!(f, "{}", name),
-            InferredType::Error => write!(f, "Error"),
-        }
-    }
-}
-
-impl InferredType {
-    /// Check if this type contains a type variable
-    pub fn contains_var(&self, var: TypeVar) -> bool {
-        match self {
-            InferredType::Unknown(v) => *v == var,
-            InferredType::Function { params, ret } => {
-                params.iter().any(|p| p.contains_var(var)) || ret.contains_var(var)
-            }
-            InferredType::Array(inner) | InferredType::Ref(inner) => inner.contains_var(var),
-            InferredType::Tuple(types) => types.iter().any(|t| t.contains_var(var)),
-            _ => false,
-        }
-    }
-
-    /// Substitute a type variable with a concrete type
-    pub fn substitute(&self, var: TypeVar, replacement: &InferredType) -> InferredType {
-        match self {
-            InferredType::Unknown(v) if *v == var => replacement.clone(),
-            InferredType::Function { params, ret } => InferredType::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute(var, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute(var, replacement)),
-            },
-            InferredType::Array(inner) => {
-                InferredType::Array(Box::new(inner.substitute(var, replacement)))
-            }
-            InferredType::Ref(inner) => {
-                InferredType::Ref(Box::new(inner.substitute(var, replacement)))
-            }
-            InferredType::Tuple(types) => InferredType::Tuple(
-                types
-                    .iter()
-                    .map(|t| t.substitute(var, replacement))
-                    .collect(),
-            ),
-            _ => self.clone(),
-        }
-    }
-
-    /// Parse a type string into an InferredType
-    pub fn from_type_string(s: &str) -> Self {
-        let s = s.trim();
-        match s {
-            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "int" | "Int" | "integer" => {
-                InferredType::Int
-            }
-            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => InferredType::Int,
-            "f32" | "f64" | "float" | "Float" | "double" => InferredType::Float,
-            "bool" | "Bool" | "boolean" => InferredType::Bool,
-            "str" | "String" | "string" | "&str" => InferredType::String,
-            "()" | "void" | "None" | "Unit" => InferredType::Unit,
-            "null" | "Null" | "nil" => InferredType::Null,
-            _ if s.starts_with("Vec<") || s.starts_with('[') => {
-                let inner = if s.starts_with("Vec<") {
-                    s.strip_prefix("Vec<")
-                        .and_then(|s| s.strip_suffix('>'))
-                        .unwrap_or("Unknown")
-                } else {
-                    s.strip_prefix('[')
-                        .and_then(|s| s.strip_suffix(']'))
-                        .unwrap_or("Unknown")
-                };
-                InferredType::Array(Box::new(Self::from_type_string(inner)))
-            }
-            _ if s.starts_with('&') => InferredType::Ref(Box::new(Self::from_type_string(&s[1..]))),
-            _ => InferredType::Named(s.to_string()),
-        }
-    }
-}
-
-// ============================================================================
-// Type Constraint for Unification
-// ============================================================================
-
-/// A type constraint representing that two types must be equal
-#[derive(Debug, Clone)]
-pub struct TypeConstraint {
-    pub left: InferredType,
-    pub right: InferredType,
-    pub source: Option<NodeIndex>,
-}
-
-// ============================================================================
-// Type Inference Engine
-// ============================================================================
-
-use std::collections::HashMap;
-
-/// Type inference engine using Hindley-Milner style constraint solving
-#[derive(Debug)]
-pub struct TypeInferenceEngine {
-    /// Next type variable ID
-    next_var: TypeVar,
-    /// Substitution map from type variables to types
-    substitutions: HashMap<TypeVar, InferredType>,
-    /// Type environment: variable name -> type
-    environment: HashMap<String, InferredType>,
-    /// Node types: node index -> inferred type
-    node_types: HashMap<NodeIndex, InferredType>,
-    /// Constraints to solve
-    constraints: Vec<TypeConstraint>,
-    /// Type errors encountered
-    errors: Vec<String>,
-}
-
-impl Default for TypeInferenceEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeInferenceEngine {
-    /// Create a new type inference engine
-    pub fn new() -> Self {
-        Self {
-            next_var: 0,
-            substitutions: HashMap::new(),
-            environment: HashMap::new(),
-            node_types: HashMap::new(),
-            constraints: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
-
-    /// Generate a fresh type variable
-    pub fn fresh_var(&mut self) -> InferredType {
-        let var = self.next_var;
-        self.next_var += 1;
-        InferredType::Unknown(var)
-    }
-
-    /// Add a constraint that two types must be equal
-    pub fn add_constraint(
-        &mut self,
-        left: InferredType,
-        right: InferredType,
-        source: Option<NodeIndex>,
-    ) {
-        self.constraints.push(TypeConstraint {
-            left,
-            right,
-            source,
-        });
-    }
-
-    /// Bind a variable name to a type in the environment
-    pub fn bind_var(&mut self, name: &str, ty: InferredType) {
-        self.environment.insert(name.to_string(), ty);
-    }
-
-    /// Look up a variable's type in the environment
-    pub fn lookup_var(&self, name: &str) -> Option<&InferredType> {
-        self.environment.get(name)
-    }
-
-    /// Set the inferred type for a node
-    pub fn set_node_type(&mut self, node: NodeIndex, ty: InferredType) {
-        self.node_types.insert(node, ty);
-    }
-
-    /// Get the inferred type for a node
-    pub fn get_node_type(&self, node: NodeIndex) -> Option<&InferredType> {
-        self.node_types.get(&node)
-    }
-
-    /// Get all errors encountered during inference
-    pub fn get_errors(&self) -> &[String] {
-        &self.errors
-    }
-
-    /// Apply current substitutions to a type
-    pub fn apply_substitutions(&self, ty: &InferredType) -> InferredType {
-        let mut result = ty.clone();
-        for (&var, replacement) in &self.substitutions {
-            result = result.substitute(var, replacement);
-        }
-        result
-    }
-
-    /// Unify two types, updating substitutions
-    pub fn unify(&mut self, t1: &InferredType, t2: &InferredType) -> Result<(), String> {
-        let t1 = self.apply_substitutions(t1);
-        let t2 = self.apply_substitutions(t2);
-
-        match (&t1, &t2) {
-            // Same types unify trivially
-            (a, b) if a == b => Ok(()),
-
-            // Type variable unification
-            (InferredType::Unknown(v), t) | (t, InferredType::Unknown(v)) => {
-                // Occurs check: prevent infinite types
-                if t.contains_var(*v) {
-                    return Err(format!("Infinite type: ?T{} occurs in {}", v, t));
-                }
-                self.substitutions.insert(*v, t.clone());
-                Ok(())
-            }
-
-            // Function types
-            (
-                InferredType::Function {
-                    params: p1,
-                    ret: r1,
-                },
-                InferredType::Function {
-                    params: p2,
-                    ret: r2,
-                },
-            ) => {
-                if p1.len() != p2.len() {
-                    return Err(format!(
-                        "Function arity mismatch: {} vs {} parameters",
-                        p1.len(),
-                        p2.len()
-                    ));
-                }
-                for (a, b) in p1.iter().zip(p2.iter()) {
-                    self.unify(a, b)?;
-                }
-                self.unify(r1, r2)
-            }
-
-            // Array types
-            (InferredType::Array(a), InferredType::Array(b)) => self.unify(a, b),
-
-            // Reference types
-            (InferredType::Ref(a), InferredType::Ref(b)) => self.unify(a, b),
-
-            // Tuple types
-            (InferredType::Tuple(a), InferredType::Tuple(b)) => {
-                if a.len() != b.len() {
-                    return Err(format!("Tuple length mismatch: {} vs {}", a.len(), b.len()));
-                }
-                for (x, y) in a.iter().zip(b.iter()) {
-                    self.unify(x, y)?;
-                }
-                Ok(())
-            }
-
-            // Numeric coercion: Int can be promoted to Float
-            (InferredType::Int, InferredType::Float) | (InferredType::Float, InferredType::Int) => {
-                // Allow numeric coercion - result is Float
-                Ok(())
-            }
-
-            // Error type unifies with anything (to allow recovery)
-            (InferredType::Error, _) | (_, InferredType::Error) => Ok(()),
-
-            // Named types with same name
-            (InferredType::Named(a), InferredType::Named(b)) if a == b => Ok(()),
-
-            // Otherwise, types don't unify
-            _ => Err(format!("Cannot unify {} with {}", t1, t2)),
-        }
-    }
-
-    /// Solve all accumulated constraints
-    pub fn solve_constraints(&mut self) -> bool {
-        let constraints = std::mem::take(&mut self.constraints);
-        let mut all_ok = true;
-
-        for constraint in constraints {
-            if let Err(e) = self.unify(&constraint.left, &constraint.right) {
-                self.errors.push(format!(
-                    "Type error{}: {}",
-                    constraint
-                        .source
-                        .map(|n| format!(" at node {:?}", n))
-                        .unwrap_or_default(),
-                    e
-                ));
-                all_ok = false;
-            }
-        }
-
-        all_ok
-    }
-
-    /// Run type inference on a CodeGraph
-    pub fn infer_types(&mut self, graph: &CodeGraph) -> HashMap<NodeIndex, InferredType> {
-        // Phase 1: Generate initial types and constraints
-        for node_idx in graph.graph.node_indices() {
-            let initial_type = self.infer_node_type(graph, node_idx);
-            self.set_node_type(node_idx, initial_type);
-        }
-
-        // Phase 2: Propagate types through edges
-        self.propagate_types(graph);
-
-        // Phase 3: Solve constraints
-        self.solve_constraints();
-
-        // Phase 4: Apply substitutions to get final types
-        let mut final_types = HashMap::new();
-        for (&node_idx, ty) in &self.node_types {
-            final_types.insert(node_idx, self.apply_substitutions(ty));
-        }
-
-        final_types
-    }
-
-    /// Infer the initial type for a single node
-    fn infer_node_type(&mut self, graph: &CodeGraph, node_idx: NodeIndex) -> InferredType {
-        let node = &graph.graph[node_idx];
-
-        match node {
-            CodeNode { node_type: CodeNodeType::Literal(lit), .. } => match lit {
-                LiteralValue::Integer(_) => InferredType::Int,
-                LiteralValue::Float(_) => InferredType::Float,
-                LiteralValue::String(_) => InferredType::String,
-                LiteralValue::Boolean(_) => InferredType::Bool,
-                LiteralValue::Null => InferredType::Null,
-            },
-
-            CodeNode { node_type: CodeNodeType::Variable { name, var_type }, .. } => {
-                if let Some(ty_str) = var_type {
-                    let ty = InferredType::from_type_string(ty_str);
-                    self.bind_var(name, ty.clone());
-                    ty
-                } else if let Some(ty) = self.lookup_var(name).cloned() {
-                    ty
-                } else {
-                    let ty = self.fresh_var();
-                    self.bind_var(name, ty.clone());
-                    ty
-                }
-            }
-
-            CodeNode { node_type: CodeNodeType::Identifier(name), .. } => {
-                if let Some(ty) = self.lookup_var(name).cloned() {
-                    ty
-                } else {
-                    // Unknown identifier, create fresh type variable
-                    let ty = self.fresh_var();
-                    self.bind_var(name, ty.clone());
-                    ty
-                }
-            }
-
-            CodeNode { node_type: CodeNodeType::Function {
-                return_type,
-                params,
-                ..
-            }, .. } => {
-                let ret_ty = if let Some(ret_str) = return_type {
-                    InferredType::from_type_string(ret_str)
-                } else {
-                    self.fresh_var()
-                };
-
-                let param_types: Vec<_> = params.iter().map(|_| self.fresh_var()).collect();
-
-                InferredType::Function {
-                    params: param_types,
-                    ret: Box::new(ret_ty),
-                }
-            }
-
-            CodeNode { node_type: CodeNodeType::Call { function, .. }, .. } => {
-                // Look up function type and return its return type
-                if let Some(InferredType::Function { ret, .. }) = self.lookup_var(function) {
-                    (**ret).clone()
-                } else {
-                    self.fresh_var()
-                }
-            }
-
-            CodeNode { node_type: CodeNodeType::BinaryOp(op), .. } => {
-                // Binary ops: determine result type based on operator
-                match op {
-                    BinaryOperator::Add
-                    | BinaryOperator::Sub
-                    | BinaryOperator::Mul
-                    | BinaryOperator::Div
-                    | BinaryOperator::Mod => {
-                        // Arithmetic operators: result is numeric (exact type depends on operands)
-                        self.fresh_var()
-                    }
-                    BinaryOperator::Eq
-                    | BinaryOperator::Ne
-                    | BinaryOperator::Lt
-                    | BinaryOperator::Le
-                    | BinaryOperator::Gt
-                    | BinaryOperator::Ge => {
-                        // Comparison operators always return Bool
-                        InferredType::Bool
-                    }
-                    BinaryOperator::And | BinaryOperator::Or => {
-                        // Logical operators return Bool
-                        InferredType::Bool
-                    }
-                    BinaryOperator::BitAnd
-                    | BinaryOperator::BitOr
-                    | BinaryOperator::BitXor
-                    | BinaryOperator::Shl
-                    | BinaryOperator::Shr => {
-                        // Bitwise operators return Int
-                        InferredType::Int
-                    }
-                }
-            }
-
-            CodeNode { node_type: CodeNodeType::UnaryOp(op), .. } => match op {
-                UnaryOperator::Neg | UnaryOperator::BitNot => self.fresh_var(),
-                UnaryOperator::Not => InferredType::Bool,
-                UnaryOperator::Deref => self.fresh_var(),
-                UnaryOperator::Ref => self.fresh_var(),
-            },
-
-            CodeNode { node_type: CodeNodeType::If, .. } => {
-                // If expressions can have a result type
-                self.fresh_var()
-            }
-
-            CodeNode { node_type: CodeNodeType::Loop { .. }, .. } => {
-                // Loops typically return unit unless they have break with value
-                InferredType::Unit
-            }
-
-            CodeNode { node_type: CodeNodeType::Return, .. } => {
-                // Return type depends on the expression being returned
-                self.fresh_var()
-            }
-
-            CodeNode { node_type: CodeNodeType::Block, .. } => {
-                // Block type is the type of the last expression
-                self.fresh_var()
-            }
-
-            CodeNode { node_type: CodeNodeType::Type(ty_str), .. } => InferredType::from_type_string(ty_str),
-
-            CodeNode { node_type: CodeNodeType::Module { .. }, .. }
-            | CodeNode { node_type: CodeNodeType::Comment(_), .. }
-            | CodeNode { node_type: CodeNodeType::Assignment, .. }
-            | CodeNode { node_type: CodeNodeType::ExprStmt, .. } => InferredType::Unit,
-        }
-    }
-
-    /// Propagate types through graph edges
-    fn propagate_types(&mut self, graph: &CodeGraph) {
-        // Process edges to add constraints
-        for edge_idx in graph.graph.edge_indices() {
-            let Some((source, target)) = graph.graph.edge_endpoints(edge_idx) else {
-                continue;
-            };
-            let edge = &graph.graph[edge_idx];
-
-            match edge {
-                CodeEdge::HasType => {
-                    // Target node is the type of source node
-                    if let Some(source_ty) = self.node_types.get(&source).cloned() {
-                        if let Some(target_ty) = self.node_types.get(&target).cloned() {
-                            self.add_constraint(source_ty, target_ty, Some(source));
-                        }
-                    }
-                }
-
-                CodeEdge::Child(_) => {
-                    // For binary operators, constrain operands
-                    if let CodeNode { node_type: CodeNodeType::BinaryOp(op), .. } = &graph.graph[source] {
-                        self.propagate_binary_op_constraints(source, target, op);
-                    }
-                }
-
-                CodeEdge::DataFlow => {
-                    // Data flows should have same type
-                    if let (Some(src_ty), Some(tgt_ty)) = (
-                        self.node_types.get(&source).cloned(),
-                        self.node_types.get(&target).cloned(),
-                    ) {
-                        self.add_constraint(src_ty, tgt_ty, Some(source));
-                    }
-                }
-
-                CodeEdge::DefUse => {
-                    // Definition and use should have same type
-                    if let (Some(def_ty), Some(use_ty)) = (
-                        self.node_types.get(&source).cloned(),
-                        self.node_types.get(&target).cloned(),
-                    ) {
-                        self.add_constraint(def_ty, use_ty, Some(target));
-                    }
-                }
-
-                _ => {}
-            }
-        }
-    }
-
-    /// Add constraints for binary operator operands
-    fn propagate_binary_op_constraints(
-        &mut self,
-        op_node: NodeIndex,
-        operand_node: NodeIndex,
-        op: &BinaryOperator,
-    ) {
-        let operand_ty = self
-            .node_types
-            .get(&operand_node)
-            .cloned()
-            .unwrap_or_else(|| self.fresh_var());
-        let result_ty = self
-            .node_types
-            .get(&op_node)
-            .cloned()
-            .unwrap_or_else(|| self.fresh_var());
-
-        match op {
-            BinaryOperator::Add
-            | BinaryOperator::Sub
-            | BinaryOperator::Mul
-            | BinaryOperator::Div
-            | BinaryOperator::Mod => {
-                // Arithmetic: operand type should match result type (for numeric operations)
-                // Both operands should be numeric
-                self.add_constraint(operand_ty, result_ty, Some(operand_node));
-            }
-
-            BinaryOperator::Eq
-            | BinaryOperator::Ne
-            | BinaryOperator::Lt
-            | BinaryOperator::Le
-            | BinaryOperator::Gt
-            | BinaryOperator::Ge => {
-                // Comparison: operands should be comparable (same type or numeric)
-                // Result is always Bool (already set)
-            }
-
-            BinaryOperator::And | BinaryOperator::Or => {
-                // Logical: operands should be Bool
-                self.add_constraint(operand_ty, InferredType::Bool, Some(operand_node));
-            }
-
-            BinaryOperator::BitAnd
-            | BinaryOperator::BitOr
-            | BinaryOperator::BitXor
-            | BinaryOperator::Shl
-            | BinaryOperator::Shr => {
-                // Bitwise: operands should be Int
-                self.add_constraint(operand_ty, InferredType::Int, Some(operand_node));
-            }
-        }
-    }
-
-    /// Get all inferred types, applying final substitutions
-    pub fn get_all_types(&self) -> HashMap<NodeIndex, InferredType> {
-        self.node_types
-            .iter()
-            .map(|(&k, v)| (k, self.apply_substitutions(v)))
-            .collect()
-    }
 }
 
 /// Edge types in the code graph
@@ -956,25 +229,25 @@ impl CodeGraph {
 
         // Try to parse as a number
         if let Ok(n) = trimmed.parse::<i64>() {
-            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Integer(n))));
+            let node = graph.add_node(CodeNode::Literal(LiteralValue::Integer(n)));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         if let Ok(n) = trimmed.parse::<f64>() {
-            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Float(n))));
+            let node = graph.add_node(CodeNode::Literal(LiteralValue::Float(n)));
             graph.root = Some(node);
             return Ok(graph);
         }
 
         // Try to parse as a boolean
         if trimmed == "true" {
-            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Boolean(true))));
+            let node = graph.add_node(CodeNode::Literal(LiteralValue::Boolean(true)));
             graph.root = Some(node);
             return Ok(graph);
         }
         if trimmed == "false" {
-            let node = graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Boolean(false))));
+            let node = graph.add_node(CodeNode::Literal(LiteralValue::Boolean(false)));
             graph.root = Some(node);
             return Ok(graph);
         }
@@ -1002,7 +275,7 @@ impl CodeGraph {
                     let right_graph = Self::from_simple_expr(right_str)?;
 
                     // Create the binary op node
-                    let op_node = graph.add_node(new_code_node(CodeNodeType::BinaryOp(op)));
+                    let op_node = graph.add_node(CodeNode::BinaryOp(op));
 
                     // Add left and right as children (simplified - just copy root values)
                     if let Some(left_root) = left_graph.root {
@@ -1021,68 +294,9 @@ impl CodeGraph {
         }
 
         // Treat as identifier
-        let node = graph.add_node(new_code_node(CodeNodeType::Identifier(trimmed.to_string())));
+        let node = graph.add_node(CodeNode::Identifier(trimmed.to_string()));
         graph.root = Some(node);
         Ok(graph)
-    }
-
-    /// Run type inference on this code graph
-    ///
-    /// Returns a map from node indices to their inferred types.
-    /// This uses Hindley-Milner style constraint-based type inference.
-    pub fn infer_types(&self) -> HashMap<NodeIndex, InferredType> {
-        let mut engine = TypeInferenceEngine::new();
-        engine.infer_types(self)
-    }
-
-    /// Run type inference and return both types and any errors
-    pub fn infer_types_with_errors(&self) -> (HashMap<NodeIndex, InferredType>, Vec<String>) {
-        let mut engine = TypeInferenceEngine::new();
-        let types = engine.infer_types(self);
-        (types, engine.get_errors().to_vec())
-    }
-
-    /// Get the inferred type of a specific node
-    pub fn get_node_type(&self, node_idx: NodeIndex) -> Option<InferredType> {
-        self.infer_types().get(&node_idx).cloned()
-    }
-
-    /// Check if the graph is well-typed (no type errors)
-    pub fn is_well_typed(&self) -> bool {
-        let (_, errors) = self.infer_types_with_errors();
-        errors.is_empty()
-    }
-
-    /// Add a type annotation edge from a node to its type
-    pub fn annotate_type(&mut self, node: NodeIndex, type_str: &str) -> NodeIndex {
-        let type_node = self.add_node(new_code_node(CodeNodeType::Type(type_str.to_string())));
-        self.add_edge(node, type_node, CodeEdge::HasType);
-        type_node
-    }
-}
-
-/// Result of type inference on a code graph
-#[derive(Debug, Clone)]
-pub struct TypeInferenceResult {
-    /// Inferred types for each node
-    pub node_types: HashMap<NodeIndex, InferredType>,
-    /// Type errors encountered
-    pub errors: Vec<String>,
-    /// Whether inference was successful (no errors)
-    pub success: bool,
-}
-
-impl TypeInferenceResult {
-    /// Get the type of a specific node
-    pub fn get_type(&self, node: NodeIndex) -> Option<&InferredType> {
-        self.node_types.get(&node)
-    }
-
-    /// Check if a node has a concrete (non-unknown) type
-    pub fn has_concrete_type(&self, node: NodeIndex) -> bool {
-        self.node_types
-            .get(&node)
-            .is_some_and(|ty| !matches!(ty, InferredType::Unknown(_)))
     }
 }
 
@@ -1090,45 +304,8 @@ impl TypeInferenceResult {
 // Code Brain
 // ============================================================================
 
-/// Create the code domain configuration.
-///
-/// This configures keywords for capability detection, text normalization,
-/// and other domain-specific settings using brain-common utilities.
-fn create_code_config() -> DomainConfig {
-    // Code keywords for can_process detection
-    let keywords = vec![
-        "fn ", "def ", "function ", "func ",
-        "let ", "var ", "const ",
-        "if ", "else ", "while ", "for ", "return ",
-        "class ", "struct ", "import ", "from ", "use ",
-        "->", "=>", "::", "{", "}", "(", ")",
-    ];
-
-    // Create normalizer for code formatting
-    let normalizer = TextNormalizer::new()
-        .add_replacements(vec![
-            ("\r\n", "\n"),  // Windows line endings
-            ("\r", "\n"),    // Old Mac line endings
-            ("\t", "    "),  // Tabs to spaces
-        ])
-        .trim_whitespace(true);
-
-    DomainConfig::new("code", "Source Code", keywords)
-        .with_version("0.1.0")
-        .with_normalizer(normalizer)
-        .with_annotation_prefix("// @code:")
-}
-
-/// The Code Brain that processes source code as graphs.
-///
-/// ## Migration Note
-///
-/// This brain now uses `DomainConfig` from brain-common for keyword
-/// detection and text normalization. It implements `BaseDomainBrain`
-/// to access default implementations.
+/// The Code Brain that processes source code as graphs
 pub struct CodeBrain {
-    /// Domain configuration (keywords, normalizer, etc.)
-    config: DomainConfig,
     /// Supported languages
     languages: Vec<Language>,
 }
@@ -1152,7 +329,6 @@ impl CodeBrain {
     /// Create a new code brain
     pub fn new() -> Self {
         Self {
-            config: create_code_config(),
             languages: vec![
                 Language::Rust,
                 Language::Python,
@@ -1161,6 +337,21 @@ impl CodeBrain {
                 Language::Generic,
             ],
         }
+    }
+
+    /// Check if code contains function-like syntax
+    fn looks_like_code(&self, input: &str) -> bool {
+        let code_patterns = [
+            "fn ", "def ", "function ", "func ",
+            "let ", "var ", "const ",
+            "if ", "else ", "while ", "for ",
+            "return ", "class ", "struct ",
+            "import ", "from ", "use ",
+            "->", "=>", "::",
+            "{", "}", "(", ")",
+        ];
+        let lower = input.to_lowercase();
+        code_patterns.iter().any(|p| lower.contains(p))
     }
 
     /// Detect language from code snippet
@@ -1191,181 +382,25 @@ impl CodeBrain {
             issues.push(ValidationIssue {
                 severity: ValidationSeverity::Warning,
                 message: "Empty code graph".to_string(),
-                node: None,
+                location: None,
             });
         }
 
         // Check for undefined identifiers (simplified)
         for node_idx in graph.graph.node_indices() {
-            if let CodeNode { node_type: CodeNodeType::Identifier(name), .. } = &graph.graph[node_idx] {
+            if let CodeNode::Identifier(name) = &graph.graph[node_idx] {
                 // In a real implementation, we'd check against defined symbols
                 if name.starts_with("undefined_") {
                     issues.push(ValidationIssue {
                         severity: ValidationSeverity::Error,
                         message: format!("Potentially undefined identifier: {}", name),
-                        node: Some(node_idx),
+                        location: Some(node_idx.index()),
                     });
                 }
             }
         }
 
         issues
-    }
-
-    // Transform helper methods for DomainBrain::transform
-
-    /// Rule 0: Dead Code Elimination - remove unreachable/unused nodes
-    fn apply_dead_code_elimination(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // For DagNN, we remove isolated nodes (no connections)
-        // In practice, a proper DCE would need data flow analysis
-        let text = graph.to_text();
-
-        // Simple heuristic: remove trailing whitespace and empty blocks
-        let cleaned = text.trim().to_string();
-
-        // If text changed, create new graph; otherwise return clone
-        if cleaned != text {
-            DagNN::from_text(&cleaned).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 1: Constant Folding - evaluate constant expressions
-    fn apply_constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Simple constant folding for basic arithmetic
-        let folded = self.fold_constants_in_text(&text);
-
-        if folded != text {
-            DagNN::from_text(&folded).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Helper: fold simple constant expressions in text
-    #[allow(clippy::type_complexity)]
-    fn fold_constants_in_text(&self, text: &str) -> String {
-        let mut result = text.to_string();
-
-        // Pattern: number op number (very simple)
-        // Look for patterns like "2 + 3" or "4 * 5"
-        // Use function pointers instead of closures to avoid type mismatch
-        let ops: [(&str, fn(i64, i64) -> i64); 3] = [
-            ("+", |a, b| a + b),
-            ("-", |a, b| a - b),
-            ("*", |a, b| a * b),
-        ];
-
-        for (op, func) in &ops {
-            // Simple regex-free pattern matching
-            let parts: Vec<&str> = result.split(op).collect();
-            if parts.len() == 2 {
-                if let (Ok(a), Ok(b)) = (
-                    parts[0].trim().parse::<i64>(),
-                    parts[1].trim().parse::<i64>(),
-                ) {
-                    result = func(a, b).to_string();
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Rule 2: Inline Expansion - expand function calls inline
-    fn apply_inline_expansion(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // For DagNN character graphs, inline expansion is not directly applicable
-        // Return unchanged
-        Ok(graph.clone())
-    }
-
-    /// Rule 3: Loop Unrolling - expand loop iterations
-    fn apply_loop_unrolling(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // For DagNN character graphs, loop unrolling is not directly applicable
-        // Return unchanged
-        Ok(graph.clone())
-    }
-
-    /// Rule 4: Type Inference - infer types for untyped variables
-    ///
-    /// This performs Hindley-Milner style type inference on the code graph:
-    /// 1. Parse the DagNN text representation into a CodeGraph
-    /// 2. Run constraint-based type inference
-    /// 3. Annotate the result with inferred types as comments
-    fn apply_type_inference(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Try to parse as a code expression
-        match CodeGraph::from_simple_expr(&text) {
-            Ok(code_graph) => {
-                // Run type inference
-                let (types, errors) = code_graph.infer_types_with_errors();
-
-                // Build annotated output
-                let mut result = text.clone();
-
-                // Find the root node's type if available
-                if let Some(root) = code_graph.root {
-                    if let Some(root_type) = types.get(&root) {
-                        // Annotate with inferred type
-                        result = format!("{} /* : {} */", text.trim(), root_type);
-                    }
-                }
-
-                // Add error comments if any
-                if !errors.is_empty() {
-                    result = format!("{}\n/* Type errors:\n{}\n*/", result, errors.join("\n"));
-                }
-
-                DagNN::from_text(&result).map_err(|e| e.into())
-            }
-            Err(_) => {
-                // If we can't parse, just return as-is with basic annotation
-                self.infer_types_from_patterns(&text, graph)
-            }
-        }
-    }
-
-    /// Fallback type inference based on pattern matching
-    fn infer_types_from_patterns(&self, text: &str, graph: &DagNN) -> DomainResult<DagNN> {
-        let trimmed = text.trim();
-
-        // Pattern-based type inference for simple cases
-        let inferred_type = if trimmed.parse::<i64>().is_ok() {
-            Some("Int")
-        } else if trimmed.parse::<f64>().is_ok() {
-            Some("Float")
-        } else if trimmed == "true" || trimmed == "false" {
-            Some("Bool")
-        } else if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        {
-            Some("String")
-        } else if trimmed == "null" || trimmed == "None" || trimmed == "nil" {
-            Some("Null")
-        } else {
-            None
-        };
-
-        if let Some(ty) = inferred_type {
-            let annotated = format!("{} /* : {} */", trimmed, ty);
-            DagNN::from_text(&annotated).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-}
-
-// ============================================================================
-// BaseDomainBrain Implementation
-// ============================================================================
-
-impl BaseDomainBrain for CodeBrain {
-    fn config(&self) -> &DomainConfig {
-        &self.config
     }
 }
 
@@ -1375,96 +410,91 @@ impl BaseDomainBrain for CodeBrain {
 
 impl DomainBrain for CodeBrain {
     fn domain_id(&self) -> &str {
-        &self.config.domain_id
+        "code"
     }
 
     fn domain_name(&self) -> &str {
-        &self.config.domain_name
+        "Source Code"
     }
 
     fn version(&self) -> &str {
-        &self.config.version
+        "0.1.0"
     }
 
     fn can_process(&self, input: &str) -> bool {
-        // Use default keyword-based detection from config
-        self.default_can_process(input)
+        self.looks_like_code(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        self.default_parse(input)
+        DagNN::from_text(input).map_err(|e| e.into())
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Use default from_core which applies config's normalizer
-        self.default_from_core(graph)
+        Ok(graph.clone())
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // Use default to_core which filters by annotation prefix
-        self.default_to_core(graph)
+        Ok(graph.clone())
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        self.default_validate(graph)
+        let mut issues = Vec::new();
+
+        if graph.input_nodes().is_empty() {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Empty code graph".to_string(),
+                location: None,
+            });
+        }
+
+        Ok(issues)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        self.default_execute(graph)
+        // For now, just return the text representation
+        // Future: actual code execution or compilation
+        let text = graph.to_text();
+        Ok(ExecutionResult::Text(format!("Code: {}", text)))
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {
         vec![
-            DomainRule {
-                id: 0,
-                domain: "code".to_string(),
-                name: "Dead Code Elimination".to_string(),
-                description: "Remove unreachable code".to_string(),
-                category: "optimization".to_string(),
-            },
-            DomainRule {
-                id: 1,
-                domain: "code".to_string(),
-                name: "Constant Folding".to_string(),
-                description: "Evaluate constant expressions at compile time".to_string(),
-                category: "optimization".to_string(),
-            },
-            DomainRule {
-                id: 2,
-                domain: "code".to_string(),
-                name: "Inline Expansion".to_string(),
-                description: "Replace function calls with function body".to_string(),
-                category: "optimization".to_string(),
-            },
-            DomainRule {
-                id: 3,
-                domain: "code".to_string(),
-                name: "Loop Unrolling".to_string(),
-                description: "Expand loop iterations".to_string(),
-                category: "optimization".to_string(),
-            },
-            DomainRule {
-                id: 4,
-                domain: "code".to_string(),
-                name: "Type Inference".to_string(),
-                description: "Infer types for untyped variables".to_string(),
-                category: "analysis".to_string(),
-            },
+            DomainRule::new(
+                0,
+                "Dead Code Elimination",
+                "Remove unreachable code"
+            ),
+            DomainRule::new(
+                1,
+                "Constant Folding",
+                "Evaluate constant expressions at compile time"
+            ),
+            DomainRule::new(
+                2,
+                "Inline Expansion",
+                "Replace function calls with function body"
+            ),
+            DomainRule::new(
+                3,
+                "Loop Unrolling",
+                "Expand loop iterations"
+            ),
+            DomainRule::new(
+                4,
+                "Type Inference",
+                "Infer types for untyped variables"
+            ),
         ]
     }
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0 => self.apply_dead_code_elimination(graph),
-            1 => self.apply_constant_folding(graph),
-            2 => self.apply_inline_expansion(graph),
-            3 => self.apply_loop_unrolling(graph),
-            4 => self.apply_type_inference(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
-                "Unknown rule ID: {}",
-                rule_id
-            ))),
+            0..=4 => Ok(graph.clone()),
+            _ => Err(grapheme_core::DomainError::InvalidInput(
+                format!("Unknown rule ID: {}", rule_id)
+            )),
         }
     }
 
@@ -1482,598 +512,24 @@ impl DomainBrain for CodeBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) =
-                (DagNN::from_text(input), DagNN::from_text(output))
-            {
-                examples.push(DomainExample {
-                    input: input_graph,
-                    output: output_graph,
-                    domain: "code".to_string(),
-                    difficulty: ((i % 5) + 1) as u8,
-                });
+            if let (Ok(input_graph), Ok(output_graph)) = (
+                DagNN::from_text(input),
+                DagNN::from_text(output),
+            ) {
+                let input_string = serde_json::to_string(&input_graph).unwrap_or_else(|_| input.to_string());
+                let output_string = serde_json::to_string(&output_graph).unwrap_or_else(|_| output.to_string());
+
+                examples.push(
+                    DomainExample::new(input_string, output_string)
+                        .with_metadata("domain", "code")
+                        .with_metadata("difficulty", ((i % 5) + 1).to_string())
+                );
             }
         }
 
         examples
     }
-
-    /// Returns all semantic node types that CodeBrain can produce.
-    ///
-    /// This vocabulary is used for building a unified decoder that can output
-    /// ANY semantic code node type. The types include:
-    /// - Keywords (def, if, else, for, while, return, class, import, etc.)
-    /// - Operators (+, -, *, /, ==, !=, <, >, <=, >=, and, or, not)
-    /// - Punctuation (colon, comma, parentheses, brackets, braces)
-    /// - Space types (space, newline, indent, dedent)
-    /// - Placeholder types (Variable, Int, Float, Str, Bool, Call, TypeAnnot, Comment)
-    fn node_types(&self) -> Vec<NodeType> {
-        use NodeType::*;
-
-        let mut types = Vec::new();
-
-        // Python keywords (most common for code training)
-        let keywords = [
-            "def", "if", "else", "elif", "for", "while", "return", "class",
-            "import", "from", "as", "try", "except", "finally", "raise",
-            "with", "pass", "break", "continue", "lambda", "yield", "assert",
-            "global", "nonlocal", "del", "in", "is", "not", "and", "or",
-            "True", "False", "None", "async", "await",
-        ];
-        for kw in keywords {
-            types.push(Keyword(kw.to_string()));
-        }
-
-        // Operators
-        let operators = [
-            "+", "-", "*", "/", "//", "%", "**",  // Arithmetic
-            "==", "!=", "<", ">", "<=", ">=",    // Comparison
-            "=", "+=", "-=", "*=", "/=",         // Assignment
-            "&", "|", "^", "~", "<<", ">>",      // Bitwise
-            "->",                                 // Return type annotation
-        ];
-        for op in operators {
-            types.push(Op(op.to_string()));
-        }
-
-        // Punctuation
-        let puncts = [':', ',', '(', ')', '[', ']', '{', '}', '.', ';', '@', '#'];
-        for punct in puncts {
-            types.push(Punct(punct));
-        }
-
-        // Space types (using fully qualified SpaceType to avoid ambiguity)
-        types.push(Space(SpaceType::Space));
-        types.push(Space(SpaceType::Newline));
-        types.push(Space(SpaceType::Indent));
-        types.push(Space(SpaceType::Dedent));
-
-        // Placeholder types for variable content (the actual string value is learned)
-        // These represent "slots" in the vocabulary that get filled with specific values
-        types.push(Variable(String::new()));  // Variable placeholder
-        types.push(Int(0));                   // Integer placeholder
-        types.push(Float(String::new()));     // Float placeholder
-        types.push(Str(String::new()));       // String literal placeholder
-        types.push(Bool(true));               // Boolean true
-        types.push(Bool(false));              // Boolean false
-        types.push(Call(String::new()));      // Function call placeholder
-        types.push(TypeAnnot(String::new())); // Type annotation placeholder
-        types.push(Comment(String::new()));   // Comment placeholder
-
-        // End of sequence marker
-        types.push(EndSeq);
-
-        types
-    }
 }
-
-// ============================================================================
-// GraphAutoencoder Implementation (Stage 1 Training)
-// ============================================================================
-
-use grapheme_brain_common::{AutoencoderError, GraphAutoencoder, LatentGraph};
-
-impl GraphAutoencoder for CodeBrain {
-    /// Encode source code into a latent graph representation.
-    ///
-    /// This converts raw code text into a DagNN graph that preserves:
-    /// - Character-level structure (via DagNN.from_text)
-    /// - Semantic structure (if tree-sitter is available)
-    ///
-    /// # Arguments
-    /// * `input` - Raw source code text
-    ///
-    /// # Returns
-    /// * `Ok(LatentGraph)` - The encoded graph with domain="code"
-    /// * `Err(AutoencoderError)` - If encoding fails
-    fn encode(&self, input: &str) -> Result<LatentGraph, AutoencoderError> {
-        // Normalize input using brain config
-        let normalized = self.config.normalizer.normalize(input);
-
-        // Convert to DagNN using character-level encoding
-        let graph = DagNN::from_text(&normalized).map_err(|e| {
-            AutoencoderError::EncodingError(format!("Failed to encode code: {}", e))
-        })?;
-
-        // Create latent graph with code domain
-        let mut latent = LatentGraph::new("code", graph);
-
-        // Add metadata
-        latent.add_metadata("language", self.detect_language(input).to_string());
-        latent.add_metadata("original_length", input.len().to_string());
-
-        Ok(latent)
-    }
-
-    /// Decode a latent graph back to source code text.
-    ///
-    /// This converts the graph representation back to text format.
-    /// For a perfect autoencoder, decode(encode(text)) == text.
-    ///
-    /// # Arguments
-    /// * `graph` - The latent graph to decode
-    ///
-    /// # Returns
-    /// * `Ok(String)` - The decoded source code
-    /// * `Err(AutoencoderError)` - If decoding fails or domain mismatch
-    fn decode(&self, graph: &LatentGraph) -> Result<String, AutoencoderError> {
-        // Validate domain
-        self.validate_latent(graph)?;
-
-        // Convert graph back to text
-        let text = graph.graph.to_text();
-
-        Ok(text)
-    }
-
-    /// Compute reconstruction loss for code, ignoring whitespace differences.
-    ///
-    /// Code-specific loss that:
-    /// - Normalizes whitespace (tabs to spaces, multiple spaces to single)
-    /// - Ignores trailing whitespace differences
-    /// - Focuses on semantic character matching
-    ///
-    /// # Returns
-    /// * `f32` - Loss value in [0.0, 1.0] (0.0 = perfect match)
-    fn reconstruction_loss(&self, original: &str, reconstructed: &str) -> f32 {
-        // Normalize both for comparison (ignore whitespace differences)
-        let norm_orig = self.normalize_for_comparison(original);
-        let norm_recon = self.normalize_for_comparison(reconstructed);
-
-        // Exact match after normalization
-        if norm_orig == norm_recon {
-            return 0.0;
-        }
-
-        // Empty string handling
-        if norm_orig.is_empty() && norm_recon.is_empty() {
-            return 0.0;
-        }
-
-        let max_len = norm_orig.len().max(norm_recon.len());
-        if max_len == 0 {
-            return 0.0;
-        }
-
-        // Character-level matching
-        let matching: usize = norm_orig
-            .chars()
-            .zip(norm_recon.chars())
-            .filter(|(a, b)| a == b)
-            .count();
-
-        // Length difference penalty (reduced for code since whitespace varies)
-        let len_diff = (norm_orig.len() as isize - norm_recon.len() as isize).unsigned_abs();
-
-        let accuracy = matching as f32 / max_len as f32;
-        let length_penalty = len_diff as f32 / max_len as f32;
-
-        // Reduced length penalty for code (0.3 instead of 0.5)
-        (1.0 - accuracy + length_penalty * 0.3).clamp(0.0, 1.0)
-    }
-}
-
-impl CodeBrain {
-    /// Normalize code for comparison, collapsing whitespace differences.
-    fn normalize_for_comparison(&self, code: &str) -> String {
-        code
-            // Normalize line endings
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            // Normalize tabs to spaces
-            .replace('\t', " ")
-            // Collapse multiple spaces to single
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            // Remove trailing whitespace
-            .trim()
-            .to_string()
-    }
-}
-
-impl std::fmt::Display for Language {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Language::Rust => write!(f, "rust"),
-            Language::Python => write!(f, "python"),
-            Language::JavaScript => write!(f, "javascript"),
-            Language::C => write!(f, "c"),
-            Language::Generic => write!(f, "generic"),
-        }
-    }
-}
-
-// ============================================================================
-// Tree-sitter Integration (Optional Feature)
-// ============================================================================
-
-/// Tree-sitter based multi-language parser for converting source code to CodeGraph.
-///
-/// This module is only available when the `tree-sitter-parsing` feature is enabled.
-/// It provides production-grade parsing for multiple programming languages.
-#[cfg(feature = "tree-sitter-parsing")]
-pub mod tree_sitter_parser {
-    use super::*;
-
-    /// Tree-sitter based parser that converts source code ASTs to CodeGraph.
-    pub struct TreeSitterParser {
-        parser: tree_sitter::Parser,
-        language: Language,
-    }
-
-    /// Helper function to create a parse error
-    fn parse_error(message: &str) -> CodeGraphError {
-        CodeGraphError::ParseError {
-            line: 0,
-            column: 0,
-            message: message.to_string(),
-        }
-    }
-
-    /// Get tree-sitter language from our Language enum
-    fn get_ts_language(lang: Language) -> tree_sitter::Language {
-        match lang {
-            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Language::Python => tree_sitter_python::LANGUAGE.into(),
-            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            Language::C => tree_sitter_c::LANGUAGE.into(),
-            Language::Generic => tree_sitter_rust::LANGUAGE.into(), // Default to Rust
-        }
-    }
-
-    impl TreeSitterParser {
-        /// Create a new parser for the specified language.
-        pub fn new(language: Language) -> CodeGraphResult<Self> {
-            let mut parser = tree_sitter::Parser::new();
-            parser
-                .set_language(&get_ts_language(language))
-                .map_err(|e| parse_error(&format!("Failed to set language: {}", e)))?;
-            Ok(Self { parser, language })
-        }
-
-        /// Parse Rust source code into a CodeGraph.
-        pub fn parse_rust(code: &str) -> CodeGraphResult<CodeGraph> {
-            let mut parser = Self::new(Language::Rust)?;
-            parser.parse(code)
-        }
-
-        /// Parse Python source code into a CodeGraph.
-        pub fn parse_python(code: &str) -> CodeGraphResult<CodeGraph> {
-            let mut parser = Self::new(Language::Python)?;
-            parser.parse(code)
-        }
-
-        /// Parse JavaScript source code into a CodeGraph.
-        pub fn parse_javascript(code: &str) -> CodeGraphResult<CodeGraph> {
-            let mut parser = Self::new(Language::JavaScript)?;
-            parser.parse(code)
-        }
-
-        /// Parse C source code into a CodeGraph.
-        pub fn parse_c(code: &str) -> CodeGraphResult<CodeGraph> {
-            let mut parser = Self::new(Language::C)?;
-            parser.parse(code)
-        }
-
-        /// Parse source code into a CodeGraph.
-        pub fn parse(&mut self, code: &str) -> CodeGraphResult<CodeGraph> {
-            let tree = self
-                .parser
-                .parse(code, None)
-                .ok_or_else(|| parse_error("Failed to parse code"))?;
-
-            self.convert_tree_to_code_graph(tree.root_node(), code)
-        }
-
-        /// Convert a tree-sitter AST to a CodeGraph.
-        fn convert_tree_to_code_graph(
-            &self,
-            root: tree_sitter::Node,
-            source: &str,
-        ) -> CodeGraphResult<CodeGraph> {
-            let mut code_graph = CodeGraph::with_language(self.language);
-            let mut child_index = 0;
-
-            // Recursively convert nodes
-            if let Some(root_idx) =
-                self.convert_node(&mut code_graph, root, source, &mut child_index)?
-            {
-                code_graph.root = Some(root_idx);
-            }
-
-            Ok(code_graph)
-        }
-
-        /// Recursively convert a tree-sitter node to CodeGraph nodes.
-        fn convert_node(
-            &self,
-            graph: &mut CodeGraph,
-            node: tree_sitter::Node,
-            source: &str,
-            child_index: &mut usize,
-        ) -> CodeGraphResult<Option<NodeIndex>> {
-            let node_text = node
-                .utf8_text(source.as_bytes())
-                .map_err(|e| parse_error(&format!("UTF-8 error: {}", e)))?;
-            let kind = node.kind();
-
-            // Map tree-sitter node kinds to CodeNode types
-            let code_node = self.map_node_kind(kind, node_text);
-
-            // Add the node to the graph
-            let node_idx = graph.graph.add_node(code_node);
-
-            // Process children and add edges
-            let mut cursor = node.walk();
-            let mut local_child_idx = 0usize;
-            for child in node.children(&mut cursor) {
-                // Skip comment and whitespace nodes for cleaner graphs
-                if child.kind() == "comment"
-                    || child.kind() == "line_comment"
-                    || child.kind() == "block_comment"
-                {
-                    continue;
-                }
-
-                if let Some(child_node_idx) =
-                    self.convert_node(graph, child, source, &mut local_child_idx)?
-                {
-                    graph.graph.add_edge(
-                        node_idx,
-                        child_node_idx,
-                        CodeEdge::Child(local_child_idx),
-                    );
-                    local_child_idx += 1;
-                }
-            }
-
-            *child_index += 1;
-            Ok(Some(node_idx))
-        }
-
-        /// Map tree-sitter node kinds to CodeNode types.
-        fn map_node_kind(&self, kind: &str, text: &str) -> CodeNode {
-            match self.language {
-                Language::Rust => self.map_rust_node(kind, text),
-                Language::Python => self.map_python_node(kind, text),
-                Language::JavaScript => self.map_javascript_node(kind, text),
-                Language::C => self.map_c_node(kind, text),
-                Language::Generic => self.map_rust_node(kind, text),
-            }
-        }
-
-        /// Map Rust-specific AST nodes.
-        fn map_rust_node(&self, kind: &str, text: &str) -> CodeNode {
-            let node_type = match kind {
-                "identifier" | "type_identifier" | "field_identifier" => {
-                    CodeNodeType::Identifier(text.to_string())
-                }
-                "integer_literal" => {
-                    CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
-                }
-                "float_literal" => {
-                    CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
-                }
-                "string_literal" | "raw_string_literal" => {
-                    CodeNodeType::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
-                }
-                "char_literal" => CodeNodeType::Literal(LiteralValue::String(
-                    text.chars()
-                        .nth(1)
-                        .map(|c| c.to_string())
-                        .unwrap_or_default(),
-                )),
-                "boolean_literal" | "true" | "false" => {
-                    CodeNodeType::Literal(LiteralValue::Boolean(text == "true"))
-                }
-                "function_item" | "function_signature_item" => CodeNodeType::Function {
-                    name: String::new(),
-                    params: vec![],
-                    return_type: None,
-                },
-                "call_expression" => CodeNodeType::Call {
-                    function: String::new(),
-                    arg_count: 0,
-                },
-                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
-                "if_expression" => CodeNodeType::If,
-                "loop_expression" | "while_expression" | "for_expression" => CodeNodeType::Loop {
-                    kind: LoopKind::While,
-                },
-                "let_declaration" => CodeNodeType::Variable {
-                    name: String::new(),
-                    var_type: None,
-                },
-                "return_expression" => CodeNodeType::Return,
-                "block" => CodeNodeType::Block,
-                _ => CodeNodeType::Comment(format!(
-                    "{}:{}",
-                    kind,
-                    text.chars().take(50).collect::<String>()
-                )),
-            };
-            new_code_node(node_type)
-        }
-
-        /// Map Python-specific AST nodes.
-        fn map_python_node(&self, kind: &str, text: &str) -> CodeNode {
-            let node_type = match kind {
-                "identifier" => CodeNodeType::Identifier(text.to_string()),
-                "integer" => CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0))),
-                "float" => CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0))),
-                "string" | "concatenated_string" => CodeNodeType::Literal(LiteralValue::String(
-                    text.trim_matches(|c| c == '"' || c == '\'').to_string(),
-                )),
-                "true" | "false" => {
-                    CodeNodeType::Literal(LiteralValue::Boolean(text == "True" || text == "true"))
-                }
-                "none" => CodeNodeType::Literal(LiteralValue::Null),
-                "function_definition" => CodeNodeType::Function {
-                    name: String::new(),
-                    params: vec![],
-                    return_type: None,
-                },
-                "call" => CodeNodeType::Call {
-                    function: String::new(),
-                    arg_count: 0,
-                },
-                "binary_operator" => CodeNodeType::BinaryOp(BinaryOperator::Add),
-                "unary_operator" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNodeType::If,
-                "while_statement" | "for_statement" => CodeNodeType::Loop {
-                    kind: LoopKind::While,
-                },
-                "assignment" | "augmented_assignment" => CodeNodeType::Assignment,
-                "return_statement" => CodeNodeType::Return,
-                "block" => CodeNodeType::Block,
-                _ => CodeNodeType::Comment(format!(
-                    "{}:{}",
-                    kind,
-                    text.chars().take(50).collect::<String>()
-                )),
-            };
-            new_code_node(node_type)
-        }
-
-        /// Map JavaScript-specific AST nodes.
-        fn map_javascript_node(&self, kind: &str, text: &str) -> CodeNode {
-            let node_type = match kind {
-                "identifier" | "property_identifier" => CodeNodeType::Identifier(text.to_string()),
-                "number" => {
-                    if text.contains('.') {
-                        CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
-                    } else {
-                        CodeNodeType::Literal(LiteralValue::Integer(text.parse().unwrap_or(0)))
-                    }
-                }
-                "string" | "template_string" => CodeNodeType::Literal(LiteralValue::String(
-                    text.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-                        .to_string(),
-                )),
-                "true" | "false" => CodeNodeType::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "undefined" => CodeNodeType::Literal(LiteralValue::Null),
-                "function_declaration" | "function" | "arrow_function" => CodeNodeType::Function {
-                    name: String::new(),
-                    params: vec![],
-                    return_type: None,
-                },
-                "call_expression" => CodeNodeType::Call {
-                    function: String::new(),
-                    arg_count: 0,
-                },
-                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNodeType::If,
-                "while_statement" | "for_statement" | "for_in_statement" | "do_statement" => {
-                    CodeNodeType::Loop {
-                        kind: LoopKind::While,
-                    }
-                }
-                "variable_declaration" | "lexical_declaration" => CodeNodeType::Variable {
-                    name: String::new(),
-                    var_type: None,
-                },
-                "return_statement" => CodeNodeType::Return,
-                "statement_block" => CodeNodeType::Block,
-                _ => CodeNodeType::Comment(format!(
-                    "{}:{}",
-                    kind,
-                    text.chars().take(50).collect::<String>()
-                )),
-            };
-            new_code_node(node_type)
-        }
-
-        /// Map C-specific AST nodes.
-        fn map_c_node(&self, kind: &str, text: &str) -> CodeNode {
-            let node_type = match kind {
-                "identifier" | "type_identifier" | "field_identifier" => {
-                    CodeNodeType::Identifier(text.to_string())
-                }
-                "number_literal" => {
-                    if text.contains('.') {
-                        CodeNodeType::Literal(LiteralValue::Float(text.parse().unwrap_or(0.0)))
-                    } else {
-                        CodeNodeType::Literal(LiteralValue::Integer(
-                            i64::from_str_radix(
-                                text.trim_start_matches("0x").trim_start_matches("0X"),
-                                if text.starts_with("0x") || text.starts_with("0X") {
-                                    16
-                                } else {
-                                    10
-                                },
-                            )
-                            .unwrap_or(0),
-                        ))
-                    }
-                }
-                "string_literal" => {
-                    CodeNodeType::Literal(LiteralValue::String(text.trim_matches('"').to_string()))
-                }
-                "char_literal" => CodeNodeType::Literal(LiteralValue::String(
-                    text.chars()
-                        .nth(1)
-                        .map(|c| c.to_string())
-                        .unwrap_or_default(),
-                )),
-                "true" | "false" => CodeNodeType::Literal(LiteralValue::Boolean(text == "true")),
-                "null" | "NULL" => CodeNodeType::Literal(LiteralValue::Null),
-                "function_definition" | "function_declarator" => CodeNodeType::Function {
-                    name: String::new(),
-                    params: vec![],
-                    return_type: None,
-                },
-                "call_expression" => CodeNodeType::Call {
-                    function: String::new(),
-                    arg_count: 0,
-                },
-                "binary_expression" => CodeNodeType::BinaryOp(BinaryOperator::Add),
-                "unary_expression" => CodeNodeType::UnaryOp(UnaryOperator::Neg),
-                "if_statement" => CodeNodeType::If,
-                "while_statement" | "for_statement" | "do_statement" => CodeNodeType::Loop {
-                    kind: LoopKind::While,
-                },
-                "declaration" | "init_declarator" => CodeNodeType::Variable {
-                    name: String::new(),
-                    var_type: None,
-                },
-                "return_statement" => CodeNodeType::Return,
-                "compound_statement" => CodeNodeType::Block,
-                _ => CodeNodeType::Comment(format!(
-                    "{}:{}",
-                    kind,
-                    text.chars().take(50).collect::<String>()
-                )),
-            };
-            new_code_node(node_type)
-        }
-    }
-}
-
-// Re-export tree-sitter types when feature is enabled
-#[cfg(feature = "tree-sitter-parsing")]
-pub use tree_sitter_parser::TreeSitterParser;
 
 // ============================================================================
 // Tests
@@ -2089,7 +545,7 @@ mod tests {
         assert_eq!(graph.node_count(), 1);
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode { node_type: CodeNodeType::Literal(LiteralValue::Integer(42)), .. }
+            CodeNode::Literal(LiteralValue::Integer(42))
         ));
     }
 
@@ -2098,7 +554,7 @@ mod tests {
         let graph = CodeGraph::from_simple_expr("true").unwrap();
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode { node_type: CodeNodeType::Literal(LiteralValue::Boolean(true)), .. }
+            CodeNode::Literal(LiteralValue::Boolean(true))
         ));
     }
 
@@ -2108,7 +564,7 @@ mod tests {
         assert!(graph.node_count() >= 1);
         assert!(matches!(
             &graph.graph[graph.root.unwrap()],
-            CodeNode { node_type: CodeNodeType::BinaryOp(BinaryOperator::Add), .. }
+            CodeNode::BinaryOp(BinaryOperator::Add)
         ));
     }
 
@@ -2133,10 +589,7 @@ mod tests {
         let brain = CodeBrain::new();
         assert_eq!(brain.detect_language("fn main() -> i32 {}"), Language::Rust);
         assert_eq!(brain.detect_language("def foo():"), Language::Python);
-        assert_eq!(
-            brain.detect_language("function bar() {}"),
-            Language::JavaScript
-        );
+        assert_eq!(brain.detect_language("function bar() {}"), Language::JavaScript);
         assert_eq!(brain.detect_language("#include <stdio.h>"), Language::C);
     }
 
@@ -2145,7 +598,7 @@ mod tests {
         let brain = CodeBrain::new();
         let rules = brain.get_rules();
         assert_eq!(rules.len(), 5);
-        assert_eq!(rules[0].domain, "code");
+        assert_eq!(rules[0].name, "Dead Code Elimination");
     }
 
     #[test]
@@ -2154,7 +607,7 @@ mod tests {
         let examples = brain.generate_examples(10);
         assert_eq!(examples.len(), 10);
         for example in &examples {
-            assert_eq!(example.domain, "code");
+            assert_eq!(example.metadata.get("domain"), Some(&"code".to_string()));
         }
     }
 
@@ -2166,630 +619,8 @@ mod tests {
         assert_eq!(issues.len(), 1); // Empty graph warning
 
         // Add a node to make it non-empty
-        graph.add_node(new_code_node(CodeNodeType::Literal(LiteralValue::Integer(42))));
+        graph.add_node(CodeNode::Literal(LiteralValue::Integer(42)));
         let issues = brain.validate_code(&graph);
         assert!(issues.is_empty());
-    }
-
-    // ========================================================================
-    // Type Inference Tests
-    // ========================================================================
-
-    #[test]
-    fn test_inferred_type_display() {
-        assert_eq!(format!("{}", InferredType::Int), "Int");
-        assert_eq!(format!("{}", InferredType::Float), "Float");
-        assert_eq!(format!("{}", InferredType::Bool), "Bool");
-        assert_eq!(format!("{}", InferredType::String), "String");
-        assert_eq!(format!("{}", InferredType::Unit), "()");
-        assert_eq!(format!("{}", InferredType::Null), "Null");
-        assert_eq!(format!("{}", InferredType::Unknown(0)), "?T0");
-        assert_eq!(
-            format!("{}", InferredType::Array(Box::new(InferredType::Int))),
-            "[Int]"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                InferredType::Function {
-                    params: vec![InferredType::Int, InferredType::Int],
-                    ret: Box::new(InferredType::Int),
-                }
-            ),
-            "(Int, Int) -> Int"
-        );
-    }
-
-    #[test]
-    fn test_inferred_type_from_string() {
-        assert_eq!(InferredType::from_type_string("i32"), InferredType::Int);
-        assert_eq!(InferredType::from_type_string("i64"), InferredType::Int);
-        assert_eq!(InferredType::from_type_string("f64"), InferredType::Float);
-        assert_eq!(InferredType::from_type_string("bool"), InferredType::Bool);
-        assert_eq!(
-            InferredType::from_type_string("String"),
-            InferredType::String
-        );
-        assert_eq!(InferredType::from_type_string("()"), InferredType::Unit);
-        assert_eq!(
-            InferredType::from_type_string("Vec<i32>"),
-            InferredType::Array(Box::new(InferredType::Int))
-        );
-        assert_eq!(
-            InferredType::from_type_string("&i32"),
-            InferredType::Ref(Box::new(InferredType::Int))
-        );
-    }
-
-    #[test]
-    fn test_type_contains_var() {
-        let t0 = InferredType::Unknown(0);
-        assert!(t0.contains_var(0));
-        assert!(!t0.contains_var(1));
-
-        let arr = InferredType::Array(Box::new(InferredType::Unknown(0)));
-        assert!(arr.contains_var(0));
-
-        let func = InferredType::Function {
-            params: vec![InferredType::Unknown(1)],
-            ret: Box::new(InferredType::Unknown(2)),
-        };
-        assert!(func.contains_var(1));
-        assert!(func.contains_var(2));
-        assert!(!func.contains_var(0));
-    }
-
-    #[test]
-    fn test_type_substitution() {
-        let t0 = InferredType::Unknown(0);
-        let result = t0.substitute(0, &InferredType::Int);
-        assert_eq!(result, InferredType::Int);
-
-        let arr = InferredType::Array(Box::new(InferredType::Unknown(0)));
-        let result = arr.substitute(0, &InferredType::Float);
-        assert_eq!(result, InferredType::Array(Box::new(InferredType::Float)));
-    }
-
-    #[test]
-    fn test_type_inference_engine_fresh_var() {
-        let mut engine = TypeInferenceEngine::new();
-        let v1 = engine.fresh_var();
-        let v2 = engine.fresh_var();
-        assert_eq!(v1, InferredType::Unknown(0));
-        assert_eq!(v2, InferredType::Unknown(1));
-    }
-
-    #[test]
-    fn test_type_inference_engine_unify_same_types() {
-        let mut engine = TypeInferenceEngine::new();
-        assert!(engine.unify(&InferredType::Int, &InferredType::Int).is_ok());
-        assert!(engine
-            .unify(&InferredType::Bool, &InferredType::Bool)
-            .is_ok());
-    }
-
-    #[test]
-    fn test_type_inference_engine_unify_type_var() {
-        let mut engine = TypeInferenceEngine::new();
-        let t0 = engine.fresh_var();
-        assert!(engine.unify(&t0, &InferredType::Int).is_ok());
-        // After unification, t0 should resolve to Int
-        assert_eq!(engine.apply_substitutions(&t0), InferredType::Int);
-    }
-
-    #[test]
-    fn test_type_inference_engine_unify_numeric_coercion() {
-        let mut engine = TypeInferenceEngine::new();
-        // Int and Float can coerce
-        assert!(engine
-            .unify(&InferredType::Int, &InferredType::Float)
-            .is_ok());
-    }
-
-    #[test]
-    fn test_type_inference_engine_unify_fails() {
-        let mut engine = TypeInferenceEngine::new();
-        // Int and Bool cannot unify
-        assert!(engine
-            .unify(&InferredType::Int, &InferredType::Bool)
-            .is_err());
-        // String and Int cannot unify
-        assert!(engine
-            .unify(&InferredType::String, &InferredType::Int)
-            .is_err());
-    }
-
-    #[test]
-    fn test_type_inference_engine_unify_functions() {
-        let mut engine = TypeInferenceEngine::new();
-        let f1 = InferredType::Function {
-            params: vec![InferredType::Int],
-            ret: Box::new(InferredType::Int),
-        };
-        let f2 = InferredType::Function {
-            params: vec![InferredType::Int],
-            ret: Box::new(InferredType::Int),
-        };
-        assert!(engine.unify(&f1, &f2).is_ok());
-
-        // Arity mismatch
-        let f3 = InferredType::Function {
-            params: vec![InferredType::Int, InferredType::Int],
-            ret: Box::new(InferredType::Int),
-        };
-        assert!(engine.unify(&f1, &f3).is_err());
-    }
-
-    #[test]
-    fn test_type_inference_engine_occurs_check() {
-        let mut engine = TypeInferenceEngine::new();
-        let t0 = engine.fresh_var();
-        // Try to unify ?T0 with [?T0] - should fail (infinite type)
-        let arr = InferredType::Array(Box::new(t0.clone()));
-        assert!(engine.unify(&t0, &arr).is_err());
-    }
-
-    #[test]
-    fn test_infer_integer_literal() {
-        let graph = CodeGraph::from_simple_expr("42").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        assert_eq!(*root_type, InferredType::Int);
-    }
-
-    #[test]
-    fn test_infer_float_literal() {
-        let graph = CodeGraph::from_simple_expr("3.14").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        assert_eq!(*root_type, InferredType::Float);
-    }
-
-    #[test]
-    fn test_infer_boolean_literal() {
-        let graph = CodeGraph::from_simple_expr("true").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        assert_eq!(*root_type, InferredType::Bool);
-    }
-
-    #[test]
-    fn test_infer_binary_add() {
-        let graph = CodeGraph::from_simple_expr("1 + 2").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        // Addition of integers should be Int
-        assert_eq!(*root_type, InferredType::Int);
-    }
-
-    #[test]
-    fn test_infer_comparison_returns_bool() {
-        let graph = CodeGraph::from_simple_expr("1 < 2").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        assert_eq!(*root_type, InferredType::Bool);
-    }
-
-    #[test]
-    fn test_infer_equality_returns_bool() {
-        let graph = CodeGraph::from_simple_expr("x == y").unwrap();
-        let types = graph.infer_types();
-        let root_type = types.get(&graph.root.unwrap()).unwrap();
-        assert_eq!(*root_type, InferredType::Bool);
-    }
-
-    #[test]
-    fn test_code_graph_is_well_typed() {
-        let graph = CodeGraph::from_simple_expr("1 + 2").unwrap();
-        assert!(graph.is_well_typed());
-    }
-
-    #[test]
-    fn test_code_graph_infer_types_with_errors() {
-        let graph = CodeGraph::from_simple_expr("42").unwrap();
-        let (types, errors) = graph.infer_types_with_errors();
-        assert!(errors.is_empty());
-        assert!(!types.is_empty());
-    }
-
-    #[test]
-    fn test_type_inference_result() {
-        let graph = CodeGraph::from_simple_expr("42").unwrap();
-        let types = graph.infer_types();
-        let result = TypeInferenceResult {
-            node_types: types.clone(),
-            errors: vec![],
-            success: true,
-        };
-        assert!(result.success);
-        assert!(result.has_concrete_type(graph.root.unwrap()));
-    }
-
-    #[test]
-    fn test_code_graph_annotate_type() {
-        let mut graph = CodeGraph::new();
-        let var_node = graph.add_node(new_code_node(CodeNodeType::Variable {
-            name: "x".to_string(),
-            var_type: None,
-        }));
-        let type_node = graph.annotate_type(var_node, "i32");
-        // Check that the type node was added (node_count should be 2)
-        assert_eq!(graph.node_count(), 2);
-        // Check the type node is a Type node
-        assert!(matches!(&graph.graph[type_node], CodeNode { node_type: CodeNodeType::Type(s), .. } if s == "i32"));
-        assert_eq!(graph.edge_count(), 1);
-    }
-
-    #[test]
-    fn test_code_brain_type_inference_transform() {
-        use grapheme_core::DomainBrain;
-
-        let brain = CodeBrain::new();
-        let input = grapheme_core::DagNN::from_text("42").unwrap();
-        let result = brain.transform(&input, 4).unwrap(); // Rule 4 is Type Inference
-        let text = result.to_text();
-        assert!(text.contains("Int"), "Expected type annotation: {}", text);
-    }
-
-    #[test]
-    fn test_code_brain_type_inference_bool() {
-        use grapheme_core::DomainBrain;
-
-        let brain = CodeBrain::new();
-        let input = grapheme_core::DagNN::from_text("true").unwrap();
-        let result = brain.transform(&input, 4).unwrap();
-        let text = result.to_text();
-        assert!(text.contains("Bool"), "Expected Bool type: {}", text);
-    }
-
-    #[test]
-    fn test_code_brain_type_inference_float() {
-        use grapheme_core::DomainBrain;
-
-        let brain = CodeBrain::new();
-        let input = grapheme_core::DagNN::from_text("3.14").unwrap();
-        let result = brain.transform(&input, 4).unwrap();
-        let text = result.to_text();
-        assert!(text.contains("Float"), "Expected Float type: {}", text);
-    }
-
-    #[test]
-    fn test_environment_binding() {
-        let mut engine = TypeInferenceEngine::new();
-        engine.bind_var("x", InferredType::Int);
-        assert_eq!(engine.lookup_var("x"), Some(&InferredType::Int));
-        assert_eq!(engine.lookup_var("y"), None);
-    }
-
-    #[test]
-    fn test_infer_variable_with_type() {
-        let mut graph = CodeGraph::new();
-        let var = graph.add_node(new_code_node(CodeNodeType::Variable {
-            name: "x".to_string(),
-            var_type: Some("i32".to_string()),
-        }));
-        graph.root = Some(var);
-
-        let types = graph.infer_types();
-        assert_eq!(types.get(&var), Some(&InferredType::Int));
-    }
-
-    #[test]
-    fn test_infer_function_type() {
-        let mut graph = CodeGraph::new();
-        let func = graph.add_node(new_code_node(CodeNodeType::Function {
-            name: "add".to_string(),
-            params: vec!["a".to_string(), "b".to_string()],
-            return_type: Some("i32".to_string()),
-        }));
-        graph.root = Some(func);
-
-        let types = graph.infer_types();
-        let func_type = types.get(&func).unwrap();
-        match func_type {
-            InferredType::Function { params, ret } => {
-                assert_eq!(params.len(), 2);
-                assert_eq!(**ret, InferredType::Int);
-            }
-            _ => panic!("Expected function type"),
-        }
-    }
-}
-
-// Tree-sitter tests (only when feature is enabled)
-#[cfg(all(test, feature = "tree-sitter-parsing"))]
-mod tree_sitter_tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_rust_simple() {
-        let code = "fn main() { let x = 42; }";
-        let graph = TreeSitterParser::parse_rust(code).unwrap();
-        assert!(graph.root.is_some());
-        assert!(graph.node_count() > 0);
-        assert_eq!(graph.language, Language::Rust);
-    }
-
-    #[test]
-    fn test_parse_rust_function() {
-        let code = r#"
-            fn add(a: i32, b: i32) -> i32 {
-                a + b
-            }
-        "#;
-        let graph = TreeSitterParser::parse_rust(code).unwrap();
-        assert!(graph.root.is_some());
-        // Should have function node, identifiers, binary op, etc.
-        assert!(graph.node_count() >= 5);
-    }
-
-    #[test]
-    fn test_parse_python_simple() {
-        let code = "def hello(): return 42";
-        let graph = TreeSitterParser::parse_python(code).unwrap();
-        assert!(graph.root.is_some());
-        assert!(graph.node_count() > 0);
-        assert_eq!(graph.language, Language::Python);
-    }
-
-    #[test]
-    fn test_parse_javascript_simple() {
-        let code = "function add(a, b) { return a + b; }";
-        let graph = TreeSitterParser::parse_javascript(code).unwrap();
-        assert!(graph.root.is_some());
-        assert!(graph.node_count() > 0);
-        assert_eq!(graph.language, Language::JavaScript);
-    }
-
-    #[test]
-    fn test_parse_c_simple() {
-        let code = "int main() { return 0; }";
-        let graph = TreeSitterParser::parse_c(code).unwrap();
-        assert!(graph.root.is_some());
-        assert!(graph.node_count() > 0);
-        assert_eq!(graph.language, Language::C);
-    }
-
-    #[test]
-    fn test_parser_creates_edges() {
-        let code = "fn main() { 1 + 2 }";
-        let graph = TreeSitterParser::parse_rust(code).unwrap();
-        assert!(graph.edge_count() > 0);
-    }
-}
-
-// ============================================================================
-// GraphAutoencoder Tests
-// ============================================================================
-
-#[cfg(test)]
-mod autoencoder_tests {
-    use super::*;
-    use grapheme_brain_common::GraphAutoencoder;
-
-    #[test]
-    fn test_encode_simple_code() {
-        let brain = CodeBrain::new();
-        let code = "let x = 42;";
-
-        let latent = brain.encode(code).unwrap();
-
-        assert_eq!(latent.domain, "code");
-        assert!(latent.node_count() > 0);
-        assert!(latent.metadata.contains_key("language"));
-        assert!(latent.metadata.contains_key("original_length"));
-    }
-
-    #[test]
-    fn test_encode_python_code() {
-        let brain = CodeBrain::new();
-        let code = "def hello():\n    return 42";
-
-        let latent = brain.encode(code).unwrap();
-
-        assert_eq!(latent.domain, "code");
-        assert_eq!(latent.metadata.get("language"), Some(&"python".to_string()));
-    }
-
-    #[test]
-    fn test_encode_rust_code() {
-        let brain = CodeBrain::new();
-        let code = "fn main() -> i32 { 0 }";
-
-        let latent = brain.encode(code).unwrap();
-
-        assert_eq!(latent.domain, "code");
-        assert_eq!(latent.metadata.get("language"), Some(&"rust".to_string()));
-    }
-
-    #[test]
-    fn test_decode_valid_graph() {
-        let brain = CodeBrain::new();
-        let code = "1 + 2";
-
-        let latent = brain.encode(code).unwrap();
-        let decoded = brain.decode(&latent).unwrap();
-
-        // Decoded should be similar to original (after normalization)
-        assert!(!decoded.is_empty());
-    }
-
-    #[test]
-    fn test_decode_domain_mismatch() {
-        let brain = CodeBrain::new();
-        let graph = DagNN::from_text("test").unwrap();
-
-        // Create latent graph with wrong domain
-        let latent = LatentGraph::new("math", graph);
-
-        let result = brain.decode(&latent);
-        assert!(result.is_err());
-
-        match result {
-            Err(AutoencoderError::DomainMismatch { expected, actual }) => {
-                assert_eq!(expected, "code");
-                assert_eq!(actual, "math");
-            }
-            _ => panic!("Expected DomainMismatch error"),
-        }
-    }
-
-    #[test]
-    fn test_roundtrip_simple() {
-        let brain = CodeBrain::new();
-        let code = "42";
-
-        let (reconstructed, loss) = brain.roundtrip(code).unwrap();
-
-        // After roundtrip, we should get something back
-        assert!(!reconstructed.is_empty());
-        // Loss should be reasonable (not perfect due to character-level encoding)
-        assert!(loss <= 1.0);
-    }
-
-    #[test]
-    fn test_roundtrip_expression() {
-        let brain = CodeBrain::new();
-        let code = "x + y";
-
-        let (reconstructed, loss) = brain.roundtrip(code).unwrap();
-
-        assert!(!reconstructed.is_empty());
-        assert!(loss <= 1.0);
-    }
-
-    #[test]
-    fn test_reconstruction_loss_exact_match() {
-        let brain = CodeBrain::new();
-
-        let loss = brain.reconstruction_loss("x + y", "x + y");
-        assert_eq!(loss, 0.0);
-    }
-
-    #[test]
-    fn test_reconstruction_loss_whitespace_tolerance() {
-        let brain = CodeBrain::new();
-
-        // Different whitespace should result in zero loss after normalization
-        let loss = brain.reconstruction_loss("x  +  y", "x + y");
-        assert_eq!(loss, 0.0);
-
-        // Tabs vs spaces
-        let loss = brain.reconstruction_loss("x\t+\ty", "x + y");
-        assert_eq!(loss, 0.0);
-    }
-
-    #[test]
-    fn test_reconstruction_loss_different_code() {
-        let brain = CodeBrain::new();
-
-        let loss = brain.reconstruction_loss("abc", "xyz");
-        assert!(loss > 0.9); // Should be high (very different)
-    }
-
-    #[test]
-    fn test_reconstruction_loss_partial_match() {
-        let brain = CodeBrain::new();
-
-        // One character different
-        let loss = brain.reconstruction_loss("hello", "hella");
-        assert!(loss > 0.0 && loss < 0.5);
-    }
-
-    #[test]
-    fn test_reconstruction_loss_empty_strings() {
-        let brain = CodeBrain::new();
-
-        let loss = brain.reconstruction_loss("", "");
-        assert_eq!(loss, 0.0);
-    }
-
-    #[test]
-    fn test_encode_batch() {
-        let brain = CodeBrain::new();
-        let inputs = ["42", "x + y", "fn foo()"];
-
-        let results = brain.encode_batch(&inputs);
-
-        assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.is_ok()));
-    }
-
-    #[test]
-    fn test_decode_batch() {
-        let brain = CodeBrain::new();
-
-        // Encode some code samples
-        let latents: Vec<_> = ["42", "x", "y"]
-            .iter()
-            .map(|s| brain.encode(s).unwrap())
-            .collect();
-
-        let refs: Vec<_> = latents.iter().collect();
-        let results = brain.decode_batch(&refs);
-
-        assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.is_ok()));
-    }
-
-    #[test]
-    fn test_validate_latent_correct_domain() {
-        let brain = CodeBrain::new();
-        let graph = DagNN::from_text("test").unwrap();
-        let latent = LatentGraph::new("code", graph);
-
-        assert!(brain.validate_latent(&latent).is_ok());
-    }
-
-    #[test]
-    fn test_validate_latent_wrong_domain() {
-        let brain = CodeBrain::new();
-        let graph = DagNN::from_text("test").unwrap();
-        let latent = LatentGraph::new("wrong_domain", graph);
-
-        assert!(brain.validate_latent(&latent).is_err());
-    }
-
-    #[test]
-    fn test_validate_latent_empty_graph() {
-        let brain = CodeBrain::new();
-        let graph = DagNN::new();
-        let latent = LatentGraph::new("code", graph);
-
-        let result = brain.validate_latent(&latent);
-        assert!(result.is_err());
-
-        match result {
-            Err(AutoencoderError::ValidationError(msg)) => {
-                assert!(msg.contains("Empty"));
-            }
-            _ => panic!("Expected ValidationError"),
-        }
-    }
-
-    #[test]
-    fn test_language_display() {
-        assert_eq!(format!("{}", Language::Rust), "rust");
-        assert_eq!(format!("{}", Language::Python), "python");
-        assert_eq!(format!("{}", Language::JavaScript), "javascript");
-        assert_eq!(format!("{}", Language::C), "c");
-        assert_eq!(format!("{}", Language::Generic), "generic");
-    }
-
-    #[test]
-    fn test_normalize_for_comparison() {
-        let brain = CodeBrain::new();
-
-        // Test whitespace normalization
-        let result = brain.normalize_for_comparison("  a  b  c  ");
-        assert_eq!(result, "a b c");
-
-        // Test tab normalization
-        let result = brain.normalize_for_comparison("a\tb\tc");
-        assert_eq!(result, "a b c");
-
-        // Test line ending normalization
-        let result = brain.normalize_for_comparison("a\r\nb\nc");
-        assert_eq!(result, "a b c");
     }
 }

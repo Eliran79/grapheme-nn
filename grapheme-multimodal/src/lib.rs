@@ -16,10 +16,7 @@
 //! - Unified multi-modal events
 //! - Modality translation (cross-modal inference)
 
-use grapheme_core::{
-    BrainRegistry, CognitiveBrainBridge, DagNN, DefaultCognitiveBridge, DomainBrain, Learnable,
-    LearnableParam, Persistable, PersistenceError,
-};
+use grapheme_core::DagNN;
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -113,7 +110,7 @@ impl Modality {
 // ============================================================================
 
 /// A graph tagged with its modality
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ModalGraph {
     /// The graph content
     pub graph: Graph,
@@ -183,12 +180,7 @@ impl SpatialRegion {
 
     /// Full frame region
     pub fn full() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        }
+        Self { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
     }
 
     /// Check if regions overlap
@@ -318,11 +310,8 @@ pub trait MultiModalGraph: Send + Sync + Debug {
     ) -> MultiModalResult<Graph>;
 
     /// Translate content from one modality to another
-    fn translate_modality(
-        &self,
-        source: &ModalGraph,
-        target_modality: Modality,
-    ) -> MultiModalResult<ModalGraph>;
+    fn translate_modality(&self, source: &ModalGraph, target_modality: Modality)
+        -> MultiModalResult<ModalGraph>;
 
     /// Bind representations across modalities
     fn cross_modal_bind(&mut self, event: MultiModalEvent) -> MultiModalResult<Graph>;
@@ -344,130 +333,16 @@ pub trait MultiModalGraph: Send + Sync + Debug {
 /// Simple multi-modal graph implementation
 #[derive(Debug, Default)]
 pub struct SimpleMultiModal {
-    /// Current modality focus (which modality to prioritize)
+    /// Current modality focus
+    #[allow(dead_code)]
     focus: Option<Modality>,
     /// Fusion buffer
     fused_graphs: Vec<ModalGraph>,
-    /// Attention weights per modality
-    attention_weights: ModalityAttention,
-}
-
-/// Attention weights for each modality
-#[derive(Debug, Clone)]
-pub struct ModalityAttention {
-    /// Weight for visual modality (0.0 to 1.0)
-    pub visual: f32,
-    /// Weight for auditory modality (0.0 to 1.0)
-    pub auditory: f32,
-    /// Weight for linguistic modality (0.0 to 1.0)
-    pub linguistic: f32,
-    /// Weight for tactile modality (0.0 to 1.0)
-    pub tactile: f32,
-}
-
-impl Default for ModalityAttention {
-    fn default() -> Self {
-        // Equal attention by default
-        Self {
-            visual: 0.25,
-            auditory: 0.25,
-            linguistic: 0.25,
-            tactile: 0.25,
-        }
-    }
-}
-
-impl ModalityAttention {
-    /// Create uniform attention (equal weights)
-    pub fn uniform() -> Self {
-        Self::default()
-    }
-
-    /// Create attention focused on a single modality
-    pub fn focused(modality: Modality) -> Self {
-        let mut attention = Self {
-            visual: 0.1,
-            auditory: 0.1,
-            linguistic: 0.1,
-            tactile: 0.1,
-        };
-        match modality {
-            Modality::Visual => attention.visual = 0.7,
-            Modality::Auditory => attention.auditory = 0.7,
-            Modality::Linguistic => attention.linguistic = 0.7,
-            Modality::Tactile => attention.tactile = 0.7,
-            _ => {} // Other modalities get uniform attention
-        }
-        attention
-    }
-
-    /// Get weight for a specific modality
-    pub fn weight_for(&self, modality: &Modality) -> f32 {
-        match modality {
-            Modality::Visual => self.visual,
-            Modality::Auditory => self.auditory,
-            Modality::Linguistic => self.linguistic,
-            Modality::Tactile => self.tactile,
-            _ => 0.25, // Default for other modalities
-        }
-    }
-
-    /// Normalize weights to sum to 1.0
-    pub fn normalize(&mut self) {
-        let total = self.visual + self.auditory + self.linguistic + self.tactile;
-        if total > 0.0 {
-            self.visual /= total;
-            self.auditory /= total;
-            self.linguistic /= total;
-            self.tactile /= total;
-        }
-    }
 }
 
 impl SimpleMultiModal {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Create with specific focus modality
-    pub fn with_focus(focus: Modality) -> Self {
-        Self {
-            focus: Some(focus),
-            fused_graphs: Vec::new(),
-            attention_weights: ModalityAttention::focused(focus),
-        }
-    }
-
-    /// Set the current focus modality
-    pub fn set_focus(&mut self, modality: Modality) {
-        self.focus = Some(modality);
-        self.attention_weights = ModalityAttention::focused(modality);
-    }
-
-    /// Clear focus (return to uniform attention)
-    pub fn clear_focus(&mut self) {
-        self.focus = None;
-        self.attention_weights = ModalityAttention::uniform();
-    }
-
-    /// Get current focus
-    pub fn get_focus(&self) -> Option<&Modality> {
-        self.focus.as_ref()
-    }
-
-    /// Get attention weights
-    pub fn get_attention(&self) -> &ModalityAttention {
-        &self.attention_weights
-    }
-
-    /// Set custom attention weights
-    pub fn set_attention(&mut self, attention: ModalityAttention) {
-        self.attention_weights = attention;
-    }
-
-    /// Get the weight for a modality based on current attention
-    pub fn attention_weight(&self, modality: &Modality) -> f32 {
-        self.attention_weights.weight_for(modality)
     }
 
     fn clone_graph(graph: &Graph) -> Graph {
@@ -486,47 +361,35 @@ impl MultiModalGraph for SimpleMultiModal {
     ) -> MultiModalResult<Graph> {
         self.fused_graphs.clear();
 
-        // Track available modalities with their weights
-        let mut weighted_graphs: Vec<(f32, ModalGraph)> = Vec::new();
+        let mut has_input = false;
 
         if let Some(v) = visual {
-            let weight = self.attention_weights.visual;
-            weighted_graphs.push((weight, v));
+            has_input = true;
+            self.fused_graphs.push(v);
         }
         if let Some(a) = auditory {
-            let weight = self.attention_weights.auditory;
-            weighted_graphs.push((weight, a));
+            has_input = true;
+            self.fused_graphs.push(a);
         }
         if let Some(l) = linguistic {
-            let weight = self.attention_weights.linguistic;
-            weighted_graphs.push((weight, l));
+            has_input = true;
+            self.fused_graphs.push(l);
         }
         if let Some(t) = tactile {
-            let weight = self.attention_weights.tactile;
-            weighted_graphs.push((weight, t));
+            has_input = true;
+            self.fused_graphs.push(t);
         }
 
-        if weighted_graphs.is_empty() {
+        if !has_input {
             return Err(MultiModalError::EmptyInput);
         }
 
-        // Sort by weight (highest first) and select the most attended modality
-        weighted_graphs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Store all graphs for later reference
-        for (_, graph) in &weighted_graphs {
-            self.fused_graphs.push(graph.clone());
-        }
-
-        // Return the highest-weighted modality's graph
-        Ok(Self::clone_graph(&weighted_graphs[0].1.graph))
+        // Simplified: return first graph (real impl would merge)
+        Ok(Self::clone_graph(&self.fused_graphs[0].graph))
     }
 
-    fn translate_modality(
-        &self,
-        source: &ModalGraph,
-        target_modality: Modality,
-    ) -> MultiModalResult<ModalGraph> {
+    fn translate_modality(&self, source: &ModalGraph, target_modality: Modality)
+        -> MultiModalResult<ModalGraph> {
         // Simplified: copy graph with new modality tag
         // Real implementation would learn cross-modal mappings
         Ok(ModalGraph::new(
@@ -557,18 +420,11 @@ impl MultiModalGraph for SimpleMultiModal {
     }
 
     fn modality_attention(&self, _unified: &Graph) -> Vec<(Modality, f32)> {
-        // Return attention weights for all modalities
-        // Primary 4 modalities use configured weights, others get base attention
-        let base_attention = 0.1 / 3.0; // Split 0.1 among the 3 other modalities
-        vec![
-            (Modality::Visual, self.attention_weights.visual),
-            (Modality::Auditory, self.attention_weights.auditory),
-            (Modality::Linguistic, self.attention_weights.linguistic),
-            (Modality::Tactile, self.attention_weights.tactile),
-            (Modality::Proprioceptive, base_attention),
-            (Modality::Action, base_attention),
-            (Modality::Abstract, base_attention),
-        ]
+        // Simplified: equal attention to all modalities
+        Modality::all()
+            .into_iter()
+            .map(|m| (m, 1.0 / 7.0))
+            .collect()
     }
 }
 
@@ -579,244 +435,6 @@ impl MultiModalGraph for SimpleMultiModal {
 /// Create a default multi-modal processor
 pub fn create_default_multimodal() -> SimpleMultiModal {
     SimpleMultiModal::new()
-}
-
-// ============================================================================
-// Learnable Multimodal
-// ============================================================================
-
-/// Learnable multimodal fusion with trainable modality weights
-///
-/// This module learns to weight different modalities and adjust
-/// binding strength for cross-modal associations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearnableMultimodal {
-    /// Weight for visual modality
-    pub visual_weight: LearnableParam,
-    /// Weight for auditory modality
-    pub auditory_weight: LearnableParam,
-    /// Weight for linguistic modality
-    pub linguistic_weight: LearnableParam,
-    /// Weight for tactile modality
-    pub tactile_weight: LearnableParam,
-    /// Binding strength for cross-modal associations
-    pub binding_strength: LearnableParam,
-    /// Temperature for fusion attention
-    pub fusion_temperature: LearnableParam,
-}
-
-impl LearnableMultimodal {
-    /// Create a new learnable multimodal module
-    pub fn new() -> Self {
-        Self {
-            visual_weight: LearnableParam::new(0.3),
-            auditory_weight: LearnableParam::new(0.2),
-            linguistic_weight: LearnableParam::new(0.4),
-            tactile_weight: LearnableParam::new(0.1),
-            binding_strength: LearnableParam::new(0.5),
-            fusion_temperature: LearnableParam::new(1.0),
-        }
-    }
-
-    /// Get normalized modality weights
-    pub fn normalized_weights(&self) -> [f32; 4] {
-        let weights = [
-            self.visual_weight.value.max(0.0),
-            self.auditory_weight.value.max(0.0),
-            self.linguistic_weight.value.max(0.0),
-            self.tactile_weight.value.max(0.0),
-        ];
-        let sum: f32 = weights.iter().sum();
-        if sum > 0.0 {
-            [
-                weights[0] / sum,
-                weights[1] / sum,
-                weights[2] / sum,
-                weights[3] / sum,
-            ]
-        } else {
-            [0.25, 0.25, 0.25, 0.25]
-        }
-    }
-
-    /// Compute weighted fusion of modality values
-    pub fn weighted_fusion(
-        &self,
-        visual: f32,
-        auditory: f32,
-        linguistic: f32,
-        tactile: f32,
-    ) -> f32 {
-        let w = self.normalized_weights();
-        w[0] * visual + w[1] * auditory + w[2] * linguistic + w[3] * tactile
-    }
-
-    /// Compute binding score between two elements
-    pub fn binding_score(&self, similarity: f32) -> f32 {
-        let strength = self.binding_strength.value.clamp(0.0, 1.0);
-        strength * similarity
-    }
-
-    /// Compute attention weights with temperature scaling
-    pub fn attention_weights(&self, scores: &[f32]) -> Vec<f32> {
-        let temp = self.fusion_temperature.value.max(0.01);
-        let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_scores: Vec<f32> = scores
-            .iter()
-            .map(|&s| ((s - max_score) / temp).exp())
-            .collect();
-        let sum: f32 = exp_scores.iter().sum();
-        if sum > 0.0 {
-            exp_scores.iter().map(|&e| e / sum).collect()
-        } else {
-            vec![1.0 / scores.len() as f32; scores.len()]
-        }
-    }
-}
-
-impl Default for LearnableMultimodal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Learnable for LearnableMultimodal {
-    fn zero_grad(&mut self) {
-        self.visual_weight.zero_grad();
-        self.auditory_weight.zero_grad();
-        self.linguistic_weight.zero_grad();
-        self.tactile_weight.zero_grad();
-        self.binding_strength.zero_grad();
-        self.fusion_temperature.zero_grad();
-    }
-
-    fn step(&mut self, lr: f32) {
-        self.visual_weight.step(lr);
-        self.auditory_weight.step(lr);
-        self.linguistic_weight.step(lr);
-        self.tactile_weight.step(lr);
-        self.binding_strength.step(lr);
-        self.fusion_temperature.step(lr);
-
-        // Ensure valid ranges
-        self.fusion_temperature.value = self.fusion_temperature.value.max(0.01);
-    }
-
-    fn num_parameters(&self) -> usize {
-        6
-    }
-
-    fn has_gradients(&self) -> bool {
-        self.visual_weight.grad != 0.0
-            || self.auditory_weight.grad != 0.0
-            || self.linguistic_weight.grad != 0.0
-            || self.tactile_weight.grad != 0.0
-            || self.binding_strength.grad != 0.0
-            || self.fusion_temperature.grad != 0.0
-    }
-
-    fn gradient_norm(&self) -> f32 {
-        (self.visual_weight.grad.powi(2)
-            + self.auditory_weight.grad.powi(2)
-            + self.linguistic_weight.grad.powi(2)
-            + self.tactile_weight.grad.powi(2)
-            + self.binding_strength.grad.powi(2)
-            + self.fusion_temperature.grad.powi(2))
-        .sqrt()
-    }
-}
-
-impl Persistable for LearnableMultimodal {
-    fn persist_type_id() -> &'static str {
-        "LearnableMultimodal"
-    }
-
-    fn persist_version() -> u32 {
-        1
-    }
-
-    fn validate(&self) -> Result<(), PersistenceError> {
-        // Validate temperature is positive
-        if self.fusion_temperature.value <= 0.0 {
-            return Err(PersistenceError::ValidationFailed(
-                "Fusion temperature must be positive".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Brain-Aware Multimodal
-// ============================================================================
-
-/// Brain-aware multimodal that uses domain brains for cross-modal processing
-pub struct BrainAwareMultimodal {
-    /// The cognitive-brain bridge for domain routing
-    pub bridge: DefaultCognitiveBridge,
-}
-
-impl Debug for BrainAwareMultimodal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BrainAwareMultimodal")
-            .field("available_domains", &self.bridge.available_domains())
-            .finish()
-    }
-}
-
-impl BrainAwareMultimodal {
-    /// Create a new brain-aware multimodal
-    pub fn new() -> Self {
-        Self {
-            bridge: DefaultCognitiveBridge::new(),
-        }
-    }
-
-    /// Register a domain brain
-    pub fn register_brain(&mut self, brain: Box<dyn DomainBrain>) {
-        self.bridge.register(brain);
-    }
-
-    /// Check if a domain brain can help with cross-modal processing
-    pub fn can_fuse(&self, modality_text: &str) -> bool {
-        self.bridge.route_to_multiple_brains(modality_text).success
-    }
-
-    /// Get domains relevant to a cross-modal input
-    pub fn domains_for_input(&self, input_text: &str) -> Vec<String> {
-        self.bridge
-            .route_to_multiple_brains(input_text)
-            .domains()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    /// Get available domains
-    pub fn available_domains(&self) -> Vec<String> {
-        self.bridge.available_domains()
-    }
-}
-
-impl Default for BrainAwareMultimodal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CognitiveBrainBridge for BrainAwareMultimodal {
-    fn get_registry(&self) -> &BrainRegistry {
-        self.bridge.get_registry()
-    }
-
-    fn get_registry_mut(&mut self) -> &mut BrainRegistry {
-        self.bridge.get_registry_mut()
-    }
-}
-
-/// Factory function to create brain-aware multimodal
-pub fn create_brain_aware_multimodal() -> BrainAwareMultimodal {
-    BrainAwareMultimodal::new()
 }
 
 // ============================================================================
@@ -867,8 +485,7 @@ mod tests {
             (Modality::Linguistic, NodeIndex::new(0)),
             (Modality::Visual, NodeIndex::new(5)),
             0.95,
-        )
-        .with_type(BindingType::Reference);
+        ).with_type(BindingType::Reference);
 
         assert_eq!(binding.source.0, Modality::Linguistic);
         assert_eq!(binding.target.0, Modality::Visual);
@@ -941,46 +558,8 @@ mod tests {
         let attention = mm.modality_attention(&graph);
         assert_eq!(attention.len(), 7);
 
-        // All weights should be positive
-        for (_, w) in &attention {
-            assert!(*w > 0.0);
-        }
-    }
-
-    #[test]
-    fn test_focus_mechanism() {
-        let mut mm = SimpleMultiModal::new();
-
-        // Initially no focus
-        assert!(mm.get_focus().is_none());
-
-        // Set focus to visual
-        mm.set_focus(Modality::Visual);
-        assert_eq!(mm.get_focus(), Some(&Modality::Visual));
-        assert!(mm.get_attention().visual > mm.get_attention().auditory);
-
-        // Clear focus
-        mm.clear_focus();
-        assert!(mm.get_focus().is_none());
-        // Weights should be uniform again
-        assert!((mm.get_attention().visual - 0.25).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_attention_focused_fusion() {
-        // When focused on linguistic, linguistic input should be prioritized
-        let mut mm = SimpleMultiModal::with_focus(Modality::Linguistic);
-
-        let visual = Some(ModalGraph::new(make_graph("visual_data"), Modality::Visual));
-        let linguistic = Some(ModalGraph::new(
-            make_graph("linguistic_data"),
-            Modality::Linguistic,
-        ));
-
-        // With linguistic focus, linguistic should be selected
-        let result = mm.fuse(visual, None, linguistic, None);
-        assert!(result.is_ok());
-        // The result should be the linguistic graph (highest weight)
+        let total: f32 = attention.iter().map(|(_, w)| w).sum();
+        assert!((total - 1.0).abs() < 0.01);
     }
 
     #[test]

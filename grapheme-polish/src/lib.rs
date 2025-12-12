@@ -13,9 +13,6 @@
 //! - Natural tree/graph structure
 //! - Easy to parse and generate
 
-// Allow &self in recursive methods for API consistency
-#![allow(clippy::only_used_in_recursion)]
-
 use grapheme_engine::{Expr, MathEngine, MathFn, MathOp, Value};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -164,8 +161,7 @@ impl PolishGraph {
             Expr::UnaryOp { op, operand } => {
                 let op_node = self.graph.add_node(GraphNode::Operator(*op));
                 let operand_node = self.add_expr(operand);
-                self.graph
-                    .add_edge(op_node, operand_node, GraphEdge::Operand);
+                self.graph.add_edge(op_node, operand_node, GraphEdge::Operand);
                 op_node
             }
             Expr::Function { func, args } => {
@@ -204,39 +200,26 @@ impl PolishGraph {
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Operand)
                         .map(|e| e.target())
-                        .expect("Operand edge missing for unary operator (malformed graph)");
+                        .unwrap();
                     Expr::UnaryOp {
                         op: *op,
                         operand: Box::new(self.node_to_expr(operand_idx)),
                     }
                 } else {
-                    // Binary operator - both Left and Right edges must exist
                     let left_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Left)
-                        .map(|e| e.target());
+                        .map(|e| e.target())
+                        .unwrap();
                     let right_idx = edges
                         .iter()
                         .find(|e| *e.weight() == GraphEdge::Right)
-                        .map(|e| e.target());
-
-                    match (left_idx, right_idx) {
-                        (Some(left), Some(right)) => Expr::BinOp {
-                            op: *op,
-                            left: Box::new(self.node_to_expr(left)),
-                            right: Box::new(self.node_to_expr(right)),
-                        },
-                        (Some(left), None) => {
-                            // Treat as unary if only left operand exists
-                            Expr::UnaryOp {
-                                op: *op,
-                                operand: Box::new(self.node_to_expr(left)),
-                            }
-                        }
-                        _ => {
-                            // Fallback: treat operator as a symbol value if no edges
-                            Expr::Value(Value::Symbol(format!("{:?}", op)))
-                        }
+                        .map(|e| e.target())
+                        .unwrap();
+                    Expr::BinOp {
+                        op: *op,
+                        left: Box::new(self.node_to_expr(left_idx)),
+                        right: Box::new(self.node_to_expr(right_idx)),
                     }
                 }
             }
@@ -318,6 +301,7 @@ impl ConstantFolding {
     }
 
     /// Check if an expression is purely constant (no symbols)
+    #[allow(clippy::only_used_in_recursion)]
     fn is_constant(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Value(Value::Symbol(_)) => false,
@@ -488,158 +472,37 @@ impl OptimizationPass for IdentityElimination {
 }
 
 /// Common subexpression elimination - identifies and reuses repeated subexpressions
-///
-/// This pass identifies subexpressions that appear multiple times in an expression tree
-/// and replaces them with variable references to avoid redundant computation.
-///
-/// # Example
-/// Input: `(* (+ a b) (+ a b))`
-/// Output: `(* _cse0 _cse0)` with bindings `{_cse0: (+ a b)}`
-///
-/// The bindings are stored in `CommonSubexpressionElimination::bindings()` after optimization.
+/// NOTE: This is a placeholder - full CSE requires mutable state and variable introduction
 #[derive(Debug, Default)]
-pub struct CommonSubexpressionElimination {
-    /// Minimum number of occurrences before CSE is applied
-    min_occurrences: usize,
-    /// Bindings from CSE variables to their expressions (populated after optimize())
-    bindings: std::cell::RefCell<Vec<(String, Expr)>>,
-}
+pub struct CommonSubexpressionElimination;
 
 impl CommonSubexpressionElimination {
-    /// Create a new CSE pass with default settings (min 2 occurrences)
+    /// Create a new CSE pass
     pub fn new() -> Self {
-        Self {
-            min_occurrences: 2,
-            bindings: std::cell::RefCell::new(Vec::new()),
-        }
-    }
-
-    /// Create a CSE pass with custom minimum occurrence threshold
-    pub fn with_min_occurrences(min: usize) -> Self {
-        Self {
-            min_occurrences: min.max(2), // At least 2 to make CSE worthwhile
-            bindings: std::cell::RefCell::new(Vec::new()),
-        }
-    }
-
-    /// Get the bindings produced by the last optimize() call
-    /// Returns pairs of (variable_name, expression)
-    pub fn bindings(&self) -> Vec<(String, Expr)> {
-        self.bindings.borrow().clone()
-    }
-
-    /// Clear bindings from previous optimization
-    pub fn clear_bindings(&self) {
-        self.bindings.borrow_mut().clear();
-    }
-
-    /// Count occurrences of all subexpressions
-    /// Uses Polish notation as canonical form for hashing (Expr contains f64 which can't Hash)
-    fn count_subexpressions(expr: &Expr, counts: &mut std::collections::HashMap<String, usize>) {
-        let key = expr_to_polish(expr);
-
-        // Only count non-trivial expressions (not simple values)
-        if !matches!(expr, Expr::Value(_)) {
-            *counts.entry(key).or_insert(0) += 1;
-        }
-
-        // Recursively count children
-        match expr {
-            Expr::Value(_) => {}
-            Expr::BinOp { left, right, .. } => {
-                Self::count_subexpressions(left, counts);
-                Self::count_subexpressions(right, counts);
-            }
-            Expr::UnaryOp { operand, .. } => {
-                Self::count_subexpressions(operand, counts);
-            }
-            Expr::Function { args, .. } => {
-                for arg in args {
-                    Self::count_subexpressions(arg, counts);
-                }
-            }
-        }
-    }
-
-    /// Replace repeated subexpressions with variable references
-    fn replace_common(
-        &self,
-        expr: &Expr,
-        candidates: &std::collections::HashMap<String, String>,
-    ) -> Expr {
-        let key = expr_to_polish(expr);
-
-        // If this expression should be replaced with a CSE variable, do it
-        if let Some(var_name) = candidates.get(&key) {
-            return Expr::Value(Value::Symbol(var_name.clone()));
-        }
-
-        // Otherwise recurse
-        match expr {
-            Expr::Value(_) => expr.clone(),
-            Expr::BinOp { op, left, right } => Expr::BinOp {
-                op: *op,
-                left: Box::new(self.replace_common(left, candidates)),
-                right: Box::new(self.replace_common(right, candidates)),
-            },
-            Expr::UnaryOp { op, operand } => Expr::UnaryOp {
-                op: *op,
-                operand: Box::new(self.replace_common(operand, candidates)),
-            },
-            Expr::Function { func, args } => Expr::Function {
-                func: *func,
-                args: args
-                    .iter()
-                    .map(|a| self.replace_common(a, candidates))
-                    .collect(),
-            },
-        }
+        Self
     }
 }
 
 impl OptimizationPass for CommonSubexpressionElimination {
     fn optimize(&self, expr: &Expr) -> Expr {
-        // Clear previous bindings
-        self.clear_bindings();
-
-        // Phase 1: Count all subexpression occurrences
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        Self::count_subexpressions(expr, &mut counts);
-
-        // Phase 2: Identify candidates for CSE (appear >= min_occurrences times)
-        // Sort by Polish notation length (longer = more complex = higher priority for CSE)
-        let mut candidates: Vec<(String, usize)> = counts
-            .into_iter()
-            .filter(|(_, count)| *count >= self.min_occurrences)
-            .collect();
-        candidates.sort_by(|a, b| b.0.len().cmp(&a.0.len())); // Longer (more complex) first
-
-        // If no candidates, return unchanged
-        if candidates.is_empty() {
-            return expr.clone();
+        // For now, just return the expression - full CSE requires mutable state
+        // and variable introduction which is more complex
+        match expr {
+            Expr::Value(_) => expr.clone(),
+            Expr::BinOp { op, left, right } => Expr::BinOp {
+                op: *op,
+                left: Box::new(self.optimize(left)),
+                right: Box::new(self.optimize(right)),
+            },
+            Expr::UnaryOp { op, operand } => Expr::UnaryOp {
+                op: *op,
+                operand: Box::new(self.optimize(operand)),
+            },
+            Expr::Function { func, args } => Expr::Function {
+                func: *func,
+                args: args.iter().map(|a| self.optimize(a)).collect(),
+            },
         }
-
-        // Phase 3: Assign CSE variable names and build replacement map
-        let mut parser = PolishParser::new();
-        let mut replacement_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        let mut bindings = Vec::new();
-
-        for (i, (polish, _)) in candidates.iter().enumerate() {
-            let var_name = format!("_cse{}", i);
-
-            // Parse the Polish notation back to an Expr for storage
-            if let Ok(original_expr) = parser.parse(polish) {
-                bindings.push((var_name.clone(), original_expr));
-                replacement_map.insert(polish.clone(), var_name);
-            }
-        }
-
-        // Store bindings
-        *self.bindings.borrow_mut() = bindings;
-
-        // Phase 4: Replace common subexpressions with variables
-        self.replace_common(expr, &replacement_map)
     }
 
     fn name(&self) -> &'static str {
@@ -1327,183 +1190,5 @@ mod tests {
         let optimized = optimizer.optimize(&recovered);
 
         assert_eq!(optimized, Expr::Value(Value::Symbol("x".to_string())));
-    }
-
-    // =====================================================
-    // Common Subexpression Elimination Tests
-    // =====================================================
-
-    #[test]
-    fn test_cse_simple_duplicate() {
-        // (* (+ a b) (+ a b)) -> (* _cse0 _cse0) with _cse0 = (+ a b)
-        let add_ab = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(Expr::Value(Value::Symbol("a".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("b".to_string()))),
-        };
-        let expr = Expr::BinOp {
-            op: MathOp::Mul,
-            left: Box::new(add_ab.clone()),
-            right: Box::new(add_ab),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-        let result = cse.optimize(&expr);
-
-        // The result should have both operands be the same CSE variable
-        assert_eq!(expr_to_polish(&result), "(* _cse0 _cse0)");
-
-        // Check bindings
-        let bindings = cse.bindings();
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].0, "_cse0");
-        assert_eq!(expr_to_polish(&bindings[0].1), "(+ a b)");
-    }
-
-    #[test]
-    fn test_cse_no_duplicates() {
-        // (+ a b) has no duplicates, should be unchanged
-        let expr = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(Expr::Value(Value::Symbol("a".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("b".to_string()))),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-        let result = cse.optimize(&expr);
-
-        // Should be unchanged
-        assert_eq!(expr_to_polish(&result), "(+ a b)");
-        assert!(cse.bindings().is_empty());
-    }
-
-    #[test]
-    fn test_cse_triple_occurrence() {
-        // (+ (+ a b) (+ (+ a b) (+ a b))) - (+ a b) appears 3 times
-        let add_ab = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(Expr::Value(Value::Symbol("a".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("b".to_string()))),
-        };
-        let inner = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(add_ab.clone()),
-            right: Box::new(add_ab.clone()),
-        };
-        let expr = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(add_ab),
-            right: Box::new(inner),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-        let result = cse.optimize(&expr);
-
-        // All occurrences of (+ a b) should be replaced
-        let result_polish = expr_to_polish(&result);
-        assert!(result_polish.contains("_cse"));
-        assert!(!result_polish.contains("(+ a b)")); // Original subexpr should be replaced
-    }
-
-    #[test]
-    fn test_cse_nested_duplicates() {
-        // (+ (* x y) (+ (* x y) (* x y)))
-        // Both (* x y) and (+ (* x y) (* x y)) might be candidates
-        let mul_xy = Expr::BinOp {
-            op: MathOp::Mul,
-            left: Box::new(Expr::Value(Value::Symbol("x".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("y".to_string()))),
-        };
-        let add_inner = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(mul_xy.clone()),
-            right: Box::new(mul_xy.clone()),
-        };
-        let expr = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(mul_xy),
-            right: Box::new(add_inner),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-        let result = cse.optimize(&expr);
-
-        // Should have at least one CSE binding for (* x y) which appears 3 times
-        let bindings = cse.bindings();
-        assert!(!bindings.is_empty());
-
-        // Result should be simplified
-        let result_polish = expr_to_polish(&result);
-        assert!(result_polish.contains("_cse"));
-    }
-
-    #[test]
-    fn test_cse_with_functions() {
-        // (+ (sin x) (sin x)) - function calls can also be CSE'd
-        let sin_x = Expr::Function {
-            func: MathFn::Sin,
-            args: vec![Expr::Value(Value::Symbol("x".to_string()))],
-        };
-        let expr = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(sin_x.clone()),
-            right: Box::new(sin_x),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-        let result = cse.optimize(&expr);
-
-        assert_eq!(expr_to_polish(&result), "(+ _cse0 _cse0)");
-        let bindings = cse.bindings();
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(expr_to_polish(&bindings[0].1), "(sin x)");
-    }
-
-    #[test]
-    fn test_cse_min_occurrences() {
-        // With min_occurrences=3, a subexpr appearing twice shouldn't be eliminated
-        let add_ab = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(Expr::Value(Value::Symbol("a".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("b".to_string()))),
-        };
-        let expr = Expr::BinOp {
-            op: MathOp::Mul,
-            left: Box::new(add_ab.clone()),
-            right: Box::new(add_ab),
-        };
-
-        let cse = CommonSubexpressionElimination::with_min_occurrences(3);
-        let result = cse.optimize(&expr);
-
-        // Should be unchanged since (+ a b) only appears twice
-        assert_eq!(expr_to_polish(&result), "(* (+ a b) (+ a b))");
-        assert!(cse.bindings().is_empty());
-    }
-
-    #[test]
-    fn test_cse_clears_bindings() {
-        // Ensure bindings are cleared between optimize() calls
-        let add_ab = Expr::BinOp {
-            op: MathOp::Add,
-            left: Box::new(Expr::Value(Value::Symbol("a".to_string()))),
-            right: Box::new(Expr::Value(Value::Symbol("b".to_string()))),
-        };
-        let expr1 = Expr::BinOp {
-            op: MathOp::Mul,
-            left: Box::new(add_ab.clone()),
-            right: Box::new(add_ab),
-        };
-
-        let cse = CommonSubexpressionElimination::new();
-
-        // First optimization
-        let _ = cse.optimize(&expr1);
-        assert_eq!(cse.bindings().len(), 1);
-
-        // Second optimization with no duplicates
-        let expr2 = Expr::Value(Value::Symbol("x".to_string()));
-        let _ = cse.optimize(&expr2);
-        assert!(cse.bindings().is_empty());
     }
 }

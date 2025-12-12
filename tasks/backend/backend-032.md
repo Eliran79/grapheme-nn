@@ -1,7 +1,7 @@
 ---
 id: backend-032
 title: Add learnable memory retrieval and consolidation
-status: done
+status: todo
 priority: high
 tags:
 - backend

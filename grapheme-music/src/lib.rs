@@ -7,18 +7,10 @@
 //! - Music theory graph construction
 //! - Harmonic analysis and chord progression
 //! - Composition structure representation
-//!
-//! ## Migration to brain-common
-//!
-//! This crate uses shared abstractions from `grapheme-brain-common`:
-//! - `ActivatedNode<MusicNodeType>` - Generic node wrapper (aliased as `MusicNode`)
-//! - `BaseDomainBrain` - Default implementations for DomainBrain methods
-//! - `DomainConfig` - Domain configuration (keywords, normalizer, etc.)
 
-use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
 use grapheme_core::{
-    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
-    ValidationIssue,
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
+    ExecutionResult, ValidationIssue, ValidationSeverity,
 };
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -41,18 +33,7 @@ pub type MusicGraphResult<T> = Result<T, MusicGraphError>;
 /// Musical note names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NoteName {
-    C,
-    CSharp,
-    D,
-    DSharp,
-    E,
-    F,
-    FSharp,
-    G,
-    GSharp,
-    A,
-    ASharp,
-    B,
+    C, CSharp, D, DSharp, E, F, FSharp, G, GSharp, A, ASharp, B,
 }
 
 impl NoteName {
@@ -77,7 +58,7 @@ impl NoteName {
 
 /// Music node types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum MusicNodeType {
+pub enum MusicNode {
     /// A musical note
     Note {
         name: NoteName,
@@ -90,11 +71,20 @@ pub enum MusicNodeType {
         quality: ChordQuality,
     },
     /// A scale
-    Scale { root: NoteName, mode: ScaleMode },
+    Scale {
+        root: NoteName,
+        mode: ScaleMode,
+    },
     /// Time signature
-    TimeSignature { numerator: u8, denominator: u8 },
+    TimeSignature {
+        numerator: u8,
+        denominator: u8,
+    },
     /// Key signature
-    KeySignature { root: NoteName, mode: ScaleMode },
+    KeySignature {
+        root: NoteName,
+        mode: ScaleMode,
+    },
     /// Tempo marking
     Tempo(u16),
     /// Rest
@@ -105,38 +95,6 @@ pub enum MusicNodeType {
     Dynamic(DynamicLevel),
     /// Articulation
     Articulation(ArticulationType),
-}
-
-/// Get default activation value based on music node type importance.
-///
-/// Used by `new_music_node()` to compute initial activation from type.
-pub fn music_type_activation(node_type: &MusicNodeType) -> f32 {
-    match node_type {
-        // Melodic content - high importance
-        MusicNodeType::Note { .. } => 0.7,
-        MusicNodeType::Chord { .. } => 0.8,
-        MusicNodeType::Scale { .. } => 0.75,
-        // Structural markers - medium-high importance
-        MusicNodeType::TimeSignature { .. } => 0.6,
-        MusicNodeType::KeySignature { .. } => 0.85,
-        MusicNodeType::Tempo(_) => 0.5,
-        // Timing elements
-        MusicNodeType::Rest(_) => 0.4,
-        MusicNodeType::Measure(_) => 0.3,
-        // Expression - medium importance
-        MusicNodeType::Dynamic(_) => 0.55,
-        MusicNodeType::Articulation(_) => 0.5,
-    }
-}
-
-/// A music node with activation for gradient flow.
-///
-/// This is a type alias for `ActivatedNode<MusicNodeType>` from brain-common.
-pub type MusicNode = ActivatedNode<MusicNodeType>;
-
-/// Create a new music node with default activation based on type.
-pub fn new_music_node(node_type: MusicNodeType) -> MusicNode {
-    ActivatedNode::with_type_activation(node_type, music_type_activation)
 }
 
 /// Note/rest duration
@@ -268,26 +226,18 @@ impl MusicGraph {
         }
 
         // Parse note name
-        let Some(first_char) = trimmed.chars().next() else {
-            return Err(MusicGraphError::InvalidNote("Empty note".to_string()));
-        };
         let (name, rest) = if trimmed.len() >= 2 && trimmed.chars().nth(1) == Some('#') {
-            let name = match first_char {
+            let name = match trimmed.chars().next().unwrap() {
                 'C' => NoteName::CSharp,
                 'D' => NoteName::DSharp,
                 'F' => NoteName::FSharp,
                 'G' => NoteName::GSharp,
                 'A' => NoteName::ASharp,
-                _ => {
-                    return Err(MusicGraphError::InvalidNote(format!(
-                        "Invalid sharp note: {}",
-                        trimmed
-                    )))
-                }
+                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid sharp note: {}", trimmed))),
             };
             (name, &trimmed[2..])
         } else {
-            let name = match first_char {
+            let name = match trimmed.chars().next().unwrap() {
                 'C' => NoteName::C,
                 'D' => NoteName::D,
                 'E' => NoteName::E,
@@ -295,12 +245,7 @@ impl MusicGraph {
                 'G' => NoteName::G,
                 'A' => NoteName::A,
                 'B' => NoteName::B,
-                _ => {
-                    return Err(MusicGraphError::InvalidNote(format!(
-                        "Invalid note: {}",
-                        trimmed
-                    )))
-                }
+                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid note: {}", trimmed))),
             };
             (name, &trimmed[1..])
         };
@@ -308,11 +253,11 @@ impl MusicGraph {
         // Parse octave
         let octave = rest.parse::<i8>().unwrap_or(4);
 
-        let node = graph.add_node(new_music_node(MusicNodeType::Note {
+        let node = graph.add_node(MusicNode::Note {
             name,
             octave,
             duration: Duration::Quarter,
-        }));
+        });
         graph.root = Some(node);
 
         Ok(graph)
@@ -323,39 +268,8 @@ impl MusicGraph {
 // Music Brain
 // ============================================================================
 
-/// Create the music domain configuration.
-fn create_music_config() -> DomainConfig {
-    // Music keywords for can_process detection
-    let keywords = vec![
-        "note", "chord", "scale", "key", "major", "minor",
-        "tempo", "bpm", "measure", "bar", "beat", "rhythm",
-        "sharp", "flat", "natural", "piano", "forte",
-        "crescendo", "staccato", "legato", "harmony",
-    ];
-
-    // Create normalizer for music notation
-    let normalizer = TextNormalizer::new()
-        .add_replacements(vec![
-            (" maj ", " major "),
-            (" min ", " minor "),
-            ("maj7", "major7"),
-            ("min7", "minor7"),
-        ])
-        .trim_whitespace(true);
-
-    DomainConfig::new("music", "Music Theory", keywords)
-        .with_version("0.1.0")
-        .with_normalizer(normalizer)
-        .with_annotation_prefix("@music:")
-}
-
-/// The Music Brain for music theory analysis.
-///
-/// Uses DomainConfig from brain-common for keyword detection and normalization.
-pub struct MusicBrain {
-    /// Domain configuration
-    config: DomainConfig,
-}
+/// The Music Brain for music theory analysis
+pub struct MusicBrain;
 
 impl Default for MusicBrain {
     fn default() -> Self {
@@ -374,24 +288,23 @@ impl std::fmt::Debug for MusicBrain {
 impl MusicBrain {
     /// Create a new music brain
     pub fn new() -> Self {
-        Self {
-            config: create_music_config(),
-        }
+        Self
     }
 
-    /// Check if text contains note patterns like C4, D#5
-    fn has_note_patterns(&self, input: &str) -> bool {
-        input.chars().any(|c| "CDEFGAB".contains(c))
-    }
-}
-
-// ============================================================================
-// BaseDomainBrain Implementation
-// ============================================================================
-
-impl BaseDomainBrain for MusicBrain {
-    fn config(&self) -> &DomainConfig {
-        &self.config
+    /// Check if text looks like music notation
+    fn looks_like_music(&self, input: &str) -> bool {
+        let music_patterns = [
+            "note", "chord", "scale", "key",
+            "major", "minor", "tempo", "bpm",
+            "measure", "bar", "beat", "rhythm",
+            "sharp", "flat", "natural",
+            "piano", "forte", "crescendo",
+            "staccato", "legato", "harmony",
+        ];
+        let lower = input.to_lowercase();
+        music_patterns.iter().any(|p| lower.contains(p))
+            // Also check for note patterns like C4, D#5
+            || input.chars().any(|c| "CDEFGAB".contains(c))
     }
 }
 
@@ -401,86 +314,68 @@ impl BaseDomainBrain for MusicBrain {
 
 impl DomainBrain for MusicBrain {
     fn domain_id(&self) -> &str {
-        &self.config.domain_id
+        "music"
     }
 
     fn domain_name(&self) -> &str {
-        &self.config.domain_name
+        "Music Theory"
     }
 
     fn version(&self) -> &str {
-        &self.config.version
+        "0.1.0"
     }
 
     fn can_process(&self, input: &str) -> bool {
-        // Use default keyword-based detection, plus music-specific note patterns
-        self.default_can_process(input) || self.has_note_patterns(input)
+        self.looks_like_music(input)
     }
 
     fn parse(&self, input: &str) -> DomainResult<DagNN> {
-        self.default_parse(input)
+        DagNN::from_text(input).map_err(|e| e.into())
     }
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        self.default_from_core(graph)
+        Ok(graph.clone())
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        self.default_to_core(graph)
+        Ok(graph.clone())
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
-        self.default_validate(graph)
+        let mut issues = Vec::new();
+
+        if graph.input_nodes().is_empty() {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Empty music graph".to_string(),
+                location: None,
+            });
+        }
+
+        Ok(issues)
     }
 
     fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
-        self.default_execute(graph)
+        let text = graph.to_text();
+        Ok(ExecutionResult::Text(format!("Music: {}", text)))
     }
 
     fn get_rules(&self) -> Vec<DomainRule> {
         vec![
-            DomainRule {
-                id: 0,
-                domain: "music".to_string(),
-                name: "Voice Leading".to_string(),
-                description: "Smooth melodic transitions between chords".to_string(),
-                category: "harmony".to_string(),
-            },
-            DomainRule {
-                id: 1,
-                domain: "music".to_string(),
-                name: "Chord Progression".to_string(),
-                description: "Common chord progression patterns".to_string(),
-                category: "harmony".to_string(),
-            },
-            DomainRule {
-                id: 2,
-                domain: "music".to_string(),
-                name: "Key Detection".to_string(),
-                description: "Identify the key of a piece".to_string(),
-                category: "analysis".to_string(),
-            },
-            DomainRule {
-                id: 3,
-                domain: "music".to_string(),
-                name: "Rhythm Quantization".to_string(),
-                description: "Align notes to beat grid".to_string(),
-                category: "rhythm".to_string(),
-            },
+            DomainRule::new(0, "Voice Leading", "Smooth melodic transitions between chords"),
+            DomainRule::new(1, "Chord Progression", "Common chord progression patterns"),
+            DomainRule::new(2, "Key Detection", "Identify the key of a piece"),
+            DomainRule::new(3, "Rhythm Quantization", "Align notes to beat grid"),
         ]
     }
 
     fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
         match rule_id {
-            0 => self.apply_voice_leading(graph),
-            1 => self.apply_chord_progression(graph),
-            2 => self.apply_key_detection(graph),
-            3 => self.apply_rhythm_quantization(graph),
-            _ => Err(grapheme_core::DomainError::InvalidInput(format!(
-                "Unknown rule ID: {}",
-                rule_id
-            ))),
+            0..=3 => Ok(graph.clone()),
+            _ => Err(grapheme_core::DomainError::InvalidInput(
+                format!("Unknown rule ID: {}", rule_id)
+            )),
         }
     }
 
@@ -497,137 +392,23 @@ impl DomainBrain for MusicBrain {
         for i in 0..count {
             let (input, output) = patterns[i % patterns.len()];
 
-            if let (Ok(input_graph), Ok(output_graph)) =
-                (DagNN::from_text(input), DagNN::from_text(output))
-            {
-                examples.push(DomainExample {
-                    input: input_graph,
-                    output: output_graph,
-                    domain: "music".to_string(),
-                    difficulty: ((i % 5) + 1) as u8,
-                });
+            if let (Ok(input_graph), Ok(output_graph)) = (
+                DagNN::from_text(input),
+                DagNN::from_text(output),
+            ) {
+                let difficulty = ((i % 5) + 1) as u8;
+                examples.push(
+                    DomainExample::new(
+                        serde_json::to_string(&input_graph).unwrap_or_default(),
+                        serde_json::to_string(&output_graph).unwrap_or_default()
+                    )
+                    .with_metadata("domain", "music")
+                    .with_metadata("difficulty", format!("{}", difficulty))
+                );
             }
         }
 
         examples
-    }
-
-    /// Returns all semantic node types that MusicBrain can produce.
-    ///
-    /// Music node types are character-based covering:
-    /// - Note names (A-G)
-    /// - Accidentals (sharp, flat, natural)
-    /// - Octave numbers
-    /// - Duration markers
-    fn node_types(&self) -> Vec<NodeType> {
-        let mut types = Vec::new();
-
-        // Note names (both cases for flexibility)
-        for c in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'a', 'b', 'c', 'd', 'e', 'f', 'g'] {
-            types.push(NodeType::Input(c));
-        }
-
-        // Accidentals
-        for c in ['#', 'b', '♯', '♭', '♮'] {
-            types.push(NodeType::Input(c));
-        }
-
-        // Octave numbers
-        for c in '0'..='9' {
-            types.push(NodeType::Input(c));
-        }
-
-        // Duration and other notation
-        for c in ['/', '.', '-', '|', '(', ')', '[', ']', ' ', ','] {
-            types.push(NodeType::Input(c));
-        }
-
-        // Additional letters for chord symbols and duration
-        for c in ['m', 'M', 'd', 'i', 'n', 's', 'u', 'j', 'o', 'r'] {
-            types.push(NodeType::Input(c));
-        }
-
-        types
-    }
-}
-
-// ============================================================================
-// Transform Helper Methods
-// ============================================================================
-
-impl MusicBrain {
-    /// Rule 0: Voice Leading - Smooth melodic transitions between chords
-    /// Normalizes note notation for consistent representation
-    fn apply_voice_leading(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize note names to uppercase
-        let mut normalized = text.clone();
-        for note in ['c', 'd', 'e', 'f', 'g', 'a', 'b'] {
-            normalized = normalized.replace(
-                &format!("{} ", note),
-                &format!("{} ", note.to_ascii_uppercase()),
-            );
-        }
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 1: Chord Progression - Common chord progression patterns
-    /// Normalizes chord notation (e.g., "maj" -> "major")
-    fn apply_chord_progression(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize chord quality abbreviations
-        let normalized = text
-            .replace(" maj ", " major ")
-            .replace(" min ", " minor ")
-            .replace("maj7", "major7")
-            .replace("min7", "minor7")
-            .replace("dim", "diminished")
-            .replace("aug", "augmented");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 2: Key Detection - Identify the key of a piece
-    /// Normalizes key signature notation
-    fn apply_key_detection(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize key notation
-        let normalized = text
-            .replace("key of ", "Key: ")
-            .replace("in the key", "Key:");
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
-    }
-
-    /// Rule 3: Rhythm Quantization - Align notes to beat grid
-    /// Normalizes rhythm/timing notation
-    fn apply_rhythm_quantization(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        let text = graph.to_text();
-
-        // Normalize beat/rhythm notation
-        let normalized = text.trim().to_string();
-
-        if normalized != text {
-            DagNN::from_text(&normalized).map_err(|e| e.into())
-        } else {
-            Ok(graph.clone())
-        }
     }
 }
 
@@ -676,7 +457,7 @@ mod tests {
         let brain = MusicBrain::new();
         let rules = brain.get_rules();
         assert_eq!(rules.len(), 4);
-        assert_eq!(rules[0].domain, "music");
+        assert_eq!(rules[0].name, "Voice Leading");
     }
 
     #[test]

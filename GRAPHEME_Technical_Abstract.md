@@ -12,17 +12,13 @@ GRAPHEME demonstrates remarkable efficiency improvements: processing book-length
 
 Biologically inspired by neural plasticity research (Reimann et al., 2017), GRAPHEME implements neurogenesis through correlation-based node addition, synaptic pruning via threshold-based edge removal, and concept formation through clique detection. Experimental validation shows 1.52x speedup over baseline DAG networks, 37.1% edge pruning without accuracy loss, and spontaneous formation of 677 cliques (average size: 2.0) correlating with concept learning.
 
-GRAPHEME's implications extend beyond incremental improvement: it enables processing of any Unicode text without language-specific preprocessing, maintains full document context without truncation, and provides interpretable graph structures that reveal the reasoning process. The training infrastructure includes gradient clipping, safety-aware validation (Asimov's Laws), real-time metrics dashboard, checkpoint compression, and gradient accumulation for production deployment.
-
-Recent developments introduce web-based learning and knowledge query capabilities. The WebFetcher module enables HTTPS content retrieval with configurable timeouts, redirect handling, and size limits using ureq with native-tls. Training from Wikipedia demonstrates the system's ability to learn semantic embeddings from web content—GraphTransformNet encodes text through message-passing layers, producing graph-level representations that capture domain relationships. The query interface enables interactive knowledge retrieval: queries are encoded as DagNN graphs, transformed through trained layers, and matched against a knowledge base using cosine similarity. Experimental results show high semantic coherence (>0.97 similarity) between related concepts learned from Wikipedia articles on machine learning, neural networks, physics, and graph theory.
-
-Applications include universal translation without vocabulary constraints, streaming text processing with constant memory, code generation with natural AST representation, and now web-based knowledge acquisition with neural semantic search.
+GRAPHEME's implications extend beyond incremental improvement: it enables processing of any Unicode text without language-specific preprocessing, maintains full document context without truncation, and provides interpretable graph structures that reveal the reasoning process. Applications include universal translation without vocabulary constraints, streaming text processing with constant memory, and code generation with natural AST representation.
 
 Our comprehensive review confirms GRAPHEME is unprecedented—no existing implementation combines dynamic graph growth, vocabulary-free processing, graph-to-graph transformations, and structural loss functions. This work establishes a new paradigm for neural text processing, suggesting that true language understanding emerges not from looking up embeddings in massive matrices, but from the dynamic structural relationships between graphemes.
 
 ### Keywords
 
-Graph Neural Networks, Dynamic Architectures, Vocabulary-Free NLP, Graph Morphogenesis, Character-Level Processing, Structural Learning, Clique Formation, Universal Language Processing, Web Learning, Knowledge Retrieval, Semantic Embeddings
+Graph Neural Networks, Dynamic Architectures, Vocabulary-Free NLP, Graph Morphogenesis, Character-Level Processing, Structural Learning, Clique Formation, Universal Language Processing
 
 ### ACM Classification
 
