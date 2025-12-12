@@ -8978,6 +8978,24 @@ pub trait DomainBrain: Send + Sync + std::fmt::Debug {
     /// Get the version of this brain
     fn version(&self) -> &str;
 
+    /// Get all semantic node types this brain can produce.
+    ///
+    /// Used for building a unified vocabulary of semantic node types across
+    /// all domain brains. The decoder uses this vocabulary to output ANY
+    /// semantic node type, enabling true graph-to-graph transformation.
+    ///
+    /// Default: empty vector (brain uses generic NodeTypes only).
+    ///
+    /// Domain brains should return their domain-specific node types:
+    /// - TextBrain: `Input(char)` for all ASCII chars
+    /// - CodeBrain: `Keyword(*)`, `Variable(*)`, `Int`, `Float`, `Str`, `Op(*)`, `Call(*)`, `Punct(*)`
+    /// - MathBrain: `MathInt`, `MathFloat`, `MathOp(*)`, `Function(*)`, etc.
+    /// - ChemBrain: `Atom(*)`, `Bond(*)`, `Coefficient`, `Formula`, etc.
+    /// - MusicBrain: `Note(*)`, `Rest(*)`, `Chord(*)`, `Tempo`, etc.
+    fn node_types(&self) -> Vec<NodeType> {
+        Vec::new()
+    }
+
     // ========================================================================
     // Processing Methods
     // ========================================================================
