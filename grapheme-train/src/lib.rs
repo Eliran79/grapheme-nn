@@ -122,8 +122,12 @@ pub mod cortex_mesh;
 pub use cortex_mesh::{
     CortexMesh, MeshConfig, MeshResult, MeshStats,
     brain_count, list_all_brains, list_all_modules, module_count,
-    init_parallel, parallel_threads,
+    init_parallel, parallel_threads, collect_all_node_types,
 };
+
+/// Semantic Node Decoder with Unified Vocabulary (backend-216)
+pub mod semantic_decoder;
+pub use semantic_decoder::{SemanticDecoder, SemanticDecoderConfig, VocabStats};
 
 use grapheme_core::{GraphemeGraph, NodeType, Persistable, PersistenceError};
 use grapheme_engine::{

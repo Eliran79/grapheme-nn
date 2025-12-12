@@ -36,7 +36,7 @@
 
 use grapheme_chem::ChemBrain;
 use grapheme_code::CodeBrain;
-use grapheme_core::{BrainRegistry, DomainBrain, GraphemeGraph, GraphTransformNet};
+use grapheme_core::{BrainRegistry, DomainBrain, GraphemeGraph, GraphTransformNet, NodeType};
 use grapheme_law::LawBrain;
 use grapheme_math::MathBrain;
 use grapheme_music::MusicBrain;
@@ -760,6 +760,38 @@ pub fn list_all_cognitive_systems() -> Vec<&'static str> {
 /// Count of all discoverable cognitive systems
 pub fn cognitive_system_count() -> usize {
     CognitiveSystems::count()
+}
+
+/// Collect all unique NodeTypes from all registered domain brains
+///
+/// This function instantiates each brain and calls `node_types()` to build
+/// a unified vocabulary of all semantic node types that any brain can produce.
+///
+/// Returns a deduplicated, sorted Vec of NodeTypes.
+pub fn collect_all_node_types() -> Vec<NodeType> {
+    use std::collections::HashMap;
+
+    let mut all_types: Vec<NodeType> = Vec::new();
+
+    // Collect node types from all brains
+    for (_id, factory) in BRAIN_FACTORIES {
+        let brain = factory();
+        let types = brain.node_types();
+        all_types.extend(types);
+    }
+
+    // Deduplicate by converting to string representation
+    let mut seen: HashMap<String, NodeType> = HashMap::new();
+    for nt in all_types {
+        let key = format!("{:?}", nt);
+        seen.entry(key).or_insert(nt);
+    }
+
+    // Convert back to Vec, sorted for consistency
+    let mut vocab: Vec<NodeType> = seen.into_values().collect();
+    vocab.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+
+    vocab
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 ---
 id: backend-216
 title: Build semantic node decoder with unified vocab
-status: todo
+status: done
 priority: high
 tags:
 - backend
