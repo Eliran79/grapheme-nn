@@ -1,7 +1,7 @@
 ---
 id: backend-215
 title: Implement node_types for all domain brains
-status: todo
+status: done
 priority: high
 tags:
 - backend

@@ -1,7 +1,7 @@
 ---
 id: backend-214
 title: Unified Semantic Node Vocabulary
-status: todo
+status: done
 priority: critical
 tags:
 - backend
@@ -16,94 +16,87 @@ area: backend
 
 # Unified Semantic Node Vocabulary
 
-> **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
->
-> **This task should be completed in ONE dedicated session.**
->
-> When you mark this task as `done`, you MUST:
-> 1. Fill the "Session Handoff" section at the bottom with complete implementation details
-> 2. Document what was changed, what runtime behavior to expect, and what dependencies were affected
-> 3. Create a clear handoff for the developer/next AI agent working on dependent tasks
->
-> **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
-
 ## Context
-Brief description of what needs to be done and why.
+The semantic code training showed 0% accuracy because the model could only output the same node types it received (Input chars). It couldn't generate NEW semantic node types like Keyword, Variable, Op, etc. This task provides the unified vocabulary infrastructure.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Collect all node types from all domain brains
+- [x] Create unified vocabulary accessible throughout the codebase
+- [x] Enable models to generate ANY semantic node type
+- [x] Support auto-discovery from registered brains
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Add `node_types()` method to DomainBrain trait (api-021)
+- [x] Implement `node_types()` for all domain brains (backend-215)
+- [x] Build SemanticDecoder with unified vocab (backend-216)
+- [x] Add `collect_all_node_types()` helper in cortex_mesh.rs
+- [x] Export unified vocabulary through lib.rs
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Vocabulary Collection:**
+- `collect_all_node_types()` returns 4301 unique node types
+- Covers all brains: Math, Code, Vision, Chem, Law, Music, Time, Classification
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **SemanticDecoder:**
+- Can decode hidden states to any NodeType in unified vocab
+- Supports training with `backward()` method
+- Supports serialization with `save()/load()`
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Unified vocab: 4301 types (4096 Pixel, 97 Input, 35 Keyword, 25 Op, etc.)
+- Xavier initialization for embeddings and output projection
+- Cross-entropy loss with label smoothing (default 0.1)
+- Softmax temperature for output diversity control
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] `test_build_vocab_from_brains` - 8 tests pass
+- [x] `test_decode`, `test_topk_decode` - Decoding works correctly
+- [x] `test_backward_reduces_loss` - Training converges
+- [x] `test_save_load` - Persistence works
 
 ## Version Control
-
-**⚠️ CRITICAL: Always test AND run before committing!**
-
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] Build passes with zero errors
+- [x] All tests pass (8/8)
+- [x] Committed: `8183d0d feat(semantic): Add SemanticDecoder with unified vocabulary from all brains`
 
 ## Updates
 - 2025-12-11: Task created
+- 2025-12-12: All dependencies completed, task complete
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- `grapheme-train/src/semantic_decoder.rs`: NEW - SemanticDecoder module (~600 lines)
+  - `SemanticDecoder` struct with learnable embeddings for all 4301 node types
+  - `decode()` returns predicted NodeType with confidence
+  - `decode_topk()` returns top-k predictions
+  - `backward()` for training with cross-entropy loss
+  - `encode()` returns type embedding for a NodeType
+  - `save()/load()` for persistence
+- `grapheme-train/src/cortex_mesh.rs`: Added `collect_all_node_types()` function
+- `grapheme-train/src/lib.rs`: Exports `SemanticDecoder`, `SemanticDecoderConfig`, `VocabStats`, `collect_all_node_types`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Models can now output ANY semantic node type (Keyword, Variable, Op, etc.)
+- Breaking change: Training must now use unified vocab to avoid model collapse
+- The semantic training pipeline should use SemanticDecoder for output generation
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Depends on: `DomainBrain::node_types()` (api-021) implemented in all brains (backend-215)
+- Exports unified vocabulary through `collect_all_node_types()`
+- SemanticDecoder integrates with GraphTransformNet by decoding hidden states
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+```bash
+# Verify unified vocab collection
+cargo test -p grapheme-train --lib semantic_decoder::tests -- --nocapture
+
+# Check vocab stats
+# Output shows: Total size: 4301, 35 Keywords, 25 Ops, etc.
+```
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- The SemanticDecoder provides the OUTPUT layer for semantic code generation
+- Next step: Integrate SemanticDecoder into `train_semantic_code.rs` to replace the broken output path
+- Key insight: The model collapse happened because outputs were copied from inputs - SemanticDecoder allows generating NEW node types not in the input
