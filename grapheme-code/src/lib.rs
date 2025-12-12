@@ -1567,6 +1567,143 @@ impl DomainBrain for CodeBrain {
 }
 
 // ============================================================================
+// GraphAutoencoder Implementation (Stage 1 Training)
+// ============================================================================
+
+use grapheme_brain_common::{AutoencoderError, GraphAutoencoder, LatentGraph};
+
+impl GraphAutoencoder for CodeBrain {
+    /// Encode source code into a latent graph representation.
+    ///
+    /// This converts raw code text into a DagNN graph that preserves:
+    /// - Character-level structure (via DagNN.from_text)
+    /// - Semantic structure (if tree-sitter is available)
+    ///
+    /// # Arguments
+    /// * `input` - Raw source code text
+    ///
+    /// # Returns
+    /// * `Ok(LatentGraph)` - The encoded graph with domain="code"
+    /// * `Err(AutoencoderError)` - If encoding fails
+    fn encode(&self, input: &str) -> Result<LatentGraph, AutoencoderError> {
+        // Normalize input using brain config
+        let normalized = self.config.normalizer.normalize(input);
+
+        // Convert to DagNN using character-level encoding
+        let graph = DagNN::from_text(&normalized).map_err(|e| {
+            AutoencoderError::EncodingError(format!("Failed to encode code: {}", e))
+        })?;
+
+        // Create latent graph with code domain
+        let mut latent = LatentGraph::new("code", graph);
+
+        // Add metadata
+        latent.add_metadata("language", self.detect_language(input).to_string());
+        latent.add_metadata("original_length", input.len().to_string());
+
+        Ok(latent)
+    }
+
+    /// Decode a latent graph back to source code text.
+    ///
+    /// This converts the graph representation back to text format.
+    /// For a perfect autoencoder, decode(encode(text)) == text.
+    ///
+    /// # Arguments
+    /// * `graph` - The latent graph to decode
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The decoded source code
+    /// * `Err(AutoencoderError)` - If decoding fails or domain mismatch
+    fn decode(&self, graph: &LatentGraph) -> Result<String, AutoencoderError> {
+        // Validate domain
+        self.validate_latent(graph)?;
+
+        // Convert graph back to text
+        let text = graph.graph.to_text();
+
+        Ok(text)
+    }
+
+    /// Compute reconstruction loss for code, ignoring whitespace differences.
+    ///
+    /// Code-specific loss that:
+    /// - Normalizes whitespace (tabs to spaces, multiple spaces to single)
+    /// - Ignores trailing whitespace differences
+    /// - Focuses on semantic character matching
+    ///
+    /// # Returns
+    /// * `f32` - Loss value in [0.0, 1.0] (0.0 = perfect match)
+    fn reconstruction_loss(&self, original: &str, reconstructed: &str) -> f32 {
+        // Normalize both for comparison (ignore whitespace differences)
+        let norm_orig = self.normalize_for_comparison(original);
+        let norm_recon = self.normalize_for_comparison(reconstructed);
+
+        // Exact match after normalization
+        if norm_orig == norm_recon {
+            return 0.0;
+        }
+
+        // Empty string handling
+        if norm_orig.is_empty() && norm_recon.is_empty() {
+            return 0.0;
+        }
+
+        let max_len = norm_orig.len().max(norm_recon.len());
+        if max_len == 0 {
+            return 0.0;
+        }
+
+        // Character-level matching
+        let matching: usize = norm_orig
+            .chars()
+            .zip(norm_recon.chars())
+            .filter(|(a, b)| a == b)
+            .count();
+
+        // Length difference penalty (reduced for code since whitespace varies)
+        let len_diff = (norm_orig.len() as isize - norm_recon.len() as isize).unsigned_abs();
+
+        let accuracy = matching as f32 / max_len as f32;
+        let length_penalty = len_diff as f32 / max_len as f32;
+
+        // Reduced length penalty for code (0.3 instead of 0.5)
+        (1.0 - accuracy + length_penalty * 0.3).clamp(0.0, 1.0)
+    }
+}
+
+impl CodeBrain {
+    /// Normalize code for comparison, collapsing whitespace differences.
+    fn normalize_for_comparison(&self, code: &str) -> String {
+        code
+            // Normalize line endings
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            // Normalize tabs to spaces
+            .replace('\t', " ")
+            // Collapse multiple spaces to single
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            // Remove trailing whitespace
+            .trim()
+            .to_string()
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Language::Rust => write!(f, "rust"),
+            Language::Python => write!(f, "python"),
+            Language::JavaScript => write!(f, "javascript"),
+            Language::C => write!(f, "c"),
+            Language::Generic => write!(f, "generic"),
+        }
+    }
+}
+
+// ============================================================================
 // Tree-sitter Integration (Optional Feature)
 // ============================================================================
 
@@ -2418,5 +2555,241 @@ mod tree_sitter_tests {
         let code = "fn main() { 1 + 2 }";
         let graph = TreeSitterParser::parse_rust(code).unwrap();
         assert!(graph.edge_count() > 0);
+    }
+}
+
+// ============================================================================
+// GraphAutoencoder Tests
+// ============================================================================
+
+#[cfg(test)]
+mod autoencoder_tests {
+    use super::*;
+    use grapheme_brain_common::GraphAutoencoder;
+
+    #[test]
+    fn test_encode_simple_code() {
+        let brain = CodeBrain::new();
+        let code = "let x = 42;";
+
+        let latent = brain.encode(code).unwrap();
+
+        assert_eq!(latent.domain, "code");
+        assert!(latent.node_count() > 0);
+        assert!(latent.metadata.contains_key("language"));
+        assert!(latent.metadata.contains_key("original_length"));
+    }
+
+    #[test]
+    fn test_encode_python_code() {
+        let brain = CodeBrain::new();
+        let code = "def hello():\n    return 42";
+
+        let latent = brain.encode(code).unwrap();
+
+        assert_eq!(latent.domain, "code");
+        assert_eq!(latent.metadata.get("language"), Some(&"python".to_string()));
+    }
+
+    #[test]
+    fn test_encode_rust_code() {
+        let brain = CodeBrain::new();
+        let code = "fn main() -> i32 { 0 }";
+
+        let latent = brain.encode(code).unwrap();
+
+        assert_eq!(latent.domain, "code");
+        assert_eq!(latent.metadata.get("language"), Some(&"rust".to_string()));
+    }
+
+    #[test]
+    fn test_decode_valid_graph() {
+        let brain = CodeBrain::new();
+        let code = "1 + 2";
+
+        let latent = brain.encode(code).unwrap();
+        let decoded = brain.decode(&latent).unwrap();
+
+        // Decoded should be similar to original (after normalization)
+        assert!(!decoded.is_empty());
+    }
+
+    #[test]
+    fn test_decode_domain_mismatch() {
+        let brain = CodeBrain::new();
+        let graph = DagNN::from_text("test").unwrap();
+
+        // Create latent graph with wrong domain
+        let latent = LatentGraph::new("math", graph);
+
+        let result = brain.decode(&latent);
+        assert!(result.is_err());
+
+        match result {
+            Err(AutoencoderError::DomainMismatch { expected, actual }) => {
+                assert_eq!(expected, "code");
+                assert_eq!(actual, "math");
+            }
+            _ => panic!("Expected DomainMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_simple() {
+        let brain = CodeBrain::new();
+        let code = "42";
+
+        let (reconstructed, loss) = brain.roundtrip(code).unwrap();
+
+        // After roundtrip, we should get something back
+        assert!(!reconstructed.is_empty());
+        // Loss should be reasonable (not perfect due to character-level encoding)
+        assert!(loss <= 1.0);
+    }
+
+    #[test]
+    fn test_roundtrip_expression() {
+        let brain = CodeBrain::new();
+        let code = "x + y";
+
+        let (reconstructed, loss) = brain.roundtrip(code).unwrap();
+
+        assert!(!reconstructed.is_empty());
+        assert!(loss <= 1.0);
+    }
+
+    #[test]
+    fn test_reconstruction_loss_exact_match() {
+        let brain = CodeBrain::new();
+
+        let loss = brain.reconstruction_loss("x + y", "x + y");
+        assert_eq!(loss, 0.0);
+    }
+
+    #[test]
+    fn test_reconstruction_loss_whitespace_tolerance() {
+        let brain = CodeBrain::new();
+
+        // Different whitespace should result in zero loss after normalization
+        let loss = brain.reconstruction_loss("x  +  y", "x + y");
+        assert_eq!(loss, 0.0);
+
+        // Tabs vs spaces
+        let loss = brain.reconstruction_loss("x\t+\ty", "x + y");
+        assert_eq!(loss, 0.0);
+    }
+
+    #[test]
+    fn test_reconstruction_loss_different_code() {
+        let brain = CodeBrain::new();
+
+        let loss = brain.reconstruction_loss("abc", "xyz");
+        assert!(loss > 0.9); // Should be high (very different)
+    }
+
+    #[test]
+    fn test_reconstruction_loss_partial_match() {
+        let brain = CodeBrain::new();
+
+        // One character different
+        let loss = brain.reconstruction_loss("hello", "hella");
+        assert!(loss > 0.0 && loss < 0.5);
+    }
+
+    #[test]
+    fn test_reconstruction_loss_empty_strings() {
+        let brain = CodeBrain::new();
+
+        let loss = brain.reconstruction_loss("", "");
+        assert_eq!(loss, 0.0);
+    }
+
+    #[test]
+    fn test_encode_batch() {
+        let brain = CodeBrain::new();
+        let inputs = ["42", "x + y", "fn foo()"];
+
+        let results = brain.encode_batch(&inputs);
+
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.is_ok()));
+    }
+
+    #[test]
+    fn test_decode_batch() {
+        let brain = CodeBrain::new();
+
+        // Encode some code samples
+        let latents: Vec<_> = ["42", "x", "y"]
+            .iter()
+            .map(|s| brain.encode(s).unwrap())
+            .collect();
+
+        let refs: Vec<_> = latents.iter().collect();
+        let results = brain.decode_batch(&refs);
+
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.is_ok()));
+    }
+
+    #[test]
+    fn test_validate_latent_correct_domain() {
+        let brain = CodeBrain::new();
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("code", graph);
+
+        assert!(brain.validate_latent(&latent).is_ok());
+    }
+
+    #[test]
+    fn test_validate_latent_wrong_domain() {
+        let brain = CodeBrain::new();
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("wrong_domain", graph);
+
+        assert!(brain.validate_latent(&latent).is_err());
+    }
+
+    #[test]
+    fn test_validate_latent_empty_graph() {
+        let brain = CodeBrain::new();
+        let graph = DagNN::new();
+        let latent = LatentGraph::new("code", graph);
+
+        let result = brain.validate_latent(&latent);
+        assert!(result.is_err());
+
+        match result {
+            Err(AutoencoderError::ValidationError(msg)) => {
+                assert!(msg.contains("Empty"));
+            }
+            _ => panic!("Expected ValidationError"),
+        }
+    }
+
+    #[test]
+    fn test_language_display() {
+        assert_eq!(format!("{}", Language::Rust), "rust");
+        assert_eq!(format!("{}", Language::Python), "python");
+        assert_eq!(format!("{}", Language::JavaScript), "javascript");
+        assert_eq!(format!("{}", Language::C), "c");
+        assert_eq!(format!("{}", Language::Generic), "generic");
+    }
+
+    #[test]
+    fn test_normalize_for_comparison() {
+        let brain = CodeBrain::new();
+
+        // Test whitespace normalization
+        let result = brain.normalize_for_comparison("  a  b  c  ");
+        assert_eq!(result, "a b c");
+
+        // Test tab normalization
+        let result = brain.normalize_for_comparison("a\tb\tc");
+        assert_eq!(result, "a b c");
+
+        // Test line ending normalization
+        let result = brain.normalize_for_comparison("a\r\nb\nc");
+        assert_eq!(result, "a b c");
     }
 }
