@@ -8,17 +8,25 @@
 //! - Router Modules: Auto-discovered from MODULE_FACTORIES
 //!
 //! All components run in PARALLEL by default using Rayon.
+//!
+//! ## Parallel Processing
+//! - Batch graph creation: parallel pre-computation
+//! - Validation: parallel structural loss computation
+//! - SemanticDecoder: unified vocabulary for semantic node generation
 
 use anyhow::Result;
 use clap::Parser;
-use grapheme_core::GraphemeGraph;
+use grapheme_core::{ActivationFn, GraphemeGraph, Node};
 use grapheme_train::cortex_mesh::{CortexMesh, MeshConfig, list_all_brains, list_all_modules};
+use grapheme_train::semantic_decoder::{SemanticDecoder, SemanticDecoderConfig};
 use grapheme_train::{compute_structural_loss, StructuralLossConfig};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -77,7 +85,98 @@ struct TrainingSample {
     #[serde(alias = "target")]
     output: String,
     #[serde(default)]
+    #[allow(dead_code)]  // Reserved for future domain-specific routing
     domain: Option<String>,
+}
+
+/// Semantic accuracy: percentage of nodes with matching node types
+fn semantic_accuracy(pred: &GraphemeGraph, target: &GraphemeGraph) -> f32 {
+    let pred_types: Vec<_> = pred.graph.node_indices()
+        .map(|idx| &pred.graph[idx].node_type)
+        .collect();
+    let target_types: Vec<_> = target.graph.node_indices()
+        .map(|idx| &target.graph[idx].node_type)
+        .collect();
+
+    let min_len = pred_types.len().min(target_types.len());
+    if min_len == 0 {
+        return 0.0;
+    }
+
+    let matches = pred_types.iter().take(min_len)
+        .zip(target_types.iter().take(min_len))
+        .filter(|(p, t)| p == t)
+        .count();
+
+    matches as f32 / min_len as f32
+}
+
+/// Decode pooled features to a semantic graph using SemanticDecoder
+fn decode_features_to_graph(
+    features: &ndarray::Array2<f32>,
+    decoder: &SemanticDecoder,
+) -> GraphemeGraph {
+    use petgraph::graph::DiGraph;
+    use grapheme_core::Edge;
+
+    let mut graph: DiGraph<Node, Edge> = DiGraph::new();
+    let mut prev_idx = None;
+    let mut input_nodes = Vec::new();
+
+    // Decode each feature vector to a semantic node type
+    for i in 0..features.nrows() {
+        let hidden: Vec<f32> = features.row(i).to_vec();
+        let (node_type, confidence) = decoder.decode(&hidden);
+
+        let node = Node {
+            value: None,
+            activation: confidence,
+            pre_activation: confidence,
+            node_type,
+            position: Some(i),
+            activation_fn: ActivationFn::Linear,
+        };
+
+        let idx = graph.add_node(node);
+        input_nodes.push(idx);
+
+        // Add sequential edge
+        if let Some(prev) = prev_idx {
+            graph.add_edge(prev, idx, Edge::sequential());
+        }
+        prev_idx = Some(idx);
+    }
+
+    GraphemeGraph {
+        graph,
+        input_nodes,
+        cliques: Vec::new(),
+    }
+}
+
+/// Prepare training batch for SemanticDecoder
+fn prepare_decoder_batch(
+    features: &ndarray::Array2<f32>,
+    target_graph: &GraphemeGraph,
+    decoder: &SemanticDecoder,
+) -> Vec<(Vec<f32>, usize)> {
+    let mut batch = Vec::new();
+    let target_nodes: Vec<_> = target_graph.graph.node_indices()
+        .map(|idx| &target_graph.graph[idx])
+        .collect();
+
+    let n = features.nrows().min(target_nodes.len());
+
+    for i in 0..n {
+        let hidden: Vec<f32> = features.row(i).to_vec();
+        let target_type = &target_nodes[i].node_type;
+
+        if let Some(target_idx) = decoder.get_index(target_type) {
+            batch.push((hidden, target_idx));
+        }
+    }
+
+    batch
 }
 
 /// Load training data
@@ -202,6 +301,26 @@ fn main() -> Result<()> {
     println!("  Modules: {}", mesh.module_count());
     println!("  Model: {} hidden dim, {} layers", mesh.model.hidden_dim, mesh.model.mp_layers.len());
     println!("  Parallel: {}", mesh.config.parallel);
+
+    // Create SemanticDecoder with unified vocabulary from all brains
+    println!("\nBuilding unified semantic vocabulary...");
+    let vocab = SemanticDecoder::build_vocab_from_brains();
+    let embed_dim = 64;  // Match mesh config
+    let decoder_config = SemanticDecoderConfig {
+        hidden_dim: embed_dim,
+        learning_rate: args.lr,
+        temperature: 1.0,
+        label_smoothing: 0.1,
+    };
+    let mut decoder = SemanticDecoder::new(vocab, decoder_config);
+    let vocab_stats = decoder.vocab_stats();
+    println!("SemanticDecoder ready:");
+    println!("  Vocabulary size: {}", decoder.vocab_size());
+    println!("  Node types: {} Keywords, {} Ops, {} Puncts, {} Input chars",
+        vocab_stats.by_type.get("Keyword").unwrap_or(&0),
+        vocab_stats.by_type.get("Op").unwrap_or(&0),
+        vocab_stats.by_type.get("Punct").unwrap_or(&0),
+        vocab_stats.by_type.get("Input").unwrap_or(&0));
 
     // Training loop
     let mut best_loss = f32::MAX;
