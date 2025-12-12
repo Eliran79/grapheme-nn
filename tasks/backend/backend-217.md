@@ -1,7 +1,7 @@
 ---
 id: backend-217
 title: Integrate SemanticDecoder into CortexMesh training loop
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -44,9 +44,9 @@ Key insight: The previous model collapse (0% accuracy) happened because outputs 
 ## Tasks
 - [x] Add SemanticDecoder imports and helper functions (DONE in current uncommitted changes)
 - [x] Initialize SemanticDecoder with `build_vocab_from_brains()` (DONE)
-- [ ] Use helper functions in training loop for decoder backward pass
-- [ ] Add decoder loss to total training loss
-- [ ] Update epoch logging to show decoder accuracy
+- [x] Use helper functions in training loop for decoder backward pass
+- [x] Add decoder loss to total training loss
+- [x] Update epoch logging to show decoder accuracy
 
 ## Acceptance Criteria
 ✅ **Auto-Discovery:**
@@ -100,25 +100,37 @@ Key insight: The previous model collapse (0% accuracy) happened because outputs 
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **File**: `grapheme-train/src/bin/train_cortex_mesh.rs`
+- **Removed**: Old `backward_unified()` based training loop
+- **Added**: New training loop using `model.forward()` + `model.backward()` pattern for access to pooling features
+- **Added**: Decoder batch accumulation across samples in each batch
+- **Added**: `decoder.backward(&decoder_batch)` call after mesh model step
+- **Added**: Parallel validation using `par_iter()` with semantic accuracy metrics
+- **Modified**: Epoch logging now shows `struct`, `dec` loss, `sem_acc`, `dec_acc`
+- **Example output**: `Epoch 1/2: loss=869.79 (struct=869.79, dec=1399.20), val=871.84, sem_acc=1.0%, dec_acc=24.5%`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Training loop now follows: zero_grad → accumulate mesh gradients → step → train decoder
+- Validation is fully parallel with `par_iter()` - thread-safe metric computation
+- Decoder training happens after mesh model step, not during backward pass
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `mesh.model.forward()` directly instead of `mesh.backward_unified()`
+- Uses `mesh.model.backward()` and `mesh.model.step()` for gradient flow
+- Uses `mesh.model.zero_grad()` for gradient zeroing
+- Helper functions: `prepare_decoder_batch()`, `semantic_accuracy()`, `decode_features_to_graph()` all used
+- Auto-discovery via `SemanticDecoder::build_vocab_from_brains()` - 4301 node types from 8 brains
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Build: `cargo build --release -p grapheme-train --bin train_cortex_mesh` - zero warnings
+- Test: `cargo test --release -p grapheme-train` - all pass
+- Run: `cargo run --release -p grapheme-train --bin train_cortex_mesh -- --data data/code_training --output checkpoints/cortex_mesh_semantic.json --epochs 2`
+- Verify: SemanticDecoder reports vocabulary size: 4301 (35 Keywords, 25 Ops, 12 Puncts, 97 Input chars)
+- Verify: Epoch logging shows sem_acc% and dec_acc%
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **backend-218** (parallel validation): Already implemented as part of this task - validation loop uses `par_iter()`
+- **backend-219** (train_mesh_code.rs): Copy same pattern - use `model.forward()` + `model.backward()` + decoder training
+- **backend-220** (generalize): Helper functions can be moved to training_utils.rs
+- `decode_features_to_graph()` is marked `#[allow(dead_code)]` - needed for future visualization
+- Decoder trains on accumulated batch after mesh model step to avoid interference

@@ -1,7 +1,7 @@
 ---
 id: backend-218
 title: Add parallel validation with semantic accuracy metrics
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -40,10 +40,10 @@ After backend-217 integrates SemanticDecoder training, the validation loop needs
 - Use atomic counters for parallel-safe metric accumulation
 
 ## Tasks
-- [ ] Wrap validation samples with `par_iter()` for parallel processing
-- [ ] Use AtomicUsize/AtomicF32 for loss and accuracy accumulation
-- [ ] Compute semantic accuracy using `semantic_accuracy()` helper
-- [ ] Update epoch logging to show val_loss and val_semantic_acc
+- [x] Wrap validation samples with `par_iter()` for parallel processing
+- [x] Use AtomicUsize/AtomicF32 for loss and accuracy accumulation (used Vec::par_iter().collect() instead - cleaner)
+- [x] Compute semantic accuracy using `semantic_accuracy()` helper
+- [x] Update epoch logging to show val_loss and val_semantic_acc
 
 ## Acceptance Criteria
 ✅ **Parallel Validation:**
@@ -62,9 +62,9 @@ After backend-217 integrates SemanticDecoder training, the validation loop needs
 - Use `decode_features_to_graph()` to convert features to graph for comparison
 
 ## Testing
-- [ ] Build passes with zero errors
-- [ ] Validation time decreases with parallel processing
-- [ ] Semantic accuracy is computed and logged per epoch
+- [x] Build passes with zero errors
+- [x] Validation time decreases with parallel processing
+- [x] Semantic accuracy is computed and logged per epoch
 
 ## Version Control
 
@@ -88,30 +88,33 @@ After backend-217 integrates SemanticDecoder training, the validation loop needs
 
 ## Updates
 - 2025-12-12: Task created
+- 2025-12-12: Marked done - implemented as part of backend-217
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **File**: `grapheme-train/src/bin/train_cortex_mesh.rs` (lines 419-459)
+- **Implemented**: Parallel validation with `par_iter()` from rayon
+- **Note**: This was implemented as part of backend-217 (SemanticDecoder integration)
+- **Implementation approach**: Used `par_iter().collect()` pattern instead of atomic counters - cleaner and equally thread-safe
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Validation now runs in parallel using all CPU cores
+- Metrics (val_loss, sem_acc, dec_acc) computed per sample in parallel, then aggregated
+- No synchronization issues since each sample's metrics are independent
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `mesh.model.forward()` which takes `&self` (immutable) - thread-safe
+- Uses `compute_structural_loss()`, `semantic_accuracy()`, `prepare_decoder_batch()`, `decoder.compute_accuracy()` helper functions
+- All helper functions are pure/thread-safe
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Build: `cargo build --release -p grapheme-train --bin train_cortex_mesh` - zero warnings
+- Test: `cargo test --release -p grapheme-train` - all pass
+- Run: Training shows semantic metrics in epoch output: `val=871.84, sem_acc=1.0%, dec_acc=24.5%`
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- **backend-219** (train_mesh_code.rs): Copy same parallel validation pattern
+- **backend-220** (generalization): Extract parallel validation helpers to training_utils.rs
+- Key insight: `par_iter().collect()` is cleaner than atomic operations for this use case

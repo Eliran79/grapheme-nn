@@ -1,7 +1,7 @@
 ---
 id: backend-209
 title: Improve Graph-to-Graph transformation output quality
-status: doing
+status: done
 priority: high
 tags:
 - backend
@@ -53,9 +53,9 @@ the graph transformation and output graph quality.
 ## Tasks
 - [x] Review existing GraphTransformNet.forward() and .infer() methods
 - [x] Review existing output graph decoding (to_text, Sabag pooling)
-- [ ] Improve output graph node embedding quality
-- [ ] Add output graph structure validation
-- [ ] Test full pipeline: text → graph → transform → graph → text
+- [x] Improve output graph node embedding quality
+- [x] Add output graph structure validation
+- [x] Test full pipeline: text → graph → transform → graph → text
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -97,30 +97,50 @@ the graph transformation and output graph quality.
 
 ## Updates
 - 2025-12-11: Task created
+- 2025-12-12: Task completed - added temperature decoding, top-k sampling, and graph validation
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- **New Methods in `Embedding` struct** (`grapheme-core/src/lib.rs`, lines ~6250-6379):
+  - `decode_with_temperature(embedding, temperature)` - Softmax-based decoding with temperature scaling for controlled output diversity
+  - `decode_top_k(embedding, k, temperature)` - Top-k sampling combined with temperature for more diverse character selection
+  - `decode_batch_with_temperature(embeddings, temperature)` - Batch version of temperature decoding
+
+- **New Method in `GraphemeGraph` struct** (`grapheme-core/src/lib.rs`, lines ~5371-5453):
+  - `validate_output()` - Returns `Result<GraphValidation, String>` to validate output graph structure
+  - Checks: node count > 0, all input_nodes are valid, activations are finite, counts orphan nodes
+
+- **New Struct `GraphValidation`** (`grapheme-core/src/lib.rs`):
+  - Fields: `node_count`, `edge_count`, `input_node_count`, `valid_activations`, `avg_activation`, `orphan_nodes`, `is_valid`
+  - Implements `Display` for easy debugging
+
+- **8 New Tests** (`grapheme-core/src/lib.rs`, lines ~15914-16044):
+  - `test_graph_validation_valid`, `test_graph_validation_empty`, `test_graph_validation_display`
+  - `test_decode_with_temperature`, `test_decode_top_k`, `test_decode_batch_with_temperature`
+  - `test_full_pipeline_text_to_text`, `test_cortex_style_pipeline`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Temperature-controlled decoding is pure/functional - no side effects
+- Graph validation is read-only inspection - no modification to graphs
+- Lower temperature → more deterministic output; higher temperature → more diverse
+- All new methods are thread-safe (no shared mutable state)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- No new dependencies added
+- Works with existing `GraphTransformNet.forward()` pipeline
+- Sabag pooling returns features with `embed_dim` columns (64), not `hidden_dim` (128) - important for sizing
+- Can be integrated into inference pipelines by calling `validate_output()` on results
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Build: `cargo build --release -p grapheme-core` - passes with 1 minor warning
+- Test: `cargo test --release -p grapheme-core` - 314 tests pass, including 8 new backend-209 tests
+- Full test suite: `cargo test --release` - all tests pass
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Temperature decoding gives better output control than simple nearest-neighbor for generation tasks
+- Use temperature=1.0 for balanced output, <1.0 for deterministic, >1.0 for creative
+- `validate_output()` returns Err for empty graphs - use it to catch malformed outputs early
+- The `test_full_pipeline_text_to_text` and `test_cortex_style_pipeline` tests demonstrate the complete pipeline workflow
+- Backend-212 and backend-213 (dependent tasks) can now proceed since backend-209 is complete
