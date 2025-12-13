@@ -28,12 +28,15 @@ use thiserror::Error;
 // Module declarations
 pub mod backprop;
 pub mod code_loss;
+// Note: cortex_mesh has outdated imports, needs updating
+// pub mod cortex_mesh;
 pub mod graph_data;
 pub mod graph_trainer;
 pub mod graph_transform_net;
 pub mod humaneval_benchmark;
 pub mod humaneval_encoder;
 pub mod parallel_cortex;
+pub mod unified_cortex;
 
 // Re-export key types
 pub use backprop::{
@@ -90,6 +93,13 @@ pub use humaneval_benchmark::{
     HumanEvalBenchmark, ProblemEvaluation, GraphTransformer,
     IdentityTransformer, pass_at_k, quick_evaluate, full_evaluate,
     HUMANEVAL_SOTA, STANDARD_K_VALUES,
+};
+
+// Re-export unified cortex types (backend-213)
+pub use unified_cortex::{
+    UnifiedConfig, UnifiedCortex, UnifiedResult, UnifiedStats,
+    BrainEmbedding, CrossBrainAttention, FusionType,
+    unified_process, list_code_gen_cortices, CODE_GEN_CORTICES,
 };
 
 /// Training errors
