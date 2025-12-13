@@ -17,8 +17,24 @@
 //! - Deduction (SAT): NP-complete, mitigated with depth-bounded search and timeouts
 //!
 //! All implementations include complexity bounds and timeout mechanisms.
+//!
+//! ## Learnable Reasoning (backend-033)
+//!
+//! The `learnable` module provides gradient-based learning for reasoning:
+//! - Bayesian confidence updates for rules
+//! - Neural rule selection and ranking
+//! - Integration with GRAPHEME Protocol
 
 use grapheme_core::{DagNN, TransformRule};
+
+// Learnable reasoning module (backend-033)
+pub mod learnable;
+
+// Re-export learnable types
+pub use learnable::{
+    LearnableDeduction, LearnableRuleConfidence, NeuralRuleSelector,
+    LearnableReasoningConfig, RuleOutcome, LEAKY_RELU_ALPHA, DEFAULT_LEARNING_RATE,
+};
 use grapheme_memory::{GraphFingerprint, SemanticGraph};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};

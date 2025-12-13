@@ -11,6 +11,8 @@ description = "Reasoning engine for GRAPHEME: deduction, induction, abduction, a
 # Workspace dependencies
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
 
 # Graph processing
 petgraph = { workspace = true, features = ["serde-1"] }

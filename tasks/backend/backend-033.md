@@ -1,7 +1,7 @@
 ---
 id: backend-033
 title: Add learnable reasoning with rule confidence updating
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -28,35 +28,42 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Add learnable components to the reasoning system that can update rule confidences
+based on outcomes, enabling the system to learn which rules are more reliable.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create learnable rule confidence with Bayesian updates
+- Implement neural rule selection for ranking rules
+- Provide gradient flow for learning from reasoning outcomes
+- Integrate with the Deduction trait
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Implement LearnableRuleConfidence with Bayesian updates
+- [x] Implement NeuralRuleSelector with neural scoring
+- [x] Create LearnableDeduction implementing Deduction trait
+- [x] Add learn_from_proof for outcome-based learning
+- [x] Write comprehensive unit tests
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Bayesian Confidence Updates:**
+- Confidence increases on success, decreases on failure
+- Uses Laplace smoothing: (successes+1)/(applications+2)
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Neural Rule Selection:**
+- Rules scored by neural network based on input features
+- Combined score = neural_score * confidence
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses GRAPHEME Protocol: LeakyReLU (α=0.01), lr=0.001
+- NeuralRuleSelector: 18 input features → hidden_dim → score [0,1]
+- Bayesian update provides natural regularization for confidence
+- LearnableDeduction implements Deduction trait for seamless integration
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (12 new tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete (24 total)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
@@ -85,25 +92,34 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-reason/src/learnable.rs`
+- Updated `grapheme-reason/src/lib.rs` with module and re-exports
+- Updated `grapheme-reason/Cargo.toml` with ndarray and rand dependencies
+- Key structures:
+  - `LearnableRuleConfidence`: Bayesian confidence tracking for rules
+  - `NeuralRuleSelector`: Neural network for rule scoring
+  - `LearnableDeduction`: Deduction trait implementation with learning
+  - `RuleOutcome`: Success/Failure/Uncertain enum
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Outcome feedback: apply rule → observe outcome → update confidence
+- Bayesian update: (successes+1)/(applications+2) for natural regularization
+- Neural scoring: input features → hidden → sigmoid → score [0,1]
+- Combined ranking: neural_score * bayesian_confidence
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `ndarray.workspace = true` and `rand.workspace = true`
+- LearnableDeduction implements the Deduction trait
+- Uses GraphFingerprint for feature extraction (18 features)
+- learn_from_proof() updates confidences from reasoning traces
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-reason` - 24 tests pass
+- Clippy: `cargo clippy -p grapheme-reason -- -D warnings` - 0 warnings
+- 12 new tests in `learnable::tests` module
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Confidence uses Bayesian update, not gradient-based (more stable)
+- NeuralRuleSelector uses gradient-based learning for rule scoring
+- Combined score provides both learned preference and reliability
+- Match threshold is 0.7 for pattern matching
