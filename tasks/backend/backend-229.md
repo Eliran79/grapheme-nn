@@ -1,7 +1,7 @@
 ---
 id: backend-229
 title: Graph-only trainer (no text in loop)
-status: todo
+status: done
 priority: high
 tags:
 - backend

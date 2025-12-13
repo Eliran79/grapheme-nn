@@ -27,7 +27,9 @@ use thiserror::Error;
 
 // Module declarations
 pub mod backprop;
+pub mod code_loss;
 pub mod graph_data;
+pub mod graph_trainer;
 pub mod graph_transform_net;
 pub mod humaneval_encoder;
 
@@ -58,6 +60,19 @@ pub use graph_data::{
 // Re-export HumanEval encoder types (backend-228)
 pub use humaneval_encoder::{
     HumanEvalProblem, HumanEvalEncoder, HumanEvalEncodingResult, EncodingFailure,
+};
+
+// Re-export graph trainer types (backend-229)
+pub use graph_trainer::{
+    GraphTrainer, GraphTrainerConfig, TrainingHistory,
+    StructuralLoss, EvaluationResult, structural_loss, quick_train,
+    EpochMetrics as GraphEpochMetrics,
+};
+
+// Re-export code loss types (backend-230)
+pub use code_loss::{
+    CodeStructuralLoss, CodeLossConfig, NodeCategory, EdgeCategory,
+    OperationType, code_structural_loss, dagnn_code_loss, operation_distance,
 };
 
 /// Training errors
