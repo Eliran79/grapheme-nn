@@ -18,7 +18,7 @@ use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 // ============================================================================
@@ -405,10 +405,14 @@ pub struct DagNN {
     pub cliques: Vec<Clique>,
     /// Memory for learned transformations
     pub memory: GraphMemory,
-    /// Input nodes in order
-    input_nodes: Vec<NodeId>,
-    /// Output nodes
-    output_nodes: Vec<NodeId>,
+    /// Input nodes set for O(1) lookup
+    input_nodes: HashSet<NodeId>,
+    /// Input nodes in insertion order
+    input_nodes_order: Vec<NodeId>,
+    /// Output nodes set for O(1) lookup
+    output_nodes: HashSet<NodeId>,
+    /// Output nodes in insertion order
+    output_nodes_order: Vec<NodeId>,
 }
 
 impl Default for DagNN {
@@ -425,8 +429,10 @@ impl DagNN {
             topology: TopologicalOrder::new(),
             cliques: Vec::new(),
             memory: GraphMemory::new(1000),
-            input_nodes: Vec::new(),
-            output_nodes: Vec::new(),
+            input_nodes: HashSet::new(),
+            input_nodes_order: Vec::new(),
+            output_nodes: HashSet::new(),
+            output_nodes_order: Vec::new(),
         }
     }
 
@@ -438,7 +444,8 @@ impl DagNN {
 
         for (position, ch) in text.chars().enumerate() {
             let node = dag.graph.add_node(Node::input(ch, position));
-            dag.input_nodes.push(node);
+            dag.input_nodes.insert(node);
+            dag.input_nodes_order.push(node);
 
             // Connect to previous character
             if let Some(prev) = prev_node {
@@ -457,11 +464,12 @@ impl DagNN {
     /// Add a character to the graph
     pub fn add_character(&mut self, ch: char, position: usize) -> NodeId {
         let node = self.graph.add_node(Node::input(ch, position));
-        self.input_nodes.push(node);
+        self.input_nodes.insert(node);
+        self.input_nodes_order.push(node);
 
         // Connect to previous if exists
-        if self.input_nodes.len() > 1 {
-            let prev = self.input_nodes[self.input_nodes.len() - 2];
+        if self.input_nodes_order.len() > 1 {
+            let prev = self.input_nodes_order[self.input_nodes_order.len() - 2];
             self.graph.add_edge(prev, node, Edge::sequential());
         }
 
@@ -476,14 +484,16 @@ impl DagNN {
     /// Add an output node
     pub fn add_output(&mut self) -> NodeId {
         let node = self.graph.add_node(Node::output());
-        self.output_nodes.push(node);
+        self.output_nodes.insert(node);
+        self.output_nodes_order.push(node);
         node
     }
 
     /// Mark an existing node as an output node
     pub fn add_output_node(&mut self, node_id: NodeId) {
-        if !self.output_nodes.contains(&node_id) {
-            self.output_nodes.push(node_id);
+        if self.output_nodes.insert(node_id) {
+            // insert() returns true if the value was newly inserted
+            self.output_nodes_order.push(node_id);
         }
     }
 
@@ -547,19 +557,29 @@ impl DagNN {
         self.graph.edge_count()
     }
 
-    /// Get input nodes
+    /// Get input nodes (in insertion order)
     pub fn input_nodes(&self) -> &[NodeId] {
-        &self.input_nodes
+        &self.input_nodes_order
     }
 
-    /// Get output nodes
+    /// Get output nodes (in insertion order)
     pub fn output_nodes(&self) -> &[NodeId] {
-        &self.output_nodes
+        &self.output_nodes_order
+    }
+
+    /// Check if a node is an input node (O(1) lookup)
+    pub fn is_input_node(&self, node_id: NodeId) -> bool {
+        self.input_nodes.contains(&node_id)
+    }
+
+    /// Check if a node is an output node (O(1) lookup)
+    pub fn is_output_node(&self, node_id: NodeId) -> bool {
+        self.output_nodes.contains(&node_id)
     }
 
     /// Convert graph back to text
     pub fn to_text(&self) -> String {
-        self.input_nodes
+        self.input_nodes_order
             .iter()
             .filter_map(|&idx| {
                 if let NodeType::Input(ch) = self.graph[idx].node_type {
@@ -819,8 +839,8 @@ impl GraphBuilder for DagNN {
         // For now, group consecutive nodes as basic cliques
 
         // Collect windows first to avoid borrow conflict
-        let windows: Vec<Vec<NodeId>> = if self.input_nodes.len() >= 3 {
-            self.input_nodes.windows(3)
+        let windows: Vec<Vec<NodeId>> = if self.input_nodes_order.len() >= 3 {
+            self.input_nodes_order.windows(3)
                 .map(|w| w.to_vec())
                 .collect()
         } else {
@@ -860,7 +880,7 @@ impl GraphBuilder for DagNN {
 
     fn build_hierarchy(&mut self) -> HierarchicalGraph {
         // Level 0: raw input nodes
-        let level_0 = self.input_nodes.clone();
+        let level_0 = self.input_nodes_order.clone();
 
         // Level 1: cliques (if any)
         let level_1: Vec<NodeId> = self.cliques.iter()
@@ -1286,11 +1306,11 @@ impl PatternMatcher for DagNN {
 
         // Look for n-grams of size 2-5
         for window_size in 2..=5 {
-            if self.input_nodes.len() < window_size {
+            if self.input_nodes_order.len() < window_size {
                 continue;
             }
 
-            for window in self.input_nodes.windows(window_size) {
+            for window in self.input_nodes_order.windows(window_size) {
                 let pattern: Vec<NodeType> = window.iter()
                     .map(|&n| self.graph[n].node_type.clone())
                     .collect();
@@ -1351,7 +1371,7 @@ impl PatternMatcher for DagNN {
 
     fn extract_hierarchy(&self) -> PatternHierarchy {
         // Level 0: individual characters
-        let level_0: Vec<Pattern> = self.input_nodes.iter()
+        let level_0: Vec<Pattern> = self.input_nodes_order.iter()
             .enumerate()
             .map(|(id, &node)| {
                 Pattern::new(id, vec![self.graph[node].node_type.clone()])
@@ -1392,7 +1412,7 @@ impl DagNN {
         let mut chain = Vec::with_capacity(depth);
 
         // Add the input node
-        let position = self.input_nodes.len();
+        let position = self.input_nodes_order.len();
         let input_node = self.add_character(ch, position);
         chain.push(input_node);
 
