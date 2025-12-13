@@ -27,6 +27,7 @@ use thiserror::Error;
 
 // Module declarations
 pub mod backprop;
+pub mod graph_data;
 pub mod graph_transform_net;
 
 // Re-export key types
@@ -42,6 +43,15 @@ pub use graph_transform_net::{
     GraphTransformNet, GraphTransformNetConfig, ForwardOutput,
     NodeEdit, EdgeEdit, MessagePassingLayer,
     NodePredictionHead, EdgePredictionHead,
+};
+
+// Re-export graph data types (backend-227)
+pub use graph_data::{
+    GraphPair, GraphPairStats, GraphPairBuilder,
+    GraphDataset, GraphDatasetMetadata, DatasetStats,
+    GraphBatchIterator, GraphDataError, GraphDataResult,
+    GraphEncoder, EncoderRegistry,
+    create_chain_graph, create_tree_graph, create_random_dag,
 };
 
 /// Training errors

@@ -1,7 +1,7 @@
 ---
 id: backend-227
 title: Graph-only training data format
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -31,82 +31,94 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Stores training pairs as DagNN graphs without text intermediates, enabling pure graph-to-graph training following the GRAPHEME vision.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create binary serialization for efficient graph storage
+- Remove text from training loop - pure graph pairs
+- Provide batched I/O for high-throughput training
+- Track metadata for curriculum level management
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create `GraphPair` structure for input/output graph pairs
+- [x] Implement `GraphDataset` for collections of graph pairs
+- [x] Add binary serialization (bincode) for efficient storage
+- [x] Add JSON serialization for debugging/inspection
+- [x] Create batch iterator for training loops
+- [x] Implement graph builders (chain, tree, random DAG)
+- [x] Add `GraphEncoder` trait for domain-specific encoders
+- [x] Create `EncoderRegistry` for encoder management
+- [x] Write comprehensive unit tests (16 tests)
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Binary Format:**
+- Magic bytes for file identification
+- Version number for compatibility
+- Efficient bincode serialization
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Dataset API:**
+- Add/filter/split operations
+- Batch iteration support
+- Statistics computation
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses DagNN from grapheme-core as underlying graph representation
+- Binary format: GRPH magic + version + bincode data
+- GraphPair contains: id, input DagNN, output DagNN, level, domain, metadata
+- GraphDataset supports train/val/test splitting
+- Helper functions: create_chain_graph, create_tree_graph, create_random_dag
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (16 tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
 
 ## Updates
 - 2025-12-12: Task created
+- 2025-12-13: Task completed
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-train/src/graph_data.rs`
+- Updated `grapheme-train/src/lib.rs` with module and re-exports
+- Updated `grapheme-train/Cargo.toml` with bincode and tempfile deps
+- Key structures:
+  - `GraphPair`: Input/output DagNN pair with metadata
+  - `GraphDataset`: Collection with split/filter/batch operations
+  - `GraphBatchIterator`: Efficient batch iteration
+  - `GraphEncoder`: Trait for domain-specific encoders
+  - `EncoderRegistry`: Encoder management
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Training flow: load GraphDataset → batches() → train on GraphPair
+- Serialization: save_binary/load_binary for persistent storage
+- No text intermediates in training loop - pure graph-to-graph
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `bincode = "1.3"` for binary serialization
+- Added `tempfile = "3.10"` (dev-dependency) for tests
+- Re-exports from lib.rs: GraphPair, GraphDataset, GraphBatchIterator, etc.
+- Integrates with existing DagNN from grapheme-core
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train graph_data` - 16 tests pass
+- Run: `cargo test -p grapheme-train --lib` - 48 total tests pass
+- Clippy: `cargo clippy -p grapheme-train -- -D warnings` - 0 warnings
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- GraphPair.input/output are DagNN graphs (serializable with serde)
+- Binary format uses magic bytes [G,R,P,H] and version 1
+- GraphEncoder trait for backend-228 (pre-encoding HumanEval)
+- EncoderRegistry.register() accepts Box<dyn GraphEncoder + Send + Sync>
+- create_random_dag uses max_attempts to prevent infinite loops
