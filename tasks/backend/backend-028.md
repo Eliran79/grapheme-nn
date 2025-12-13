@@ -1,7 +1,7 @@
 ---
 id: backend-028
 title: Implement gradient descent training loop
-status: todo
+status: done
 priority: high
 tags:
 - backend
