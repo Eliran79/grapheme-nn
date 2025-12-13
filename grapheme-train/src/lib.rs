@@ -35,6 +35,7 @@ pub mod graph_trainer;
 pub mod graph_transform_net;
 pub mod humaneval_benchmark;
 pub mod humaneval_encoder;
+pub mod nl_math_pipeline;
 pub mod parallel_cortex;
 pub mod unified_cortex;
 
@@ -100,6 +101,12 @@ pub use unified_cortex::{
     UnifiedConfig, UnifiedCortex, UnifiedResult, UnifiedStats,
     BrainEmbedding, CrossBrainAttention, FusionType,
     unified_process, list_code_gen_cortices, CODE_GEN_CORTICES,
+};
+
+// Re-export NL to Math pipeline types (backend-030)
+pub use nl_math_pipeline::{
+    Pipeline, PipelineConfig, PipelineOutput, PipelineError, PipelineResult,
+    quick_evaluate as quick_nl_eval,
 };
 
 /// Training errors
