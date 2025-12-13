@@ -349,6 +349,14 @@ impl Optimizer for Adam {
     }
 }
 
+impl Default for Adam {
+    /// Returns Adam with default GRAPHEME protocol settings (lr=0.001)
+    /// Optimized for LeakyReLU + Dynamic Xavier networks
+    fn default() -> Self {
+        Self::new(0.001)
+    }
+}
+
 /// Learning rate scheduler types
 #[derive(Debug, Clone)]
 pub enum LRScheduler {

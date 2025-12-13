@@ -67,12 +67,27 @@ pub enum AggregationType {
 }
 
 /// Activation function types
+///
+/// **GRAPHEME Protocol**: Use `LeakyReLU` (fixed α=0.01) as the default.
+/// Standard ReLU is deprecated because it causes dead neurons.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ActivationType {
+    #[deprecated(since = "0.1.0", note = "Use LeakyReLU per GRAPHEME protocol - ReLU causes dead neurons")]
     ReLU,
     Tanh,
     Sigmoid,
-    LeakyReLU(f32),
+    /// LeakyReLU with fixed α=0.01 (GRAPHEME protocol)
+    LeakyReLU,
+}
+
+/// Fixed LeakyReLU alpha per GRAPHEME protocol
+pub const LEAKY_RELU_ALPHA: f32 = 0.01;
+
+impl Default for ActivationType {
+    /// Returns `LeakyReLU` (α=0.01) per GRAPHEME protocol
+    fn default() -> Self {
+        Self::LeakyReLU
+    }
 }
 
 /// Combination operation types
@@ -360,9 +375,10 @@ impl Tape {
                     self.gradients.get(output_idx).cloned(),
                     self.values.get(input_idx).cloned(),
                 ) {
+                    #[allow(deprecated)]
                     let local_grad = match act_type {
                         ActivationType::ReLU => {
-                            // ReLU: grad * (input > 0)
+                            // ReLU: grad * (input > 0) - DEPRECATED
                             input.mapv(|x| if x > 0.0 { 1.0 } else { 0.0 })
                         }
                         ActivationType::Tanh => {
@@ -376,9 +392,9 @@ impl Tape {
                                 s * (1.0 - s)
                             })
                         }
-                        ActivationType::LeakyReLU(alpha) => {
-                            // LeakyReLU: grad * (1 if x > 0 else alpha)
-                            input.mapv(|x| if x > 0.0 { 1.0 } else { *alpha })
+                        ActivationType::LeakyReLU => {
+                            // LeakyReLU: grad * (1 if x > 0 else α=0.01)
+                            input.mapv(|x| if x > 0.0 { 1.0 } else { LEAKY_RELU_ALPHA })
                         }
                     };
                     let combined_grad = &grad * &local_grad;
@@ -763,11 +779,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_activation_backward_relu() {
         let mut tape = Tape::new();
 
         let input: Array1<f32> = Array1::from_vec(vec![-1.0, 0.0, 1.0, 2.0]);
-        let output = input.mapv(|x: f32| x.max(0.0)); // ReLU forward
+        let output = input.mapv(|x: f32| x.max(0.0)); // ReLU forward (deprecated)
 
         let input_idx = tape.store_value(input);
         let output_idx = tape.record_activation(input_idx, output, ActivationType::ReLU);

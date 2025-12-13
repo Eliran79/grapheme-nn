@@ -47,15 +47,26 @@ use thiserror::Error;
 /// Initialization strategy for neural network weights (GRAPHEME protocol).
 ///
 /// GRAPHEME uses **Dynamic Xavier** - weights are reinitialized when topology changes.
-/// LeakyReLU is used everywhere instead of standard ReLU.
-#[derive(Debug, Clone, Copy)]
+/// LeakyReLU (α=0.01) is used everywhere instead of standard ReLU.
+/// Adam optimizer is the default for training.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitStrategy {
-    /// Dynamic Xavier/Glorot initialization (recompute on topology change)
+    /// Dynamic Xavier/Glorot initialization - recomputes when topology changes (GRAPHEME protocol)
+    DynamicXavier,
+    #[deprecated(since = "0.1.0", note = "Use DynamicXavier per GRAPHEME protocol")]
+    /// Static Xavier - deprecated, use DynamicXavier instead
     Xavier,
     /// He initialization (for LeakyReLU networks)
     He,
     /// Random uniform initialization
     Uniform,
+}
+
+impl Default for InitStrategy {
+    /// Returns `DynamicXavier` per GRAPHEME protocol (optimized with Adam)
+    fn default() -> Self {
+        Self::DynamicXavier
+    }
 }
 
 /// Simple embedding layer for mapping discrete inputs to vectors.
@@ -3008,7 +3019,8 @@ impl ImageClassificationModel {
     /// Combines gradient descent with optional Hebbian learning, both using Adam.
     fn apply_adam_edge_updates(&mut self, output_gradient: &[f32]) -> VisionResult<()> {
         // Compute gradients via backpropagation (LeakyReLU)
-        let mut dummy_embedding = Embedding::new(256, 16, InitStrategy::Xavier);
+        #[allow(deprecated)]
+        let mut dummy_embedding = Embedding::new(256, 16, InitStrategy::DynamicXavier);
         let grads = self.dag.backward(output_gradient, &mut dummy_embedding);
 
         // Collect edge updates with Adam
