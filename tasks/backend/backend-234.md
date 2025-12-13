@@ -1,7 +1,7 @@
 ---
 id: backend-234
 title: Deprecate ReLU and Xavier - Enforce LeakyReLU + Dynamic Xavier
-status: doing
+status: done
 priority: high
 tags:
 - backend
