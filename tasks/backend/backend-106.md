@@ -14,7 +14,9 @@ complexity: 3
 area: backend
 ---
 
-# Implement per-node activation functions (ReLU, Sigmoid, Tanh, Linear)
+# Implement per-node activation functions (LeakyReLU, Sigmoid, Tanh, Linear)
+
+> **⚠️ GRAPHEME Protocol:** ReLU is DEPRECATED. Use LeakyReLU (fixed α=0.01) as the default activation.
 
 > **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
 >
@@ -59,8 +61,10 @@ For the neuromorphic forward pass (backend-107), each node needs its own activat
 ✅ **Node Integration:**
 - All nodes have activation_fn and pre_activation fields
 - Input/Output nodes default to Linear
-- Hidden/Clique/Pattern nodes default to ReLU
+- Hidden/Clique/Pattern nodes default to LeakyReLU (GRAPHEME protocol, α=0.01)
 - `set_pre_activation()` computes and caches activation
+
+> **⚠️ GRAPHEME Protocol Note:** ReLU is deprecated. Use LeakyReLU (fixed α=0.01) everywhere.
 
 ## Technical Notes
 ### API
