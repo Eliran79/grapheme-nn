@@ -27,6 +27,7 @@ use thiserror::Error;
 
 // Module declarations
 pub mod backprop;
+pub mod graph_transform_net;
 
 // Re-export key types
 pub use backprop::{
@@ -34,6 +35,13 @@ pub use backprop::{
     GradientCheckResult, MessagePassingBackward, Tape, TapeOp,
     clip_grad_norm, clip_grad_value, gradient_check,
     reverse_topological_sort, topological_sort,
+};
+
+// Re-export GraphTransformNet types (backend-029)
+pub use graph_transform_net::{
+    GraphTransformNet, GraphTransformNetConfig, ForwardOutput,
+    NodeEdit, EdgeEdit, MessagePassingLayer,
+    NodePredictionHead, EdgePredictionHead,
 };
 
 /// Training errors
