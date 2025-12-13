@@ -363,7 +363,7 @@ impl ChemBrain {
 
             for (src, tgt, new_weight) in edges_to_update {
                 if let Some(edge) = result.graph.find_edge(src, tgt) {
-                    result.graph[edge].weight = new_weight.max(0.1).min(2.0);
+                    result.graph[edge].weight = new_weight.clamp(0.1, 2.0);
                 }
             }
         }
