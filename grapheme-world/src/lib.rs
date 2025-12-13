@@ -14,8 +14,24 @@
 //! - Dynamics (transition rules for how things change)
 //!
 //! This enables planning, counterfactual reasoning, and mental simulation.
+//!
+//! ## Learnable World Model (backend-034)
+//!
+//! The `learnable` module provides gradient-based learning for world models:
+//! - Learnable state encoders for fixed-size representations
+//! - Learnable transition dynamics for predicting next states
+//! - Learnable action effects for modeling interventions
 
 use grapheme_core::{DagNN, TransformRule};
+
+// Learnable world model module (backend-034)
+pub mod learnable;
+
+// Re-export learnable types
+pub use learnable::{
+    LearnableWorldModel, LearnableWorldConfig, StateEncoder,
+    ActionEncoder, LearnableTransition, LEAKY_RELU_ALPHA, DEFAULT_LEARNING_RATE,
+};
 use grapheme_reason::CausalGraph;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;

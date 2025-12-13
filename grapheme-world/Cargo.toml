@@ -11,6 +11,8 @@ description = "World model for GRAPHEME: simulation, prediction, and counterfact
 # Workspace dependencies
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
 
 # Graph processing
 petgraph = { workspace = true, features = ["serde-1"] }
@@ -18,6 +20,7 @@ petgraph = { workspace = true, features = ["serde-1"] }
 # Core crates
 grapheme-core = { path = "../grapheme-core" }
 grapheme-reason = { path = "../grapheme-reason" }
+grapheme-memory = { path = "../grapheme-memory" }
 
 [dev-dependencies]
 criterion.workspace = true

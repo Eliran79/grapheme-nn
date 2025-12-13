@@ -1,7 +1,7 @@
 ---
 id: backend-034
 title: Add learnable world model with transition dynamics
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -28,35 +28,44 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Add learnable components to the world model for predicting future states,
+enabling the system to learn transition dynamics from observed experiences.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create learnable state encoders for fixed-size representations
+- Implement learnable transition dynamics for predicting next states
+- Add action encoding for modeling interventions
+- Enable experience-based learning from observed transitions
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Implement StateEncoder with entity/relation encoding
+- [x] Implement ActionEncoder with softmax output
+- [x] Create LearnableTransition for state prediction
+- [x] Build LearnableWorldModel combining all components
+- [x] Add observe_transition for experience collection
+- [x] Implement imagine for multi-step prediction
+- [x] Write comprehensive unit tests
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **State Encoding:**
+- Encodes entities and relations separately
+- Produces L2-normalized fixed-size embeddings
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Transition Dynamics:**
+- Predicts next state from current state + action
+- Supports multi-step imagination/planning
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses GRAPHEME Protocol: LeakyReLU (α=0.01), lr=0.001, DynamicXavier
+- StateEncoder: 18 features each for entities/relations → combined → embed_dim
+- LearnableTransition: (embed_dim + action_dim) → hidden → embed_dim
+- ActionEncoder: softmax for action distribution
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (13 new tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete (26 total)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
@@ -85,25 +94,33 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-world/src/learnable.rs`
+- Updated `grapheme-world/src/lib.rs` with module and re-exports
+- Updated `grapheme-world/Cargo.toml` with ndarray, rand, grapheme-memory deps
+- Key structures:
+  - `StateEncoder`: Encodes WorldState (entities+relations) to embedding
+  - `ActionEncoder`: Encodes action graphs to action distribution
+  - `LearnableTransition`: Predicts next state embedding
+  - `LearnableWorldModel`: Complete world model with learning
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Prediction flow: state + action → LearnableTransition → next_state_embed
+- Learning: observe_transition → experience_buffer → compute_prediction_loss
+- Imagination: initial_state + [actions] → [predicted_state_embeddings]
+- All components use GRAPHEME Protocol (LeakyReLU α=0.01)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `ndarray.workspace = true`, `rand.workspace = true`, `grapheme-memory`
+- Re-exports from lib.rs: LearnableWorldModel, StateEncoder, ActionEncoder, etc.
+- Integrates with existing WorldState and Graph types
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-world` - 26 tests pass
+- Clippy: `cargo clippy -p grapheme-world -- -D warnings` - 0 warnings
+- 13 new tests in `learnable::tests` module
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- State embeddings are L2-normalized for cosine similarity
+- Action embeddings use softmax for probability distribution
+- Experience buffer limited to 1000 examples (FIFO)
+- imagine() returns list of state embeddings including initial state
