@@ -1,7 +1,7 @@
 ---
 id: backend-228
 title: Pre-encode HumanEval to graph pairs
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -32,82 +32,89 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Pre-encodes HumanEval benchmark problems to graph pairs for pure graph-to-graph training.
+This eliminates text processing from the training loop.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Load HumanEval problems from JSONL format
+- Convert prompt → CodeGraph (input)
+- Convert prompt + solution → CodeGraph (output)
+- Store as GraphPair in GraphDataset format
+- Save to binary format for graph-only training
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create `HumanEvalProblem` struct matching JSONL format
+- [x] Implement `HumanEvalEncoder` for loading and encoding
+- [x] Add `encode_problem()` for single problem encoding
+- [x] Add `encode_dataset()` for batch encoding with stats
+- [x] Implement CodeGraph → DagNN conversion
+- [x] Add complexity level heuristic based on solution size
+- [x] Write comprehensive unit tests (9 tests)
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Problem Loading:**
+- Parses HumanEval JSONL format correctly
+- Handles all fields (task_id, prompt, canonical_solution, test, entry_point)
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Graph Encoding:**
+- Converts code to CodeGraph via CodeBrain
+- Converts CodeGraph to DagNN for storage
+- Input graph = prompt only, Output graph = full code
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses CodeBrain.parse_code() for code → CodeGraph
+- code_graph_to_dagnn() converts to DagNN preserving structure
+- Activation values encode node types (Function: 0.9, Literal: 0.3, etc.)
+- Complexity levels 1-5 based on solution lines and chars
+- HumanEvalEncodingResult tracks success rate and failures
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (9 tests)
+- [x] Ensure all tests pass before marking task complete (57 total)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
 
 ## Updates
 - 2025-12-12: Task created
+- 2025-12-13: Task completed
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-train/src/humaneval_encoder.rs`
+- Updated `grapheme-train/src/lib.rs` with module and re-exports
+- Key structures:
+  - `HumanEvalProblem`: JSONL format with task_id, prompt, canonical_solution, test, entry_point
+  - `HumanEvalEncoder`: Main encoder with load_problems() and encode_dataset()
+  - `HumanEvalEncodingResult`: Stats with dataset, total, successes, failures
+  - `EncodingFailure`: Details about failed encodings
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Encoding flow: JSONL → HumanEvalProblem → GraphPair (via CodeBrain)
+- Code parsing: CodeBrain.parse_code() → CodeGraph → DagNN
+- Node activations encode semantics: Function=0.9, Call=0.8, Literal=0.3, etc.
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses CodeBrain from grapheme-code for code parsing
+- Uses GraphPair/GraphDataset from graph_data module (backend-227)
+- Re-exports from lib.rs: HumanEvalEncoder, HumanEvalProblem, HumanEvalEncodingResult, EncodingFailure
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-train humaneval_encoder` - 9 tests pass
+- Run: `cargo test -p grapheme-train --lib` - 57 total tests pass
+- Clippy: `cargo clippy -p grapheme-train -- -D warnings` - 0 warnings
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- HumanEval data at: datasets/external/humaneval.parquet (or JSONL format)
+- Use HumanEvalEncoder::encode_dataset() to create GraphDataset
+- Save with dataset.save_binary() for graph-only training
+- Complexity levels 1-5 help with curriculum learning
+- Input graph is prompt only, output is full function code

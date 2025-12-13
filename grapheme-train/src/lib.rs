@@ -29,6 +29,7 @@ use thiserror::Error;
 pub mod backprop;
 pub mod graph_data;
 pub mod graph_transform_net;
+pub mod humaneval_encoder;
 
 // Re-export key types
 pub use backprop::{
@@ -52,6 +53,11 @@ pub use graph_data::{
     GraphBatchIterator, GraphDataError, GraphDataResult,
     GraphEncoder, EncoderRegistry,
     create_chain_graph, create_tree_graph, create_random_dag,
+};
+
+// Re-export HumanEval encoder types (backend-228)
+pub use humaneval_encoder::{
+    HumanEvalProblem, HumanEvalEncoder, HumanEvalEncodingResult, EncodingFailure,
 };
 
 /// Training errors
