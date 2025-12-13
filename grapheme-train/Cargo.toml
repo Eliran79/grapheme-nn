@@ -60,3 +60,7 @@ tempfile = "3.10"
 [[bench]]
 name = "train_bench"
 harness = false
+
+[[bench]]
+name = "efficiency_bench"
+harness = false

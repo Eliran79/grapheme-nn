@@ -1,7 +1,7 @@
 ---
 id: testing-004
 title: Benchmark GRAPHEME vs transformer efficiency
-status: todo
+status: done
 priority: medium
 tags:
 - testing
