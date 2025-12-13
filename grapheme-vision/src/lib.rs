@@ -44,12 +44,15 @@ use thiserror::Error;
 // Neural API Stubs (for vision-specific neural components)
 // ============================================================================
 
-/// Initialization strategy for neural network weights.
+/// Initialization strategy for neural network weights (GRAPHEME protocol).
+///
+/// GRAPHEME uses **Dynamic Xavier** - weights are reinitialized when topology changes.
+/// LeakyReLU is used everywhere instead of standard ReLU.
 #[derive(Debug, Clone, Copy)]
 pub enum InitStrategy {
-    /// Xavier/Glorot initialization
+    /// Dynamic Xavier/Glorot initialization (recompute on topology change)
     Xavier,
-    /// He initialization (for ReLU networks)
+    /// He initialization (for LeakyReLU networks)
     He,
     /// Random uniform initialization
     Uniform,
@@ -2751,7 +2754,7 @@ impl ImageClassificationModel {
     /// - max_vision_nodes input nodes (configurable for VisionGraph size)
     /// - hidden_size hidden nodes
     /// - num_classes output nodes (from ClassificationConfig)
-    /// - Xavier-initialized edge weights
+    /// - Dynamic Xavier-initialized edge weights (GRAPHEME protocol)
     pub fn with_config(config: ImageClassificationConfig) -> Self {
         let classification = ClassificationBrain::new(config.classification.clone());
 

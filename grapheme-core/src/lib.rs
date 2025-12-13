@@ -517,8 +517,10 @@ impl DagNN {
             // Sum weighted activations
             let total: f32 = incoming.iter().map(|(_, w)| w).sum();
 
-            // Apply activation (simple ReLU-like: max(0, x))
-            self.graph[node_id].activation = total.max(0.0);
+            // Apply LeakyReLU activation (GRAPHEME protocol)
+            // LeakyReLU: x if x > 0 else 0.01 * x
+            let alpha = 0.01;
+            self.graph[node_id].activation = if total > 0.0 { total } else { alpha * total };
         }
 
         Ok(())
@@ -921,9 +923,12 @@ impl ForwardPass for DagNN {
                 incoming_count += 1;
             }
 
-            // Apply activation function (simple ReLU-like)
+            // Apply LeakyReLU with dynamic √n normalization (GRAPHEME protocol)
             if incoming_count > 0 {
-                let new_activation = (incoming_sum / incoming_count as f32).clamp(0.0, 1.0);
+                let scale = 1.0 / (incoming_count as f32).sqrt();
+                let normalized = scale * incoming_sum;
+                let alpha = 0.01;
+                let new_activation = if normalized > 0.0 { normalized } else { alpha * normalized };
                 self.graph[node].activation = new_activation;
             }
             // Input nodes keep their original activation

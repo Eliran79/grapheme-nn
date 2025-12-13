@@ -98,7 +98,8 @@ impl SemanticDecoder {
         let vocab_size = vocab.len();
         let hidden_dim = config.hidden_dim;
 
-        // Initialize type embeddings with Xavier initialization
+        // Initialize type embeddings with Dynamic Xavier (GRAPHEME protocol)
+        // Scale recomputed when dimensions change: sqrt(2 / (fan_in + fan_out))
         let scale = (2.0 / (vocab_size + hidden_dim) as f32).sqrt();
         let mut rng = rand::thread_rng();
 
@@ -110,7 +111,7 @@ impl SemanticDecoder {
             })
             .collect();
 
-        // Initialize output projection with Xavier initialization
+        // Initialize output projection with Dynamic Xavier (GRAPHEME protocol)
         let output_projection: Vec<Vec<f32>> = (0..hidden_dim)
             .map(|_| {
                 (0..vocab_size)
