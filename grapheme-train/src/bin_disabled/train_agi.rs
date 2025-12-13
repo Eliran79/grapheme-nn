@@ -280,7 +280,8 @@ fn train_batch(
     let mut batch_loss = 0.0;
 
     // Create embedding for gradient accumulation
-    let mut embedding = Embedding::new(256, 64, InitStrategy::Xavier);  // vocab_size=256, embed_dim=64
+    #[allow(deprecated)]
+    let mut embedding = Embedding::new(256, 64, InitStrategy::DynamicXavier);  // vocab_size=256, embed_dim=64 (GRAPHEME protocol)
 
     // Zero gradients at start of batch
     dag.zero_grad();

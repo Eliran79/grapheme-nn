@@ -414,7 +414,8 @@ pub struct MemoryOnlineLearner {
 impl MemoryOnlineLearner {
     /// Create a new memory-integrated online learner
     pub fn new(model: DagNN, config: OnlineLearnerConfig) -> Self {
-        let embedding = Embedding::new(256, 64, InitStrategy::Xavier);
+        #[allow(deprecated)]
+        let embedding = Embedding::new(256, 64, InitStrategy::DynamicXavier);
         let episodic_memory = SimpleEpisodicMemory::new(Some(config.replay_capacity));
         let continual_learning = SimpleContinualLearning::new(config.replay_capacity);
         let rng_seed = SystemTime::now()

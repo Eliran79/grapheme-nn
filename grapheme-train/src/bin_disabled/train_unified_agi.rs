@@ -166,7 +166,8 @@ impl SharedAGIModel {
         }
 
         // Create embedding for gradient tracking
-        let embedding = Embedding::new(256, 64, InitStrategy::Xavier);
+        #[allow(deprecated)]
+        let embedding = Embedding::new(256, 64, InitStrategy::DynamicXavier);
 
         Self {
             dag,
