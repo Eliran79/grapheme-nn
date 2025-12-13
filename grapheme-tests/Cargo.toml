@@ -1,0 +1,33 @@
+[package]
+name = "grapheme-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Workspace crates to test
+grapheme-engine = { path = "../grapheme-engine" }
+grapheme-polish = { path = "../grapheme-polish" }
+grapheme-core = { path = "../grapheme-core" }
+grapheme-agent = { path = "../grapheme-agent" }
+grapheme-multimodal = { path = "../grapheme-multimodal" }
+grapheme-ground = { path = "../grapheme-ground" }
+grapheme-world = { path = "../grapheme-world" }
+ndarray.workspace = true
+
+# Test utilities
+rand.workspace = true
+
+[[test]]
+name = "integration_pipeline"
+path = "tests/integration_pipeline.rs"
+
+[[test]]
+name = "integration_robustness"
+path = "tests/integration_robustness.rs"
+
+[[test]]
+name = "integration_cognitive"
+path = "tests/integration_cognitive.rs"

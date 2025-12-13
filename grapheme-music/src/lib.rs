@@ -1,0 +1,615 @@
+//! # grapheme-music
+//!
+//! Music Brain: Music theory and composition analysis for GRAPHEME.
+//!
+//! This crate provides:
+//! - Music notation node types (Note, Chord, Scale, Rhythm)
+//! - Music theory graph construction
+//! - Harmonic analysis and chord progression
+//! - Composition structure representation
+
+use grapheme_core::{
+    DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
+    ExecutionResult, ValidationIssue, ValidationSeverity,
+};
+use petgraph::graph::{DiGraph, NodeIndex};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors in music graph processing
+#[derive(Error, Debug)]
+pub enum MusicGraphError {
+    #[error("Invalid note: {0}")]
+    InvalidNote(String),
+    #[error("Invalid chord: {0}")]
+    InvalidChord(String),
+    #[error("Rhythm error: {0}")]
+    RhythmError(String),
+}
+
+/// Result type for music graph operations
+pub type MusicGraphResult<T> = Result<T, MusicGraphError>;
+
+/// Musical note names
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NoteName {
+    C, CSharp, D, DSharp, E, F, FSharp, G, GSharp, A, ASharp, B,
+}
+
+impl NoteName {
+    /// Get semitone offset from C
+    pub fn semitone(&self) -> u8 {
+        match self {
+            NoteName::C => 0,
+            NoteName::CSharp => 1,
+            NoteName::D => 2,
+            NoteName::DSharp => 3,
+            NoteName::E => 4,
+            NoteName::F => 5,
+            NoteName::FSharp => 6,
+            NoteName::G => 7,
+            NoteName::GSharp => 8,
+            NoteName::A => 9,
+            NoteName::ASharp => 10,
+            NoteName::B => 11,
+        }
+    }
+}
+
+/// Music node types
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MusicNode {
+    /// A musical note
+    Note {
+        name: NoteName,
+        octave: i8,
+        duration: Duration,
+    },
+    /// A chord
+    Chord {
+        root: NoteName,
+        quality: ChordQuality,
+    },
+    /// A scale
+    Scale {
+        root: NoteName,
+        mode: ScaleMode,
+    },
+    /// Time signature
+    TimeSignature {
+        numerator: u8,
+        denominator: u8,
+    },
+    /// Key signature
+    KeySignature {
+        root: NoteName,
+        mode: ScaleMode,
+    },
+    /// Tempo marking
+    Tempo(u16),
+    /// Rest
+    Rest(Duration),
+    /// Measure/bar
+    Measure(u32),
+    /// Dynamic marking
+    Dynamic(DynamicLevel),
+    /// Articulation
+    Articulation(ArticulationType),
+}
+
+/// Note/rest duration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Duration {
+    Whole,
+    Half,
+    #[default]
+    Quarter,
+    Eighth,
+    Sixteenth,
+    ThirtySecond,
+}
+
+/// Chord quality
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ChordQuality {
+    #[default]
+    Major,
+    Minor,
+    Diminished,
+    Augmented,
+    Dominant7,
+    Major7,
+    Minor7,
+    Suspended2,
+    Suspended4,
+}
+
+/// Scale mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ScaleMode {
+    #[default]
+    Major,
+    Minor,
+    Dorian,
+    Phrygian,
+    Lydian,
+    Mixolydian,
+    Locrian,
+    Pentatonic,
+    Blues,
+}
+
+/// Dynamic levels
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DynamicLevel {
+    Pianissimo,
+    Piano,
+    MezzoPiano,
+    MezzoForte,
+    Forte,
+    Fortissimo,
+}
+
+/// Articulation types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArticulationType {
+    Staccato,
+    Legato,
+    Accent,
+    Tenuto,
+    Fermata,
+}
+
+/// Edge types in music graphs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MusicEdge {
+    /// Sequential (next in time)
+    Next,
+    /// Simultaneous (chord/harmony)
+    Simultaneous,
+    /// Part of (note in chord)
+    PartOf,
+    /// Resolves to
+    ResolvesTo,
+    /// Modulates to
+    ModulatesTo,
+    /// In measure
+    InMeasure,
+}
+
+/// A music piece represented as a graph
+#[derive(Debug)]
+pub struct MusicGraph {
+    /// The underlying directed graph
+    pub graph: DiGraph<MusicNode, MusicEdge>,
+    /// Root node
+    pub root: Option<NodeIndex>,
+}
+
+impl Default for MusicGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MusicGraph {
+    /// Create a new empty music graph
+    pub fn new() -> Self {
+        Self {
+            graph: DiGraph::new(),
+            root: None,
+        }
+    }
+
+    /// Add a node
+    pub fn add_node(&mut self, node: MusicNode) -> NodeIndex {
+        self.graph.add_node(node)
+    }
+
+    /// Add an edge
+    pub fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, edge: MusicEdge) {
+        self.graph.add_edge(from, to, edge);
+    }
+
+    /// Get node count
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// Parse a simple note string (e.g., "C4", "D#5")
+    pub fn parse_note(note_str: &str) -> MusicGraphResult<Self> {
+        let mut graph = Self::new();
+        let trimmed = note_str.trim().to_uppercase();
+
+        if trimmed.is_empty() {
+            return Err(MusicGraphError::InvalidNote("Empty note".to_string()));
+        }
+
+        // Parse note name
+        let (name, rest) = if trimmed.len() >= 2 && trimmed.chars().nth(1) == Some('#') {
+            let name = match trimmed.chars().next().unwrap() {
+                'C' => NoteName::CSharp,
+                'D' => NoteName::DSharp,
+                'F' => NoteName::FSharp,
+                'G' => NoteName::GSharp,
+                'A' => NoteName::ASharp,
+                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid sharp note: {}", trimmed))),
+            };
+            (name, &trimmed[2..])
+        } else {
+            let name = match trimmed.chars().next().unwrap() {
+                'C' => NoteName::C,
+                'D' => NoteName::D,
+                'E' => NoteName::E,
+                'F' => NoteName::F,
+                'G' => NoteName::G,
+                'A' => NoteName::A,
+                'B' => NoteName::B,
+                _ => return Err(MusicGraphError::InvalidNote(format!("Invalid note: {}", trimmed))),
+            };
+            (name, &trimmed[1..])
+        };
+
+        // Parse octave
+        let octave = rest.parse::<i8>().unwrap_or(4);
+
+        let node = graph.add_node(MusicNode::Note {
+            name,
+            octave,
+            duration: Duration::Quarter,
+        });
+        graph.root = Some(node);
+
+        Ok(graph)
+    }
+}
+
+// ============================================================================
+// Music Brain
+// ============================================================================
+
+/// The Music Brain for music theory analysis
+pub struct MusicBrain;
+
+impl Default for MusicBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for MusicBrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MusicBrain")
+            .field("domain", &"music")
+            .finish()
+    }
+}
+
+impl MusicBrain {
+    /// Create a new music brain
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Check if text looks like music notation
+    fn looks_like_music(&self, input: &str) -> bool {
+        let music_patterns = [
+            "note", "chord", "scale", "key",
+            "major", "minor", "tempo", "bpm",
+            "measure", "bar", "beat", "rhythm",
+            "sharp", "flat", "natural",
+            "piano", "forte", "crescendo",
+            "staccato", "legato", "harmony",
+        ];
+        let lower = input.to_lowercase();
+        music_patterns.iter().any(|p| lower.contains(p))
+            // Also check for note patterns like C4, D#5
+            || input.chars().any(|c| "CDEFGAB".contains(c))
+    }
+
+    // ========================================================================
+    // Graph Transform Helper Methods
+    // ========================================================================
+
+    /// Voice Leading: Smooth melodic transitions between chords.
+    /// Strengthens edges between nodes with similar activation levels,
+    /// promoting smooth melodic lines rather than large jumps.
+    fn voice_leading(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Strengthen edges where source and target have similar activations
+        // This promotes smooth voice leading (small intervals)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                let source = edge.source();
+                let target = edge.target();
+                let src_act = result.graph[source].activation;
+                let tgt_act = result.graph[target].activation;
+                let diff = (src_act - tgt_act).abs();
+                // Strengthen edges with similar activations (smooth transitions)
+                if diff < 0.3 {
+                    Some((source, target, edge.weight().weight * 1.2))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    /// Chord Progression: Apply common chord progression patterns.
+    /// Identifies and strengthens common harmonic progressions (I-IV-V-I patterns).
+    fn chord_progression(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Strengthen sequential edges (chord progressions are sequential)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                if matches!(edge.weight().edge_type, grapheme_core::EdgeType::Sequential) {
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.15))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    /// Key Detection: Identify the key of a piece.
+    /// Updates topology and strengthens high-activation nodes (key centers).
+    fn key_detection(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Find high-activation nodes (potential key centers)
+        let key_nodes = result.get_nodes_by_activation(0.7);
+
+        // Strengthen all edges connected to key nodes
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                if key_nodes.contains(&edge.source()) || key_nodes.contains(&edge.target()) {
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.25))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    /// Rhythm Quantization: Align notes to beat grid.
+    /// Prunes very weak edges to create cleaner rhythmic structure.
+    fn rhythm_quantization(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let mut result = graph.clone();
+
+        // Quantize by pruning weak edges (off-beat artifacts)
+        // and normalizing remaining edge weights
+        result.prune_weak_edges(0.15);
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+}
+
+// ============================================================================
+// DomainBrain Implementation
+// ============================================================================
+
+impl DomainBrain for MusicBrain {
+    fn domain_id(&self) -> &str {
+        "music"
+    }
+
+    fn domain_name(&self) -> &str {
+        "Music Theory"
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+
+    fn can_process(&self, input: &str) -> bool {
+        self.looks_like_music(input)
+    }
+
+    fn parse(&self, input: &str) -> DomainResult<DagNN> {
+        DagNN::from_text(input).map_err(|e| e.into())
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Convert core graph to music domain representation
+        // Strengthen sequential edges (melodic lines) and semantic edges (harmonic)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                match edge.weight().edge_type {
+                    grapheme_core::EdgeType::Sequential => {
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.1))
+                    }
+                    grapheme_core::EdgeType::Semantic => {
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.15))
+                    }
+                    _ => None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let mut result = graph.clone();
+
+        // Convert music domain back to core representation
+        // Normalize weights and update topology
+        result.prune_weak_edges(0.05);
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
+        let mut issues = Vec::new();
+
+        if graph.input_nodes().is_empty() {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Empty music graph".to_string(),
+                location: None,
+            });
+        }
+
+        Ok(issues)
+    }
+
+    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
+        let text = graph.to_text();
+        Ok(ExecutionResult::Text(format!("Music: {}", text)))
+    }
+
+    fn get_rules(&self) -> Vec<DomainRule> {
+        vec![
+            DomainRule::new(0, "Voice Leading", "Smooth melodic transitions between chords"),
+            DomainRule::new(1, "Chord Progression", "Common chord progression patterns"),
+            DomainRule::new(2, "Key Detection", "Identify the key of a piece"),
+            DomainRule::new(3, "Rhythm Quantization", "Align notes to beat grid"),
+        ]
+    }
+
+    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
+        // Music transforms are patterns learned from music theory and compositions.
+        // These provide structural graph operations as scaffolding.
+        match rule_id {
+            0 => self.voice_leading(graph),
+            1 => self.chord_progression(graph),
+            2 => self.key_detection(graph),
+            3 => self.rhythm_quantization(graph),
+            _ => Err(grapheme_core::DomainError::InvalidInput(
+                format!("Unknown rule ID: {}", rule_id)
+            )),
+        }
+    }
+
+    fn generate_examples(&self, count: usize) -> Vec<DomainExample> {
+        let mut examples = Vec::with_capacity(count);
+
+        let patterns = [
+            ("C major", "C E G"),
+            ("D minor", "D F A"),
+            ("G7", "G B D F"),
+            ("Am", "A C E"),
+        ];
+
+        for i in 0..count {
+            let (input, output) = patterns[i % patterns.len()];
+
+            if let (Ok(input_graph), Ok(output_graph)) = (
+                DagNN::from_text(input),
+                DagNN::from_text(output),
+            ) {
+                let difficulty = ((i % 5) + 1) as u8;
+                examples.push(
+                    DomainExample::new(
+                        serde_json::to_string(&input_graph).unwrap_or_default(),
+                        serde_json::to_string(&output_graph).unwrap_or_default()
+                    )
+                    .with_metadata("domain", "music")
+                    .with_metadata("difficulty", format!("{}", difficulty))
+                );
+            }
+        }
+
+        examples
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_note_semitones() {
+        assert_eq!(NoteName::C.semitone(), 0);
+        assert_eq!(NoteName::A.semitone(), 9);
+    }
+
+    #[test]
+    fn test_parse_note() {
+        let graph = MusicGraph::parse_note("C4").unwrap();
+        assert_eq!(graph.node_count(), 1);
+    }
+
+    #[test]
+    fn test_parse_sharp_note() {
+        let graph = MusicGraph::parse_note("F#5").unwrap();
+        assert_eq!(graph.node_count(), 1);
+    }
+
+    #[test]
+    fn test_music_brain_creation() {
+        let brain = MusicBrain::new();
+        assert_eq!(brain.domain_id(), "music");
+    }
+
+    #[test]
+    fn test_music_brain_can_process() {
+        let brain = MusicBrain::new();
+        assert!(brain.can_process("C major chord"));
+        assert!(brain.can_process("tempo 120 bpm"));
+        assert!(!brain.can_process("hello world"));
+    }
+
+    #[test]
+    fn test_music_brain_get_rules() {
+        let brain = MusicBrain::new();
+        let rules = brain.get_rules();
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules[0].name, "Voice Leading");
+    }
+
+    #[test]
+    fn test_music_brain_generate_examples() {
+        let brain = MusicBrain::new();
+        let examples = brain.generate_examples(10);
+        assert_eq!(examples.len(), 10);
+    }
+}

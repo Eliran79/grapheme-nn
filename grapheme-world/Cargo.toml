@@ -1,0 +1,30 @@
+[package]
+name = "grapheme-world"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "World model for GRAPHEME: simulation, prediction, and counterfactual reasoning"
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
+
+# Graph processing
+petgraph = { workspace = true, features = ["serde-1"] }
+
+# Core crates
+grapheme-core = { path = "../grapheme-core" }
+grapheme-reason = { path = "../grapheme-reason" }
+grapheme-memory = { path = "../grapheme-memory" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "world_bench"
+harness = false

@@ -1,0 +1,30 @@
+[package]
+name = "grapheme-meta"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Meta-cognition for GRAPHEME: self-awareness, uncertainty, and adaptive computation"
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
+
+# Graph processing
+petgraph = { workspace = true, features = ["serde-1"] }
+
+# Core crates
+grapheme-core = { path = "../grapheme-core" }
+grapheme-reason = { path = "../grapheme-reason" }
+grapheme-memory = { path = "../grapheme-memory" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "meta_bench"
+harness = false

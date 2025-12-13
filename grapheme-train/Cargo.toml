@@ -1,0 +1,66 @@
+[package]
+name = "grapheme-train"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Training infrastructure for GRAPHEME neural network"
+
+[features]
+default = []
+# vision = ["grapheme-vision"]  # Disabled until grapheme-vision compiles
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+petgraph.workspace = true
+ndarray.workspace = true
+rand.workspace = true
+clap = { version = "4.0", features = ["derive"] }
+bincode = "1.3"
+wait-timeout = "0.2"
+
+# Core GRAPHEME crates
+grapheme-core = { path = "../grapheme-core" }
+grapheme-engine = { path = "../grapheme-engine" }
+grapheme-polish = { path = "../grapheme-polish" }
+grapheme-math = { path = "../grapheme-math" }
+
+# Domain brains
+grapheme-code = { path = "../grapheme-code" }
+grapheme-law = { path = "../grapheme-law" }
+grapheme-music = { path = "../grapheme-music" }
+grapheme-chem = { path = "../grapheme-chem" }
+grapheme-time = { path = "../grapheme-time" }
+grapheme-brain-common = { path = "../grapheme-brain-common" }
+
+# Router
+grapheme-router = { path = "../grapheme-router" }
+
+# Cognitive systems
+grapheme-reason = { path = "../grapheme-reason" }
+grapheme-meta = { path = "../grapheme-meta" }
+grapheme-memory = { path = "../grapheme-memory" }
+grapheme-safety = { path = "../grapheme-safety" }
+grapheme-world = { path = "../grapheme-world" }
+grapheme-ground = { path = "../grapheme-ground" }
+grapheme-agent = { path = "../grapheme-agent" }
+grapheme-multimodal = { path = "../grapheme-multimodal" }
+
+# Optional vision (disabled until grapheme-vision compiles)
+# grapheme-vision = { path = "../grapheme-vision", optional = true }
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile = "3.10"
+
+[[bench]]
+name = "train_bench"
+harness = false
+
+[[bench]]
+name = "efficiency_bench"
+harness = false

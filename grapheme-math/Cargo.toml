@@ -1,0 +1,25 @@
+[package]
+name = "grapheme-math"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Layer 3: Math brain with typed nodes for extracting math intent from semantic graphs"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+grapheme-engine = { path = "../grapheme-engine" }
+grapheme-polish = { path = "../grapheme-polish" }
+grapheme-core = { path = "../grapheme-core" }
+grapheme-brain-common = { path = "../grapheme-brain-common" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "math_bench"
+harness = false

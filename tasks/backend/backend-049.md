@@ -1,0 +1,121 @@
+---
+id: backend-049
+title: Add NaN validation to loss computation
+status: done
+priority: medium
+tags:
+- backend
+dependencies: []
+assignee: developer
+created: 2025-12-06T10:42:26.680497790Z
+estimate: ~
+complexity: 3
+area: backend
+---
+
+# Add NaN validation to loss computation
+
+> **⚠️ SESSION WORKFLOW NOTICE (for AI Agents):**
+>
+> **This task should be completed in ONE dedicated session.**
+>
+> When you mark this task as `done`, you MUST:
+> 1. Fill the "Session Handoff" section at the bottom with complete implementation details
+> 2. Document what was changed, what runtime behavior to expect, and what dependencies were affected
+> 3. Create a clear handoff for the developer/next AI agent working on dependent tasks
+>
+> **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
+
+## Context
+**MEDIUM: NaN loss values go undetected during training.**
+
+The loss computation at grapheme-train/src/lib.rs:2688 doesn't validate for NaN:
+
+```rust
+// Current code (line 2688):
+let loss = ged.total() as f64;  // No NaN check
+```
+
+NaN losses propagate silently through training, corrupting gradients and wasting epochs.
+
+## Objectives
+- Add NaN detection to loss computation
+- Early terminate or warn when NaN loss detected
+- Provide actionable error message
+
+## Tasks
+- [ ] Add `loss.is_nan()` check after loss computation
+- [ ] Log warning or return error on NaN loss
+- [ ] Add option to early terminate epoch on NaN
+- [ ] Add unit test for NaN loss handling
+
+## Acceptance Criteria
+✅ **NaN Detection:**
+- NaN losses are detected immediately after computation
+- Clear warning/error message provided
+
+✅ **Graceful Recovery:**
+- Training can skip or terminate on NaN
+- Previous valid checkpoints preserved
+
+## Technical Notes
+- File: grapheme-train/src/lib.rs line 2688
+- Pattern: `let loss = ged.total() as f64;`
+- Solution: Check `if loss.is_nan() { warn!(...); return Err(...); }`
+- Consider: Early termination option in TrainConfig
+
+## Testing
+- [ ] Write unit tests for new functionality
+- [ ] Write integration tests if applicable
+- [ ] Ensure all tests pass before marking task complete
+- [ ] Consider edge cases and error conditions
+
+## Version Control
+
+**⚠️ CRITICAL: Always test AND run before committing!**
+
+- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
+  - Run `cargo build --release` (or `cargo build` for debug)
+  - Run `cargo test` to ensure tests pass
+  - **Actually run/execute the code** to verify runtime behavior
+  - Fix all errors, warnings, and runtime issues
+- [ ] Commit changes incrementally with clear messages
+- [ ] Use descriptive commit messages that explain the "why"
+- [ ] Consider creating a feature branch for complex changes
+- [ ] Review changes before committing
+
+**Testing requirements by change type:**
+- Code changes: Build + test + **run the actual program/command** to verify behavior
+- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
+- New features: Test the feature works as intended by executing it
+- Minor changes: At minimum build, check warnings, and run basic functionality
+
+## Updates
+- 2025-12-06: Task created
+
+## Session Handoff (AI: Complete this when marking task done)
+**For the next session/agent working on dependent tasks:**
+
+### What Changed
+- [Document code changes, new files, modified functions]
+- [What runtime behavior is new or different]
+
+### Causality Impact
+- [What causal chains were created or modified]
+- [What events trigger what other events]
+- [Any async flows or timing considerations]
+
+### Dependencies & Integration
+- [What dependencies were added/changed]
+- [How this integrates with existing code]
+- [What other tasks/areas are affected]
+
+### Verification & Testing
+- [How to verify this works]
+- [What to test when building on this]
+- [Any known edge cases or limitations]
+
+### Context for Next Task
+- [What the next developer/AI should know]
+- [Important decisions made and why]
+- [Gotchas or non-obvious behavior]

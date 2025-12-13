@@ -1,0 +1,36 @@
+# train_config_kindergarten.toml - Kindergarten QA Training
+
+[training]
+batch_size = 2          # Small batches for 10 examples
+epochs_per_level = 100  # More epochs for tiny dataset
+learning_rate = 0.001
+patience = 20           # More patience for small dataset
+checkpoint_every = 10
+
+[optimizer]
+type = "adam"
+beta1 = 0.9
+beta2 = 0.999
+epsilon = 1e-8
+weight_decay = 0.0001
+
+[loss]
+# Structural loss weights (from TRAINING_STRATEGY.md)
+node_insertion_cost = 1.0   # α (node alignment via Sinkhorn)
+edge_insertion_cost = 0.5   # β (edge alignment from soft assignments)
+clique_weight = 2.0         # γ (DAG density distribution, O(n) complexity)
+
+[curriculum]
+start_level = 1
+end_level = 1       # Only one "level" for kindergarten
+advance_threshold = 0.95
+min_epochs_per_level = 100
+
+[paths]
+train_data = "data/kindergarten"  # Points to simple_qa.jsonl
+output_dir = "checkpoints/kindergarten"
+log_file = "training_kindergarten.log"
+
+[hardware]
+num_threads = 0             # Auto-detect
+parallel_batches = false    # Not needed for 10 examples
