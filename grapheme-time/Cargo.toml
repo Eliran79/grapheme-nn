@@ -1,0 +1,24 @@
+[package]
+name = "grapheme-time"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Time Series Brain: Temporal-to-graph embedding for GRAPHEME forecasting"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+ndarray.workspace = true
+rayon.workspace = true
+grapheme-core = { path = "../grapheme-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "time_bench"
+harness = false

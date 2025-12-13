@@ -1,0 +1,24 @@
+[package]
+name = "grapheme-ground"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Grounding layer for GRAPHEME: symbol-referent binding, perception, and embodied interaction"
+
+[dependencies]
+# Workspace dependencies
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+# Core crates
+grapheme-core = { path = "../grapheme-core" }
+grapheme-multimodal = { path = "../grapheme-multimodal" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "ground_bench"
+harness = false

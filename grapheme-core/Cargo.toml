@@ -1,0 +1,22 @@
+[package]
+name = "grapheme-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Layer 4: Character-level natural language processing - the universal interface"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+petgraph.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "core_bench"
+harness = false

@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "grapheme-agent",
+    "grapheme-brain-common",
+    "grapheme-chem",
+    "grapheme-code",
+    "grapheme-core",
+    "grapheme-engine",
+    "grapheme-ground",
+    "grapheme-law",
+    "grapheme-math",
+    "grapheme-memory",
+    "grapheme-meta",
+    "grapheme-multimodal",
+    "grapheme-music",
+    "grapheme-parallel",
+    "grapheme-polish",
+    "grapheme-reason",
+    "grapheme-router",
+    "grapheme-safety",
+    "grapheme-tests",
+    "grapheme-time",
+    "grapheme-train",
+    # "grapheme-vision",  # Temporarily excluded - needs neural API stubs (Embedding, StructuralClassifier, etc.)
+    "grapheme-world",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Eliran Sabag"]
+license = "MIT"
+repository = "https://github.com/Eliran79/grapheme-nn"
+description = "GRAPHEME: Graph Representation through Adaptive Pattern Hierarchy and Emergent Modular Encoding"
+
+[workspace.dependencies]
+# Shared dependencies across crates
+thiserror = "1.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Graph processing
+petgraph = { version = "0.6", features = ["serde-1"] }
+
+# Parallelism
+rayon = "1.10"
+
+# Numeric
+num-traits = "0.2"
+ndarray = "0.16"
+rand = "0.8"
+
+# Testing
+criterion = "0.5"

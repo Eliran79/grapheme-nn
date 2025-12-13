@@ -1,0 +1,20 @@
+[package]
+name = "grapheme-brain-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Common abstractions for GRAPHEME cognitive brain implementations"
+
+[dependencies]
+# Workspace dependencies
+serde = { workspace = true }
+petgraph = { workspace = true }
+thiserror = { workspace = true }
+
+# Internal dependencies
+grapheme-core = { path = "../grapheme-core" }
+
+[dev-dependencies]
+# Testing
