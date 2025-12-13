@@ -57,7 +57,7 @@ The neuromorphic forward pass implements biologically-inspired activation propag
 ✅ **Activation Functions:**
 - Per-node activation function applied via set_pre_activation()
 - Pre-activation values cached for backprop
-- Different activations supported (ReLU, Sigmoid, Tanh, Linear)
+- Different activations supported (LeakyReLU preferred per GRAPHEME protocol, Sigmoid, Tanh, Linear)
 
 ✅ **Edge Weights:**
 - Weighted sum of predecessor activations
@@ -92,7 +92,7 @@ for node in topological_order:
 - [x] test_forward_with_inputs - Custom inputs
 - [x] test_get_activation_derivatives - For backprop
 - [x] test_get_pre_activations - Pre-activation cache
-- [x] test_neuromorphic_forward_edge_weight_scaling - Xavier init
+- [x] test_neuromorphic_forward_edge_weight_scaling - Dynamic Xavier init
 
 ## Version Control
 

@@ -28,7 +28,7 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-For the neuromorphic forward pass (backend-107), each node needs its own activation function to enable heterogeneous network architectures. Different node types should use different activations (e.g., Linear for inputs, ReLU for hidden, Sigmoid for gates).
+For the neuromorphic forward pass (backend-107), each node needs its own activation function to enable heterogeneous network architectures. Different node types should use different activations (e.g., Linear for inputs, LeakyReLU for hidden per GRAPHEME protocol, Sigmoid for gates).
 
 ## Objectives
 - Add per-node activation function support
@@ -156,9 +156,9 @@ impl Node {
 - Default activation: Linear (for enum default)
 - Node defaults by type:
   - Input: Linear (pass-through)
-  - Hidden: ReLU (sparse activations)
+  - Hidden: LeakyReLU (GRAPHEME protocol, α=0.01, prevents dead neurons)
   - Output: Linear (regression tasks)
-  - Clique/Pattern/Compressed: ReLU
+  - Clique/Pattern/Compressed: LeakyReLU (GRAPHEME protocol, α=0.01)
 
 ### Verification & Testing
 ```bash

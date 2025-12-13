@@ -122,7 +122,7 @@ x_{t-10} → x_{t-9} → ... → x_{t-1} → [hidden] → x_t (output)
 **Hidden Layers:**
 - Neuromorphic forward pass with edge weights
 - Edge weights learn temporal dependencies
-- Per-node ReLU or Tanh activations
+- Per-node LeakyReLU (GRAPHEME protocol, α=0.01) or Tanh activations
 
 **Output Layer:**
 - Single output node for regression

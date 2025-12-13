@@ -95,8 +95,9 @@ pub struct GraphTransformNet {
 ```
 
 **Initialization Strategy:**
-- Use Xavier initialization: `w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))`
-- Or He initialization for ReLU: `w ~ N(0, sqrt(2/fan_in))`
+- Use Dynamic Xavier initialization (GRAPHEME protocol): `w ~ U(-sqrt(6/(fan_in + fan_out)), sqrt(6/(fan_in + fan_out)))`
+  - Weight scales recomputed when graph topology changes (nodes added/removed)
+- Or He initialization for LeakyReLU: `w ~ N(0, sqrt(2/fan_in))`
 - Initialize ALL edges in the graph during model creation
 - Store in HashMap for O(1) lookup during forward/backward pass
 
@@ -197,9 +198,10 @@ for edge in graph.edges() {
 - Tests verify: Xavier bounds, He finiteness, gradient flow, training updates
 
 ### Context for Next Task
-- **For backend-107 (neuromorphic forward pass)**: Use `dag.init_edge_weights_xavier()` before training
+- **For backend-107 (neuromorphic forward pass)**: Use Dynamic Xavier - weights recomputed when topology changes
 - **For backend-108 (edge weight pruning)**: Edge weights are accessible via `dag.graph[edge_idx].weight`
 - **Important decision**: Edge weights stored directly in `Edge` struct on graph edges (not separate HashMap)
   - This matches existing backward pass implementation at line 4390
   - Enables O(1) edge weight lookup during forward/backward passes
-- **Gotcha**: When using Xavier init, fan_in/fan_out are computed from node degree, not layer dimensions
+- **GRAPHEME Protocol**: Use Dynamic Xavier (recompute when topology changes) + LeakyReLU (α=0.01)
+- **Gotcha**: When using Dynamic Xavier init, fan_in/fan_out are computed from node degree, not layer dimensions

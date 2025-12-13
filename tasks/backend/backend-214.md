@@ -44,7 +44,7 @@ The semantic code training showed 0% accuracy because the model could only outpu
 
 ## Technical Notes
 - Unified vocab: 4301 types (4096 Pixel, 97 Input, 35 Keyword, 25 Op, etc.)
-- Xavier initialization for embeddings and output projection
+- Dynamic Xavier initialization for embeddings and output projection (GRAPHEME protocol)
 - Cross-entropy loss with label smoothing (default 0.1)
 - Softmax temperature for output diversity control
 

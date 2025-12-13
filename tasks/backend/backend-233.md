@@ -29,11 +29,15 @@ ALL neural components use LeakyReLU consistently.
 - [ ] Update task documentation (backend-106, backend-107, etc.)
 
 ## Files to Audit
-- [ ] `grapheme-train/src/backprop.rs` - ActivationType::ReLU still exists
+- [ ] `grapheme-train/src/backprop.rs` - ActivationType::ReLU still exists (deprecate or remove)
 - [ ] `grapheme-train/src/online_learner.rs`
 - [ ] `grapheme-train/src/bin_disabled/*.rs` - Training binaries
-- [ ] `tasks/backend/backend-106.md` - Mentions ReLU as default
-- [ ] `tasks/backend/backend-107.md` - Mentions ReLU
+- [x] `tasks/backend/backend-106.md` - Updated to reference LeakyReLU
+- [x] `tasks/backend/backend-107.md` - Updated to reference LeakyReLU
+- [x] `tasks/backend/backend-105.md` - Updated to reference Dynamic Xavier
+- [x] `tasks/backend/backend-114.md` - Updated to reference LeakyReLU
+- [x] `tasks/backend/backend-214.md` - Updated to reference Dynamic Xavier
+- [x] `tasks/api/api-002.md` - Updated to reference LeakyReLU
 
 ## Tasks
 - [ ] Search for `ActivationType::ReLU` usages and convert to LeakyReLU
