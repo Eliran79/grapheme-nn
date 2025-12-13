@@ -58,11 +58,27 @@ let activation = leaky_relu(scale * weighted_sum);
 
 ## Session Handoff
 ### What Changed
-- `CLAUDE.md` - Added "GRAPHEME Protocol - Weight & Activation" section
+- `CLAUDE.md` - Added "GRAPHEME Protocol - Weight, Activation & Optimization" section
 - `grapheme-train/src/semantic_decoder.rs:101,114` - Updated comments
-- `grapheme-vision/src/lib.rs:47-59` - Updated InitStrategy docs
+- `grapheme-vision/src/lib.rs:47-70` - Added DynamicXavier, deprecated Xavier
 - `grapheme-core/src/lib.rs:926-932` - Uses dynamic √n normalization
+- `grapheme-train/src/optimizer.rs` - Added Adam::default() (lr=0.001)
+
+### Current Implementation
+```rust
+pub enum InitStrategy {
+    DynamicXavier,  // Default - recomputes on topology change
+    #[deprecated] Xavier,  // DEPRECATED
+    He,
+    Uniform,
+}
+
+impl Default for InitStrategy {
+    fn default() -> Self { Self::DynamicXavier }
+}
+```
 
 ### Context for Next Task
-- Future edge weight updates should call `update_weight()` when topology changes
-- Consider adding `DagNN::reinitialize_weights()` method for full recomputation
+- Use `InitStrategy::default()` for new networks
+- Xavier is deprecated with compiler warning
+- Adam is preferred optimizer for DynamicXavier + LeakyReLU

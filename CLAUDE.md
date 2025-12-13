@@ -81,9 +81,9 @@ export PATH="$HOME/.local/bin:$PATH"
 3. **Graph-to-graph transformations** - Structural alignment loss instead of cross-entropy
 4. **Rust implementation** - Required for memory efficiency (17 bytes vs 150 bytes per node in Python)
 
-## GRAPHEME Protocol - Weight & Activation
+## GRAPHEME Protocol - Weight, Activation & Optimization
 
-### Dynamic Xavier Initialization
+### Dynamic Xavier Initialization (DynamicXavier)
 Weights are recomputed when graph topology changes:
 ```rust
 fn update_weight(&mut self, edge: EdgeId) {
@@ -91,14 +91,29 @@ fn update_weight(&mut self, edge: EdgeId) {
     let fan_out = self.outgoing_edges(edge.source).count();
     self.edges[edge].weight *= (2.0 / (fan_in + fan_out) as f32).sqrt();
 }
+// Static Xavier is DEPRECATED - use DynamicXavier
 ```
 
-### LeakyReLU Everywhere
-Standard ReLU is **NOT** used. LeakyReLU with α=0.01 prevents dead neurons:
+### LeakyReLU Everywhere (Fixed α=0.01)
+Standard ReLU is **DEPRECATED**. LeakyReLU with fixed α=0.01 prevents dead neurons:
 ```rust
+pub const LEAKY_RELU_ALPHA: f32 = 0.01;
+
 fn activation(x: f32) -> f32 {
-    if x > 0.0 { x } else { 0.01 * x }
+    if x > 0.0 { x } else { LEAKY_RELU_ALPHA * x }
 }
+// ReLU is DEPRECATED - causes dead neurons
+```
+
+### Adam Optimizer (Default)
+Adam is the default optimizer for GRAPHEME networks:
+```rust
+impl Default for Adam {
+    fn default() -> Self {
+        Self::new(0.001)  // lr=0.001, beta1=0.9, beta2=0.999
+    }
+}
+// SGD is available but Adam is preferred for LeakyReLU + DynamicXavier
 ```
 
 ### Dynamic √n Normalization
@@ -107,6 +122,13 @@ Applied at activation time for dynamic DAGs:
 let scale = 1.0 / (fan_in as f32).sqrt();
 let activation = leaky_relu(scale * weighted_sum);
 ```
+
+### Protocol Summary
+| Component | Deprecated | Use Instead |
+|-----------|-----------|-------------|
+| Activation | `ReLU` | `LeakyReLU` (α=0.01 fixed) |
+| Init | `Xavier` | `DynamicXavier` |
+| Optimizer | SGD | `Adam` (lr=0.001) |
 
 ### NO NP-Hard Algorithms
 Use polynomial approximations only:

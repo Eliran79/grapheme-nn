@@ -38,17 +38,35 @@ Standard ReLU causes "dying neurons" in dynamic graph architectures.
 
 ## Technical Notes
 ```rust
-// LeakyReLU activation (GRAPHEME protocol)
-let alpha = 0.01;
-let activation = if x > 0.0 { x } else { alpha * x };
+// GRAPHEME Protocol: Fixed LeakyReLU (α=0.01)
+pub const LEAKY_RELU_ALPHA: f32 = 0.01;
+
+fn activation(x: f32) -> f32 {
+    if x > 0.0 { x } else { LEAKY_RELU_ALPHA * x }
+}
+
+// ActivationType now uses fixed alpha (not configurable)
+pub enum ActivationType {
+    #[deprecated] ReLU,  // DEPRECATED
+    LeakyReLU,           // Fixed α=0.01
+    Tanh,
+    Sigmoid,
+}
+
+impl Default for ActivationType {
+    fn default() -> Self { Self::LeakyReLU }
+}
 ```
 
 ## Session Handoff
 ### What Changed
 - `grapheme-core/src/lib.rs:520-523` - Changed simple ReLU to LeakyReLU
 - `grapheme-core/src/lib.rs:926-932` - Added dynamic √n + LeakyReLU
-- Documentation updated in CLAUDE.md
+- `grapheme-train/src/backprop.rs` - Deprecated ReLU, fixed LeakyReLU α=0.01
+- `CLAUDE.md` - Protocol section with summary table
+- Adam optimizer set as default (lr=0.001)
 
 ### Context for Next Task
-- All new neural components should use LeakyReLU
-- The `ActivationType::LeakyReLU(0.01)` variant exists in backprop.rs
+- All neural components use fixed LeakyReLU (α=0.01)
+- `ActivationType::default()` returns `LeakyReLU`
+- ReLU is deprecated with compiler warning
