@@ -9,6 +9,7 @@
 //! - **Execution**: Act and monitor progress
 //! - **Adaptation**: Replan on failure
 //! - **Drives**: Curiosity, efficiency, safety, helpfulness
+//! - **Learnable Agency**: Adaptive goals and values (backend-036)
 //!
 //! ## NP-Hard Warning
 //!
@@ -24,6 +25,21 @@
 //! - Goals bounded by values
 //! - Drives are configurable
 //! - Human oversight integration points
+//!
+//! ## GRAPHEME Protocol
+//!
+//! Learnable components use:
+//! - LeakyReLU activation (α=0.01)
+//! - DynamicXavier initialization
+//! - Adam optimizer (lr=0.001)
+
+pub mod learnable;
+
+// Re-exports for learnable agency
+pub use learnable::{
+    DriveNetwork, GoalEncoder, GoalExperience, LearnableAgency, LearnableAgencyConfig,
+    PriorityNetwork, ValueNetwork, DEFAULT_LEARNING_RATE, LEAKY_RELU_ALPHA,
+};
 
 use grapheme_core::DagNN;
 use grapheme_meta::UncertaintyEstimate;
