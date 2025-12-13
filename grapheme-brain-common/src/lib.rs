@@ -21,6 +21,7 @@ mod transform;
 mod traits;
 mod utils;
 mod autoencoder;
+mod text_brain;
 
 pub use node::ActivatedNode;
 pub use graph::TypedGraph;
@@ -28,6 +29,7 @@ pub use transform::{TextTransformRule, TransformRuleSet};
 pub use traits::{BaseDomainBrain, DomainConfig};
 pub use utils::{KeywordCapabilityDetector, TextNormalizer, math_normalizer, code_normalizer, legal_normalizer};
 pub use autoencoder::{GraphAutoencoder, LatentGraph, EncodedPair, AutoencoderError};
+pub use text_brain::TextBrain;
 
 // Re-export commonly used types from dependencies
 pub use petgraph::graph::{DiGraph, NodeIndex, EdgeIndex};

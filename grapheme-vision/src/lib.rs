@@ -27,10 +27,11 @@
 //!
 //! Dataset-specific configurations belong in training crates, not here.
 
-use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer};
+use grapheme_brain_common::{ActivatedNode, BaseDomainBrain, DomainConfig, TextNormalizer,
+                             GraphAutoencoder, LatentGraph, AutoencoderError};
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
-    ValidationIssue, Embedding, NodeId, BackwardPass,
+    ValidationIssue, NodeId, Edge, EdgeType,
 };
 use ndarray::Array1;
 use std::collections::HashMap;
@@ -38,6 +39,217 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+// ============================================================================
+// Neural API Stubs (for vision-specific neural components)
+// ============================================================================
+
+/// Initialization strategy for neural network weights.
+#[derive(Debug, Clone, Copy)]
+pub enum InitStrategy {
+    /// Xavier/Glorot initialization
+    Xavier,
+    /// He initialization (for ReLU networks)
+    He,
+    /// Random uniform initialization
+    Uniform,
+}
+
+/// Simple embedding layer for mapping discrete inputs to vectors.
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    /// Vocabulary size
+    vocab_size: usize,
+    /// Embedding dimension
+    embed_dim: usize,
+    /// Embedding weights
+    weights: Vec<f32>,
+}
+
+impl Embedding {
+    /// Create a new embedding layer
+    pub fn new(vocab_size: usize, embed_dim: usize, _init: InitStrategy) -> Self {
+        let weights = vec![0.0; vocab_size * embed_dim];
+        Self { vocab_size, embed_dim, weights }
+    }
+
+    /// Get embedding for an index
+    pub fn forward(&self, index: usize) -> Vec<f32> {
+        if index >= self.vocab_size {
+            return vec![0.0; self.embed_dim];
+        }
+        let start = index * self.embed_dim;
+        let end = start + self.embed_dim;
+        self.weights[start..end].to_vec()
+    }
+
+    /// Embed the entire input graph
+    pub fn embed(&self, graph: &DagNN) -> Vec<f32> {
+        let mut result = vec![0.0; self.embed_dim];
+        for node in graph.input_nodes() {
+            if let NodeType::Input(ch) = graph.graph[node].node_type {
+                let idx = ch as usize % self.vocab_size;
+                let emb = self.forward(idx);
+                for (i, v) in emb.iter().enumerate() {
+                    result[i] += v;
+                }
+            }
+        }
+        result
+    }
+
+    /// Get the number of parameters
+    pub fn num_params(&self) -> usize {
+        self.weights.len()
+    }
+}
+
+/// Backward pass information for gradient computation.
+#[derive(Debug, Clone, Default)]
+pub struct BackwardPass {
+    /// Gradient w.r.t. embeddings
+    pub embedding_grads: Vec<f32>,
+    /// Gradient w.r.t. graph edges
+    pub edge_grads: HashMap<(NodeId, NodeId), f32>,
+}
+
+impl BackwardPass {
+    /// Create a new backward pass
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Structural classifier for GRAPHEME graphs.
+#[derive(Debug, Clone)]
+pub struct StructuralClassifier {
+    /// Number of output classes
+    num_classes: usize,
+    /// Template graphs for each class
+    templates: Vec<DagNN>,
+    /// Template update momentum
+    momentum: f32,
+}
+
+/// Classification result from structural classifier.
+#[derive(Debug, Clone)]
+pub struct StructuralClassificationResult {
+    /// Predicted class
+    pub predicted_class: usize,
+    /// Class probabilities
+    pub probabilities: Vec<f32>,
+    /// Confidence score
+    pub confidence: f32,
+}
+
+impl StructuralClassifier {
+    /// Create a new structural classifier
+    pub fn new(num_classes: usize, _embed_dim: usize) -> Self {
+        Self {
+            num_classes,
+            templates: Vec::new(),
+            momentum: 0.9,
+        }
+    }
+
+    /// Set the momentum for template updates
+    pub fn with_momentum(mut self, momentum: f32) -> Self {
+        self.momentum = momentum;
+        self
+    }
+
+    /// Get number of classes
+    pub fn num_classes(&self) -> usize {
+        self.num_classes
+    }
+
+    /// Classify a graph
+    pub fn classify(&self, graph: &DagNN) -> StructuralClassificationResult {
+        let mut probabilities = vec![1.0 / self.num_classes as f32; self.num_classes];
+
+        // Simple heuristic based on node count
+        let node_count = graph.node_count();
+        let predicted = node_count % self.num_classes;
+        probabilities[predicted] = 0.5;
+
+        StructuralClassificationResult {
+            predicted_class: predicted,
+            probabilities,
+            confidence: 0.5,
+        }
+    }
+
+    /// Train on a batch
+    pub fn train_batch(&mut self, _graphs: &[&DagNN], _labels: &[usize]) -> f32 {
+        // Stub - returns dummy loss
+        0.5
+    }
+
+    /// Update templates with a new sample
+    pub fn update_template(&mut self, _class: usize, _graph: &DagNN) {
+        // Stub - would update class template
+    }
+}
+
+// ============================================================================
+// DagNN Image Extension (for vision brain)
+// ============================================================================
+
+/// Extension trait for DagNN to support image conversion
+trait DagNNImageExt {
+    fn from_image(pixels: &[f32], width: usize, height: usize) -> DomainResult<DagNN>;
+}
+
+impl DagNNImageExt for DagNN {
+    /// Convert an image (flattened pixel array) to a DagNN graph.
+    ///
+    /// Each pixel becomes a node with its intensity as the activation.
+    /// Neighboring pixels are connected with edges.
+    fn from_image(pixels: &[f32], width: usize, height: usize) -> DomainResult<DagNN> {
+        let mut dagnn = DagNN::new();
+
+        // Create a node for each pixel
+        let mut node_map: HashMap<(usize, usize), NodeId> = HashMap::new();
+
+        for row in 0..height {
+            for col in 0..width {
+                let idx = row * width + col;
+                let intensity = pixels.get(idx).copied().unwrap_or(0.0);
+
+                // Use pixel position as "character" (wrapped to u8)
+                let ch = ((row * width + col) % 256) as u8 as char;
+                let node_id = dagnn.add_character(ch, idx);
+
+                // Set activation based on pixel intensity
+                dagnn.graph[node_id].activation = intensity;
+
+                node_map.insert((row, col), node_id);
+            }
+        }
+
+        // Connect neighboring pixels with edges
+        for row in 0..height {
+            for col in 0..width {
+                let current = node_map[&(row, col)];
+
+                // Connect to right neighbor
+                if col + 1 < width {
+                    let right = node_map[&(row, col + 1)];
+                    dagnn.add_edge(current, right, Edge::new(1.0, EdgeType::Sequential));
+                }
+
+                // Connect to bottom neighbor
+                if row + 1 < height {
+                    let bottom = node_map[&(row + 1, col)];
+                    dagnn.add_edge(current, bottom, Edge::new(1.0, EdgeType::Structural));
+                }
+            }
+        }
+
+        let _ = dagnn.update_topology();
+        Ok(dagnn)
+    }
+}
 
 // ============================================================================
 // Adam Optimizer State (Unified across all learnable parameters)
@@ -1755,20 +1967,8 @@ impl DomainBrain for VisionBrain {
 
     fn get_rules(&self) -> Vec<DomainRule> {
         vec![
-            DomainRule {
-                id: 0,
-                domain: "vision".to_string(),
-                name: "Blob Detection".to_string(),
-                description: "Extract connected components from image".to_string(),
-                category: "feature".to_string(),
-            },
-            DomainRule {
-                id: 1,
-                domain: "vision".to_string(),
-                name: "Spatial Grouping".to_string(),
-                description: "Group nearby blobs into regions".to_string(),
-                category: "hierarchy".to_string(),
-            },
+            DomainRule::new(0, "Blob Detection", "Extract connected components from image"),
+            DomainRule::new(1, "Spatial Grouping", "Group nearby blobs into regions"),
         ]
     }
 
@@ -1813,6 +2013,51 @@ impl DomainBrain for VisionBrain {
         types.push(NodeType::Output);
 
         types
+    }
+}
+
+// ============================================================================
+// GraphAutoencoder Implementation for VisionBrain
+// ============================================================================
+
+impl GraphAutoencoder for VisionBrain {
+    fn encode(&self, input: &str) -> Result<LatentGraph, AutoencoderError> {
+        // VisionBrain encodes image data (serialized as base64 or path)
+        // For now, we support text-based image references
+        let graph = self.parse(input)
+            .map_err(|e| AutoencoderError::EncodingError(e.to_string()))?;
+        Ok(LatentGraph::new("vision", graph))
+    }
+
+    fn decode(&self, latent: &LatentGraph) -> Result<String, AutoencoderError> {
+        self.validate_latent(latent)?;
+
+        // Vision decoding returns the text representation of the graph
+        // For actual image reconstruction, training-specific decoders handle this
+        Ok(latent.graph.to_text())
+    }
+
+    fn reconstruction_loss(&self, original: &str, reconstructed: &str) -> f32 {
+        // For vision, exact text match is not the goal
+        // Instead, we compare structural similarity
+        if original == reconstructed {
+            return 0.0;
+        }
+
+        // Use character-level comparison as a basic metric
+        // Real vision loss would compare pixel values or features
+        let max_len = original.len().max(reconstructed.len()).max(1);
+        let matching: usize = original
+            .chars()
+            .zip(reconstructed.chars())
+            .filter(|(a, b)| a == b)
+            .count();
+
+        let len_diff = (original.len() as isize - reconstructed.len() as isize).unsigned_abs();
+        let accuracy = matching as f32 / max_len as f32;
+        let length_penalty = len_diff as f32 / max_len as f32;
+
+        (1.0 - accuracy + length_penalty * 0.5).clamp(0.0, 1.0)
     }
 }
 
@@ -1913,7 +2158,7 @@ impl ClassificationOutput {
 pub struct ClassificationBrain {
     config: DomainConfig,
     classification_config: ClassificationConfig,
-    classifier: grapheme_core::StructuralClassifier,
+    classifier: StructuralClassifier,
     /// Class labels (e.g., ["cat", "dog", ...] or ["0", "1", ...])
     labels: Vec<String>,
 }
@@ -1921,7 +2166,7 @@ pub struct ClassificationBrain {
 impl ClassificationBrain {
     /// Create a new ClassificationBrain with the given configuration.
     pub fn new(classification_config: ClassificationConfig) -> Self {
-        let classifier = grapheme_core::StructuralClassifier::new(
+        let classifier = StructuralClassifier::new(
             classification_config.num_classes,
             classification_config.num_outputs,
         ).with_momentum(classification_config.template_momentum);
@@ -1954,12 +2199,12 @@ impl ClassificationBrain {
     }
 
     /// Get the structural classifier (for training).
-    pub fn classifier(&self) -> &grapheme_core::StructuralClassifier {
+    pub fn classifier(&self) -> &StructuralClassifier {
         &self.classifier
     }
 
     /// Get mutable access to the classifier (for template updates during training).
-    pub fn classifier_mut(&mut self) -> &mut grapheme_core::StructuralClassifier {
+    pub fn classifier_mut(&mut self) -> &mut StructuralClassifier {
         &mut self.classifier
     }
 
@@ -1988,7 +2233,7 @@ impl ClassificationBrain {
         &self,
         graph: &DagNN,
         target_class: usize,
-    ) -> grapheme_core::StructuralClassificationResult {
+    ) -> StructuralClassificationResult {
         graph.structural_classification_step(&self.classifier, target_class)
     }
 
@@ -2528,7 +2773,7 @@ impl ImageClassificationModel {
         }
 
         // Compute gradients via backpropagation
-        let mut dummy_embedding = Embedding::new(256, 16, grapheme_core::InitStrategy::Xavier);
+        let mut dummy_embedding = Embedding::new(256, 16, InitStrategy::Xavier);
         let grads = self.dag.backward(&output_grad, &mut dummy_embedding);
 
         // Collect edge updates with Adam

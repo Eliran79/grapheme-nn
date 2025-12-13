@@ -22,7 +22,7 @@ members = [
     "grapheme-tests",
     "grapheme-time",
     "grapheme-train",
-    # "grapheme-vision",  # Temporarily excluded - needs neural API stubs (Embedding, StructuralClassifier, etc.)
+    # "grapheme-vision",  # Needs API alignment with grapheme-core (NodeType::Pixel, StructuralClassifier methods, etc.)
     "grapheme-world",
 ]
 

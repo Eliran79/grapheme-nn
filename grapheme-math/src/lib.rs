@@ -819,6 +819,617 @@ impl MathBrain {
         let graph = self.process(&problem.expression)?;
         graph.evaluate(&self.engine)
     }
+
+    /// Parse a math expression string into an Expr
+    /// Supports: integers, floats, basic operators (+, -, *, /, ^), parentheses
+    pub fn parse_expr(&self, input: &str) -> MathGraphResult<Expr> {
+        parse_math_expr(input)
+    }
+
+    /// Format an expression as a string
+    pub fn format_expr(&self, expr: &Expr) -> String {
+        format_expr(expr)
+    }
+}
+
+// ============================================================================
+// Expression Parser (simple recursive descent)
+// ============================================================================
+
+/// Parse a math expression string into an Expr
+fn parse_math_expr(input: &str) -> MathGraphResult<Expr> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(MathGraphError::InvalidStructure("Empty expression".into()));
+    }
+
+    let tokens = tokenize(input)?;
+    let mut pos = 0;
+    parse_additive(&tokens, &mut pos)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Token {
+    Number(f64),
+    Symbol(String),
+    Op(char),
+    LParen,
+    RParen,
+    Func(String),
+}
+
+fn tokenize(input: &str) -> MathGraphResult<Vec<Token>> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if c.is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        if c.is_ascii_digit() || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            let num_str: String = chars[start..i].iter().collect();
+            let num: f64 = num_str.parse().map_err(|_| {
+                MathGraphError::InvalidStructure(format!("Invalid number: {}", num_str))
+            })?;
+            tokens.push(Token::Number(num));
+            continue;
+        }
+
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            // Check if it's a function
+            let is_func = matches!(name.to_lowercase().as_str(),
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "log" | "ln" | "exp" | "floor" | "ceil");
+            if is_func {
+                tokens.push(Token::Func(name));
+            } else {
+                tokens.push(Token::Symbol(name));
+            }
+            continue;
+        }
+
+        match c {
+            '+' | '-' | '*' | '/' | '^' | '%' => {
+                tokens.push(Token::Op(c));
+                i += 1;
+            }
+            '(' => {
+                tokens.push(Token::LParen);
+                i += 1;
+            }
+            ')' => {
+                tokens.push(Token::RParen);
+                i += 1;
+            }
+            _ => {
+                return Err(MathGraphError::InvalidStructure(format!(
+                    "Unexpected character: '{}'", c
+                )));
+            }
+        }
+    }
+
+    Ok(tokens)
+}
+
+fn parse_additive(tokens: &[Token], pos: &mut usize) -> MathGraphResult<Expr> {
+    let mut left = parse_multiplicative(tokens, pos)?;
+
+    while *pos < tokens.len() {
+        match &tokens[*pos] {
+            Token::Op('+') => {
+                *pos += 1;
+                let right = parse_multiplicative(tokens, pos)?;
+                left = Expr::add(left, right);
+            }
+            Token::Op('-') => {
+                *pos += 1;
+                let right = parse_multiplicative(tokens, pos)?;
+                left = Expr::sub(left, right);
+            }
+            _ => break,
+        }
+    }
+
+    Ok(left)
+}
+
+fn parse_multiplicative(tokens: &[Token], pos: &mut usize) -> MathGraphResult<Expr> {
+    let mut left = parse_power(tokens, pos)?;
+
+    while *pos < tokens.len() {
+        match &tokens[*pos] {
+            Token::Op('*') => {
+                *pos += 1;
+                let right = parse_power(tokens, pos)?;
+                left = Expr::mul(left, right);
+            }
+            Token::Op('/') => {
+                *pos += 1;
+                let right = parse_power(tokens, pos)?;
+                left = Expr::div(left, right);
+            }
+            Token::Op('%') => {
+                *pos += 1;
+                let right = parse_power(tokens, pos)?;
+                left = Expr::BinOp {
+                    op: MathOp::Mod,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
+            }
+            _ => break,
+        }
+    }
+
+    Ok(left)
+}
+
+fn parse_power(tokens: &[Token], pos: &mut usize) -> MathGraphResult<Expr> {
+    let base = parse_unary(tokens, pos)?;
+
+    if *pos < tokens.len() {
+        if let Token::Op('^') = &tokens[*pos] {
+            *pos += 1;
+            let exp = parse_power(tokens, pos)?; // Right associative
+            return Ok(Expr::pow(base, exp));
+        }
+    }
+
+    Ok(base)
+}
+
+fn parse_unary(tokens: &[Token], pos: &mut usize) -> MathGraphResult<Expr> {
+    if *pos < tokens.len() {
+        if let Token::Op('-') = &tokens[*pos] {
+            *pos += 1;
+            let operand = parse_unary(tokens, pos)?;
+            return Ok(Expr::neg(operand));
+        }
+    }
+    parse_primary(tokens, pos)
+}
+
+fn parse_primary(tokens: &[Token], pos: &mut usize) -> MathGraphResult<Expr> {
+    if *pos >= tokens.len() {
+        return Err(MathGraphError::InvalidStructure("Unexpected end of expression".into()));
+    }
+
+    match &tokens[*pos] {
+        Token::Number(n) => {
+            let n = *n;
+            *pos += 1;
+            if n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
+                Ok(Expr::int(n as i64))
+            } else {
+                Ok(Expr::float(n))
+            }
+        }
+        Token::Symbol(s) => {
+            let s = s.clone();
+            *pos += 1;
+            Ok(Expr::symbol(s))
+        }
+        Token::Func(name) => {
+            let func = match name.to_lowercase().as_str() {
+                "sin" => MathFn::Sin,
+                "cos" => MathFn::Cos,
+                "tan" => MathFn::Tan,
+                "sqrt" => MathFn::Sqrt,
+                "abs" => MathFn::Abs,
+                "log" => MathFn::Log,
+                "ln" => MathFn::Ln,
+                "exp" => MathFn::Exp,
+                "floor" => MathFn::Floor,
+                "ceil" => MathFn::Ceil,
+                _ => return Err(MathGraphError::InvalidStructure(format!("Unknown function: {}", name))),
+            };
+            *pos += 1;
+
+            // Expect '('
+            if *pos >= tokens.len() || tokens[*pos] != Token::LParen {
+                return Err(MathGraphError::InvalidStructure("Expected '(' after function name".into()));
+            }
+            *pos += 1;
+
+            let arg = parse_additive(tokens, pos)?;
+
+            // Expect ')'
+            if *pos >= tokens.len() || tokens[*pos] != Token::RParen {
+                return Err(MathGraphError::InvalidStructure("Expected ')' after function argument".into()));
+            }
+            *pos += 1;
+
+            Ok(Expr::func(func, vec![arg]))
+        }
+        Token::LParen => {
+            *pos += 1;
+            let expr = parse_additive(tokens, pos)?;
+            if *pos >= tokens.len() || tokens[*pos] != Token::RParen {
+                return Err(MathGraphError::InvalidStructure("Mismatched parentheses".into()));
+            }
+            *pos += 1;
+            Ok(expr)
+        }
+        Token::RParen => {
+            Err(MathGraphError::InvalidStructure("Unexpected ')'".into()))
+        }
+        Token::Op(c) => {
+            Err(MathGraphError::InvalidStructure(format!("Unexpected operator: '{}'", c)))
+        }
+    }
+}
+
+/// Format an expression as a string
+fn format_expr(expr: &Expr) -> String {
+    match expr {
+        Expr::Value(v) => match v {
+            Value::Integer(i) => i.to_string(),
+            Value::Float(f) => format!("{}", f),
+            Value::Symbol(s) => s.clone(),
+            Value::Rational(n, d) => format!("{}/{}", n, d),
+        },
+        Expr::BinOp { op, left, right } => {
+            let op_str = match op {
+                MathOp::Add => "+",
+                MathOp::Sub => "-",
+                MathOp::Mul => "*",
+                MathOp::Div => "/",
+                MathOp::Pow => "^",
+                MathOp::Mod => "%",
+                MathOp::Neg => "-",
+            };
+            format!("({} {} {})", format_expr(left), op_str, format_expr(right))
+        }
+        Expr::UnaryOp { op, operand } => {
+            match op {
+                MathOp::Neg => format!("(-{})", format_expr(operand)),
+                _ => format!("({}{})", format_math_op(op), format_expr(operand)),
+            }
+        }
+        Expr::Function { func, args } => {
+            let func_name = match func {
+                MathFn::Sin => "sin",
+                MathFn::Cos => "cos",
+                MathFn::Tan => "tan",
+                MathFn::Sqrt => "sqrt",
+                MathFn::Abs => "abs",
+                MathFn::Log => "log",
+                MathFn::Ln => "ln",
+                MathFn::Exp => "exp",
+                MathFn::Floor => "floor",
+                MathFn::Ceil => "ceil",
+                MathFn::Derive => "derive",
+                MathFn::Integrate => "integrate",
+            };
+            let args_str: Vec<String> = args.iter().map(format_expr).collect();
+            format!("{}({})", func_name, args_str.join(", "))
+        }
+    }
+}
+
+fn format_math_op(op: &MathOp) -> &'static str {
+    match op {
+        MathOp::Add => "+",
+        MathOp::Sub => "-",
+        MathOp::Mul => "*",
+        MathOp::Div => "/",
+        MathOp::Pow => "^",
+        MathOp::Mod => "%",
+        MathOp::Neg => "-",
+    }
+}
+
+// ============================================================================
+// DomainBrain Implementation
+// ============================================================================
+
+use grapheme_core::{DagNN, DomainBrain, DomainError, DomainResult, DomainRule, DomainExample,
+                    ExecutionResult, ValidationSeverity, EdgeType, Edge, NodeType};
+use grapheme_brain_common::{GraphAutoencoder, LatentGraph, AutoencoderError};
+
+impl DomainBrain for MathBrain {
+    fn domain_id(&self) -> &str {
+        "math"
+    }
+
+    fn domain_name(&self) -> &str {
+        "Mathematics"
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+
+    fn can_process(&self, input: &str) -> bool {
+        // Can process if it looks like a math expression
+        let input = input.trim();
+        if input.is_empty() {
+            return false;
+        }
+
+        // Check for math-like content: numbers, operators, common math symbols
+        let has_numbers = input.chars().any(|c| c.is_ascii_digit());
+        let has_ops = input.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '^' | '=' | '(' | ')'));
+        let has_math_funcs = ["sin", "cos", "tan", "sqrt", "log", "ln", "exp"]
+            .iter()
+            .any(|f| input.to_lowercase().contains(f));
+
+        has_numbers || has_ops || has_math_funcs
+    }
+
+    fn parse(&self, input: &str) -> DomainResult<DagNN> {
+        // Parse the expression and convert to DagNN
+        let expr = self.parse_expr(input).map_err(|e| DomainError::ParseError(e.to_string()))?;
+        let math_graph = MathGraph::from_expr(&expr);
+
+        // Convert MathGraph to DagNN
+        math_graph_to_dagnn(&math_graph)
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        // Strengthen semantic edges (math relationships) and skip edges (distant relations)
+        let mut result = graph.clone();
+
+        let edges_to_update: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                match edge.weight().edge_type {
+                    EdgeType::Semantic => {
+                        // Semantic relationships (e.g., operand relationships)
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.2))
+                    }
+                    EdgeType::Skip => {
+                        // Skip connections for distant operands
+                        Some((edge.source(), edge.target(), edge.weight().weight * 0.9))
+                    }
+                    _ => None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_update {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.clamp(0.1, 2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        let mut result = graph.clone();
+        result.prune_weak_edges(0.05);
+        let _ = result.update_topology();
+        Ok(result)
+    }
+
+    fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {
+        let mut issues = Vec::new();
+
+        if graph.node_count() == 0 {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Error,
+                message: "Empty math graph".to_string(),
+                location: None,
+            });
+        }
+
+        // Check for very deep nesting (potential stack overflow in evaluation)
+        if graph.node_count() > 1000 {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                message: "Very large expression graph".to_string(),
+                location: None,
+            });
+        }
+
+        Ok(issues)
+    }
+
+    fn execute(&self, graph: &DagNN) -> DomainResult<ExecutionResult> {
+        // Try to evaluate the graph as a math expression
+        let text = graph.to_text();
+
+        // Try parsing and evaluating
+        match self.parse_expr(&text) {
+            Ok(expr) => {
+                match self.engine.evaluate(&expr) {
+                    Ok(result) => Ok(ExecutionResult::Text(format!("{}", result))),
+                    Err(_) => Ok(ExecutionResult::Text(self.format_expr(&expr))),
+                }
+            }
+            Err(_) => Ok(ExecutionResult::Text(text)),
+        }
+    }
+
+    fn get_rules(&self) -> Vec<DomainRule> {
+        vec![
+            DomainRule::new(0, "Simplify", "Apply algebraic simplification rules"),
+            DomainRule::new(1, "Fold Constants", "Evaluate constant subexpressions"),
+            DomainRule::new(2, "Differentiate", "Take derivative with respect to x"),
+            DomainRule::new(3, "Factor", "Factor expression"),
+        ]
+    }
+
+    fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
+        let text = graph.to_text();
+        let expr = self.parse_expr(&text).map_err(|e| DomainError::TransformError(e.to_string()))?;
+
+        let mut brain = MathBrain::new();
+        let transformed = match rule_id {
+            0 => brain.simplify(&expr),
+            1 => brain.fold_constants(&expr),
+            2 => {
+                let symbolic = grapheme_engine::SymbolicEngine::new();
+                symbolic.differentiate(&expr, "x")
+            }
+            _ => return Err(DomainError::InvalidInput(format!("Unknown rule ID: {}", rule_id))),
+        };
+
+        let math_graph = MathGraph::from_expr(&transformed);
+        math_graph_to_dagnn(&math_graph)
+    }
+
+    fn generate_examples(&self, count: usize) -> Vec<DomainExample> {
+        let generator = grapheme_engine::TrainingDataGenerator::new();
+        let examples = generator.generate_arithmetic(count, 2);
+
+        examples.iter().map(|(expr, result)| {
+            let input = self.format_expr(expr);
+            let output = format!("{}", result);
+            DomainExample::new(input, output)
+                .with_metadata("domain", "math")
+        }).collect()
+    }
+
+    fn node_types(&self) -> Vec<NodeType> {
+        vec![
+            NodeType::Input('0'),  // For operands (digit placeholder)
+            NodeType::Hidden, // For operators
+            NodeType::Output, // For result
+        ]
+    }
+}
+
+// ============================================================================
+// GraphAutoencoder Implementation
+// ============================================================================
+
+impl GraphAutoencoder for MathBrain {
+    fn encode(&self, input: &str) -> Result<LatentGraph, AutoencoderError> {
+        let graph = self.parse(input).map_err(|e| AutoencoderError::EncodingError(e.to_string()))?;
+        Ok(LatentGraph::new("math", graph))
+    }
+
+    fn decode(&self, latent: &LatentGraph) -> Result<String, AutoencoderError> {
+        self.validate_latent(latent)?;
+
+        // Convert DagNN back to text representation
+        Ok(latent.graph.to_text())
+    }
+
+    fn reconstruction_loss(&self, original: &str, reconstructed: &str) -> f32 {
+        // For math, we can use semantic comparison
+        // First try exact match
+        if original.trim() == reconstructed.trim() {
+            return 0.0;
+        }
+
+        // Try parsing both and comparing evaluation
+        let orig_expr = self.parse_expr(original);
+        let recon_expr = self.parse_expr(reconstructed);
+
+        match (orig_expr, recon_expr) {
+            (Ok(orig), Ok(recon)) => {
+                // If both are constant expressions, compare values
+                if orig.is_constant() && recon.is_constant() {
+                    match (self.engine.evaluate(&orig), self.engine.evaluate(&recon)) {
+                        (Ok(v1), Ok(v2)) => {
+                            if (v1 - v2).abs() < 1e-10 {
+                                return 0.0; // Semantically equivalent
+                            }
+                            // Relative difference
+                            let max_val = v1.abs().max(v2.abs()).max(1.0);
+                            ((v1 - v2).abs() / max_val).min(1.0) as f32
+                        }
+                        _ => 0.5, // Evaluation failed
+                    }
+                } else {
+                    // Symbolic expressions - use default string comparison
+                    let max_len = original.len().max(reconstructed.len()).max(1);
+                    let matching: usize = original.chars()
+                        .zip(reconstructed.chars())
+                        .filter(|(a, b)| a == b)
+                        .count();
+                    1.0 - (matching as f32 / max_len as f32)
+                }
+            }
+            _ => {
+                // Parsing failed - use default string comparison
+                let max_len = original.len().max(reconstructed.len()).max(1);
+                let matching: usize = original.chars()
+                    .zip(reconstructed.chars())
+                    .filter(|(a, b)| a == b)
+                    .count();
+                1.0 - (matching as f32 / max_len as f32)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Helper: Convert MathGraph to DagNN
+// ============================================================================
+
+fn math_graph_to_dagnn(math_graph: &MathGraph) -> DomainResult<DagNN> {
+    use std::collections::HashMap;
+
+    let mut dagnn = DagNN::new();
+    let mut node_map: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
+
+    // Add all nodes - we'll use a simple strategy:
+    // - Leaf nodes (values) -> use first char of their string representation as input char
+    // - Root node -> output node
+    // - Others -> hidden nodes
+    for node_idx in math_graph.graph.node_indices() {
+        let math_node = &math_graph.graph[node_idx];
+        let is_root = math_graph.root == Some(node_idx);
+        let is_leaf = math_graph.graph.neighbors(node_idx).count() == 0;
+
+        let dagnn_idx = if is_root {
+            dagnn.add_output()
+        } else if is_leaf {
+            // Leaf nodes - use the first char of their representation
+            let ch = match math_node {
+                MathNode::Integer(i) => {
+                    let s = i.to_string();
+                    s.chars().next().unwrap_or('0')
+                }
+                MathNode::Float(f) => {
+                    let s = format!("{}", f);
+                    s.chars().next().unwrap_or('0')
+                }
+                MathNode::Symbol(s) => s.chars().next().unwrap_or('x'),
+                _ => '?',
+            };
+            dagnn.add_character(ch, node_idx.index())
+        } else {
+            dagnn.add_hidden()
+        };
+
+        node_map.insert(node_idx, dagnn_idx);
+    }
+
+    // Add all edges
+    for edge in math_graph.graph.edge_references() {
+        let src = node_map[&edge.source()];
+        let tgt = node_map[&edge.target()];
+        let weight = match edge.weight() {
+            MathEdge::LeftOperand => 1.0,
+            MathEdge::RightOperand => 0.9,
+            MathEdge::Argument(i) => 1.0 - (*i as f32 * 0.1).min(0.5),
+            MathEdge::Produces => 1.0,
+        };
+        dagnn.add_edge(src, tgt, Edge::new(weight, EdgeType::Semantic));
+    }
+
+    let _ = dagnn.update_topology();
+    Ok(dagnn)
 }
 
 #[cfg(test)]
