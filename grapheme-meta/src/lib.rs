@@ -18,8 +18,25 @@
 //! - Contradiction detection hooks
 //!
 //! Real meta-cognition may require learned policies.
+//!
+//! ## Learnable Meta-Cognition (backend-035)
+//!
+//! The `learnable` module provides gradient-based learning for meta-cognition:
+//! - Learnable uncertainty estimation with calibration
+//! - Learnable confidence prediction
+//! - Learnable introspection for cognitive state monitoring
 
 use grapheme_core::DagNN;
+
+// Learnable meta-cognition module (backend-035)
+pub mod learnable;
+
+// Re-export learnable types
+pub use learnable::{
+    LearnableMetaCognition, LearnableMetaConfig,
+    LearnableUncertaintyEstimator, ConfidenceCalibrator, IntrospectionMonitor,
+    LEAKY_RELU_ALPHA, DEFAULT_LEARNING_RATE,
+};
 use grapheme_reason::ReasoningStep;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
