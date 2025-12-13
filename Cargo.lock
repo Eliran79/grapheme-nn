@@ -571,9 +571,14 @@ dependencies = [
 name = "grapheme-tests"
 version = "0.1.0"
 dependencies = [
+ "grapheme-agent",
  "grapheme-core",
  "grapheme-engine",
+ "grapheme-ground",
+ "grapheme-multimodal",
  "grapheme-polish",
+ "grapheme-world",
+ "ndarray",
  "rand",
 ]
 
