@@ -17,7 +17,7 @@ Text → Tokenization → Vocabulary Lookup → Embeddings → Matrix Operations
                         for 11 chars)
 ```
 
-### DAG-NN Revolution (Our Vision)
+### GRAPHEME Revolution (Our Vision)
 ```
 Text → Character Nodes → Dynamic Graph Growth → Graph Transformations → Output Graph → Text
          ↓                      ↓                       ↓                    ↓
@@ -27,7 +27,7 @@ Text → Character Nodes → Dynamic Graph Growth → Graph Transformations → 
 
 **Computational Advantage**: For a book-length text (100K tokens):
 - Transformer self-attention: 7.68 trillion operations
-- DAG-NN graph traversal: 2.5 million operations  
+- GRAPHEME graph traversal: 2.5 million operations  
 - **3 million times more efficient**
 
 ## Key Innovations
@@ -330,23 +330,6 @@ pub trait PatternMatcher {
 }
 ```
 
-### Graph Memory & Retrieval
-
-```rust
-pub trait GraphMemory {
-    // Store graph transformations, not key-value pairs
-    fn store_transformation(&mut self, input: Graph, output: Graph, context: Graph);
-    
-    // Retrieve by graph similarity, not cosine distance
-    fn retrieve_similar(&self, query: Graph) -> Vec<(Graph, f32)>;
-    
-    // Similarity = spectral + clique_overlap + path_similarity
-    // Not just embedding distance!
-    
-    // Learn from retrieved transformations
-    fn apply_retrieved_knowledge(&mut self, query: Graph) -> Graph;
-}
-```
 
 ### Generation
 
@@ -547,31 +530,31 @@ async fn process_twitter(&mut self, stream: TwitterStream) {
 
 ## Implementation Phases
 
-### Phase 1: Core Infrastructure (Months 1-2)
+### Phase 1: Core Infrastructure
 - Basic graph structures
 - Character-to-node conversion
 - Simple forward propagation
 - Basic graph traversal
 
-### Phase 2: Learning Mechanisms (Months 3-4)
+### Phase 2: Learning Mechanisms
 - Graph edit distance loss
 - Backpropagation through structure
 - Weight updates
 - Structure adaptation
 
-### Phase 3: Advanced Features (Months 5-6)
+### Phase 3: Advanced Features
 - Clique detection and reinforcement
 - Pattern compression
 - Hierarchical abstraction
 - Memory optimization
 
-### Phase 4: Applications (Months 7-8)
+### Phase 4: Applications
 - Text generation
 - Translation
 - Question answering
 - Document summarization
 
-### Phase 5: Optimization (Months 9-10)
+### Phase 5: Optimization
 - SIMD acceleration
 - GPU support
 - Distributed training
@@ -655,7 +638,7 @@ This is not an incremental improvement - it's a paradigm shift that could obsole
 **Tagline**: "No vocabulary. No limits. Just understanding."  
 **Academic Title**: "GRAPHEME: Vocabulary-Free Neural Text Processing through Dynamic Graph Morphogenesis"  
 **GitHub**: `grapheme-nn` (proposed)  
-**Paper Citation**: GRAPHEME (2025)
+**Paper Citation**: GRAPHEME
 
 ## Next Steps
 
