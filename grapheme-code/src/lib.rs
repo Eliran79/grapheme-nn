@@ -16,6 +16,7 @@ use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
     ExecutionResult, ValidationIssue, ValidationSeverity,
 };
+use grapheme_brain_common::{GraphAutoencoder, LatentGraph, AutoencoderError};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -632,7 +633,52 @@ impl DomainBrain for CodeBrain {
 }
 
 // ============================================================================
-// Tests
+// GraphAutoencoder Implementation
+// ============================================================================
+
+impl GraphAutoencoder for CodeBrain {
+    fn encode(&self, input: &str) -> Result<LatentGraph, AutoencoderError> {
+        let graph = self.parse(input).map_err(|e| AutoencoderError::EncodingError(e.to_string()))?;
+        Ok(LatentGraph::new("code", graph))
+    }
+
+    fn decode(&self, graph: &LatentGraph) -> Result<String, AutoencoderError> {
+        // Validate domain match
+        if graph.domain != "code" {
+            return Err(AutoencoderError::DomainMismatch {
+                expected: "code".to_string(),
+                actual: graph.domain.clone(),
+            });
+        }
+
+        // Convert graph back to code text
+        Ok(graph.graph.to_text())
+    }
+
+    fn reconstruction_loss(&self, original: &str, reconstructed: &str) -> f32 {
+        // For code, we use normalized edit distance but ignore whitespace differences
+        let orig_normalized: String = original.split_whitespace().collect();
+        let recon_normalized: String = reconstructed.split_whitespace().collect();
+
+        if orig_normalized.is_empty() && recon_normalized.is_empty() {
+            return 0.0;
+        }
+        if orig_normalized.is_empty() || recon_normalized.is_empty() {
+            return 1.0;
+        }
+
+        // Simple character-level accuracy (ignoring whitespace)
+        let matches = orig_normalized
+            .chars()
+            .zip(recon_normalized.chars())
+            .filter(|(a, b)| a == b)
+            .count();
+
+        let max_len = orig_normalized.len().max(recon_normalized.len());
+        1.0 - (matches as f32 / max_len as f32)
+    }
+}
+
 // ============================================================================
 
 #[cfg(test)]
