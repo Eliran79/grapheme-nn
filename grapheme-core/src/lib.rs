@@ -88,6 +88,10 @@ pub enum NodeType {
     Keyword(String),
     /// Semantic unit node (e.g., for code or legal concepts)
     SemanticUnit(String),
+    /// Pixel node for vision processing (row, col position)
+    Pixel { row: usize, col: usize },
+    /// Classification output node (class index)
+    ClassOutput(usize),
 }
 
 /// A node in the GRAPHEME graph (matching GRAPHEME_Vision.md)

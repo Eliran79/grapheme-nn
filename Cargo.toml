@@ -22,7 +22,7 @@ members = [
     "grapheme-tests",
     "grapheme-time",
     "grapheme-train",
-    # "grapheme-vision",  # Needs API alignment with grapheme-core (NodeType::Pixel, StructuralClassifier methods, etc.)
+    "grapheme-vision",  # AGI Mesh Ready - LeakyReLU everywhere
     "grapheme-world",
 ]
 

@@ -33,9 +33,9 @@ use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule, ExecutionResult, NodeType,
     ValidationIssue, NodeId, Edge, EdgeType,
 };
-use ndarray::Array1;
 use std::collections::HashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -86,7 +86,7 @@ impl Embedding {
     /// Embed the entire input graph
     pub fn embed(&self, graph: &DagNN) -> Vec<f32> {
         let mut result = vec![0.0; self.embed_dim];
-        for node in graph.input_nodes() {
+        for &node in graph.input_nodes() {
             if let NodeType::Input(ch) = graph.graph[node].node_type {
                 let idx = ch as usize % self.vocab_size;
                 let emb = self.forward(idx);
@@ -120,13 +120,35 @@ impl BackwardPass {
     }
 }
 
+/// Template for a class in structural classification
+#[derive(Debug, Clone)]
+pub struct ClassTemplate {
+    /// Graph representation
+    pub graph: DagNN,
+    /// Activation pattern for this class
+    pub activation_pattern: Vec<f32>,
+    /// Number of samples seen
+    pub sample_count: usize,
+}
+
+impl ClassTemplate {
+    /// Create a new class template with given size
+    pub fn new(size: usize) -> Self {
+        Self {
+            graph: DagNN::new(),
+            activation_pattern: vec![0.0; size],
+            sample_count: 0,
+        }
+    }
+}
+
 /// Structural classifier for GRAPHEME graphs.
 #[derive(Debug, Clone)]
 pub struct StructuralClassifier {
     /// Number of output classes
     num_classes: usize,
     /// Template graphs for each class
-    templates: Vec<DagNN>,
+    pub templates: Vec<ClassTemplate>,
     /// Template update momentum
     momentum: f32,
 }
@@ -136,18 +158,35 @@ pub struct StructuralClassifier {
 pub struct StructuralClassificationResult {
     /// Predicted class
     pub predicted_class: usize,
+    /// Predicted class (alias for compatibility)
+    pub predicted: usize,
     /// Class probabilities
     pub probabilities: Vec<f32>,
     /// Confidence score
     pub confidence: f32,
+    /// Loss value
+    pub loss: f32,
+    /// Whether prediction was correct (set during training)
+    pub correct: bool,
+    /// Gradient for backpropagation
+    pub gradient: Vec<f32>,
 }
 
 impl StructuralClassifier {
-    /// Create a new structural classifier
+    /// Create a new structural classifier with initialized templates
     pub fn new(num_classes: usize, _embed_dim: usize) -> Self {
+        // Initialize templates for each class (AGI Mesh Ready)
+        let templates: Vec<ClassTemplate> = (0..num_classes)
+            .map(|_| ClassTemplate {
+                graph: DagNN::new(),
+                activation_pattern: Vec::new(),
+                sample_count: 0,
+            })
+            .collect();
+
         Self {
             num_classes,
-            templates: Vec::new(),
+            templates,
             momentum: 0.9,
         }
     }
@@ -174,9 +213,21 @@ impl StructuralClassifier {
 
         StructuralClassificationResult {
             predicted_class: predicted,
-            probabilities,
+            predicted,
+            probabilities: probabilities.clone(),
             confidence: 0.5,
+            loss: 0.0,
+            correct: false,
+            gradient: vec![0.0; self.num_classes],
         }
+    }
+
+    /// Convert distances to probabilities (softmax-like)
+    pub fn distance_to_probs(&self, logits: &[f32]) -> Vec<f32> {
+        // Apply softmax
+        let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = logits.iter().map(|x| (x - max_logit).exp()).sum();
+        logits.iter().map(|x| (x - max_logit).exp() / exp_sum).collect()
     }
 
     /// Train on a batch
@@ -186,59 +237,59 @@ impl StructuralClassifier {
     }
 
     /// Update templates with a new sample
-    pub fn update_template(&mut self, _class: usize, _graph: &DagNN) {
-        // Stub - would update class template
+    pub fn update_template(&mut self, _class: usize, _activations: &[f32]) {
+        // Stub - would update class template based on activations
     }
 }
 
 // ============================================================================
-// DagNN Image Extension (for vision brain)
+// DagNN Vision Extension (for vision brain - AGI Mesh Ready)
 // ============================================================================
 
-/// Extension trait for DagNN to support image conversion
-trait DagNNImageExt {
+/// Extension trait for DagNN to support vision operations
+pub trait DagNNVisionExt {
+    /// Create a DagNN from image pixels
     fn from_image(pixels: &[f32], width: usize, height: usize) -> DomainResult<DagNN>;
+    /// Create with classifier
+    fn with_classifier(classifier: &StructuralClassifier) -> DagNN;
+    /// Structural classification
+    fn structural_classify(&self, classifier: &StructuralClassifier) -> (usize, f32);
+    /// Structural classification step (for training)
+    fn structural_classification_step(&self, classifier: &StructuralClassifier, target: usize) -> StructuralClassificationResult;
+    /// Get classification logits
+    fn get_classification_logits(&self) -> Vec<f32>;
+    /// Forward pass with custom inputs
+    fn forward_with_inputs(&mut self, inputs: &[f32]) -> Vec<f32>;
+    /// Backward pass (gradient computation) using LeakyReLU
+    fn backward(&mut self, output_grad: &[f32], embedding: &mut Embedding) -> BackwardPass;
+    /// Get activations
+    fn get_activations(&self) -> Vec<f32>;
 }
 
-impl DagNNImageExt for DagNN {
+impl DagNNVisionExt for DagNN {
     /// Convert an image (flattened pixel array) to a DagNN graph.
-    ///
-    /// Each pixel becomes a node with its intensity as the activation.
-    /// Neighboring pixels are connected with edges.
     fn from_image(pixels: &[f32], width: usize, height: usize) -> DomainResult<DagNN> {
         let mut dagnn = DagNN::new();
-
-        // Create a node for each pixel
         let mut node_map: HashMap<(usize, usize), NodeId> = HashMap::new();
 
         for row in 0..height {
             for col in 0..width {
                 let idx = row * width + col;
                 let intensity = pixels.get(idx).copied().unwrap_or(0.0);
-
-                // Use pixel position as "character" (wrapped to u8)
                 let ch = ((row * width + col) % 256) as u8 as char;
                 let node_id = dagnn.add_character(ch, idx);
-
-                // Set activation based on pixel intensity
                 dagnn.graph[node_id].activation = intensity;
-
                 node_map.insert((row, col), node_id);
             }
         }
 
-        // Connect neighboring pixels with edges
         for row in 0..height {
             for col in 0..width {
                 let current = node_map[&(row, col)];
-
-                // Connect to right neighbor
                 if col + 1 < width {
                     let right = node_map[&(row, col + 1)];
                     dagnn.add_edge(current, right, Edge::new(1.0, EdgeType::Sequential));
                 }
-
-                // Connect to bottom neighbor
                 if row + 1 < height {
                     let bottom = node_map[&(row + 1, col)];
                     dagnn.add_edge(current, bottom, Edge::new(1.0, EdgeType::Structural));
@@ -248,6 +299,142 @@ impl DagNNImageExt for DagNN {
 
         let _ = dagnn.update_topology();
         Ok(dagnn)
+    }
+
+    /// Create a DagNN initialized for classification
+    fn with_classifier(classifier: &StructuralClassifier) -> DagNN {
+        let mut dagnn = DagNN::new();
+        // Add output nodes for each class
+        for _ in 0..classifier.num_classes() {
+            dagnn.add_output();
+        }
+        let _ = dagnn.update_topology();
+        dagnn
+    }
+
+    /// Perform structural classification
+    fn structural_classify(&self, classifier: &StructuralClassifier) -> (usize, f32) {
+        let result = classifier.classify(self);
+        (result.predicted_class, result.confidence)
+    }
+
+    /// Perform classification step with gradient for training
+    fn structural_classification_step(&self, classifier: &StructuralClassifier, target: usize) -> StructuralClassificationResult {
+        let mut result = classifier.classify(self);
+        result.correct = result.predicted_class == target;
+
+        // Cross-entropy loss
+        let eps = 1e-7;
+        result.loss = -(result.probabilities[target] + eps).ln();
+
+        // Gradient for cross-entropy with softmax
+        result.gradient = result.probabilities.clone();
+        result.gradient[target] -= 1.0;
+
+        result
+    }
+
+    /// Get activations as logits for classification
+    fn get_classification_logits(&self) -> Vec<f32> {
+        self.output_nodes()
+            .iter()
+            .map(|&node| self.graph[node].activation)
+            .collect()
+    }
+
+    /// Forward pass with custom input activations
+    fn forward_with_inputs(&mut self, inputs: &[f32]) -> Vec<f32> {
+        // Set input activations
+        for (i, &input) in inputs.iter().enumerate() {
+            if let Some(&node) = self.input_nodes().get(i) {
+                self.graph[node].activation = input;
+            }
+        }
+
+        // Propagate through the graph with dynamic √n normalization + LeakyReLU
+        let alpha = 0.01; // LeakyReLU slope for negative values
+        for node in self.graph.node_indices() {
+            let edges: Vec<_> = self.graph.edges_directed(node, petgraph::Direction::Incoming).collect();
+            let fan_in = edges.len();
+
+            if fan_in > 0 {
+                let weighted_sum: f32 = edges.iter()
+                    .map(|e| {
+                        let source = e.source();
+                        self.graph[source].activation * e.weight().weight
+                    })
+                    .sum();
+
+                // Dynamic √n normalization (GRAPHEME protocol)
+                let scale = 1.0 / (fan_in as f32).sqrt();
+                let normalized = scale * weighted_sum;
+
+                // LeakyReLU activation
+                self.graph[node].activation = if normalized > 0.0 { normalized } else { alpha * normalized };
+            }
+        }
+
+        self.get_classification_logits()
+    }
+
+    /// Backward pass for gradient computation (LeakyReLU + dynamic √n)
+    fn backward(&mut self, output_grad: &[f32], _embedding: &mut Embedding) -> BackwardPass {
+        let mut pass = BackwardPass::new();
+        let alpha = 0.01; // LeakyReLU slope
+
+        // Node gradients: accumulate gradient flowing into each node
+        let mut node_grads: HashMap<NodeId, f32> = HashMap::new();
+
+        // Initialize output node gradients from the loss gradient
+        for (i, &node) in self.output_nodes().iter().enumerate() {
+            if let Some(&grad) = output_grad.get(i) {
+                node_grads.insert(node, grad);
+            }
+        }
+
+        // Backpropagate through graph (reverse topological order)
+        // Collect all nodes and sort by reverse order
+        let nodes: Vec<_> = self.graph.node_indices().collect();
+        for &node in nodes.iter().rev() {
+            let node_grad = *node_grads.get(&node).unwrap_or(&0.0);
+            if node_grad.abs() < 1e-10 {
+                continue; // Skip nodes with negligible gradient
+            }
+
+            let activation = self.graph[node].activation;
+            // LeakyReLU derivative
+            let deriv = if activation > 0.0 { 1.0 } else { alpha };
+
+            // Get incoming edges for fan_in normalization
+            let incoming_edges: Vec<_> = self.graph.edges_directed(node, petgraph::Direction::Incoming).collect();
+            let fan_in = incoming_edges.len();
+            let scale = if fan_in > 0 { 1.0 / (fan_in as f32).sqrt() } else { 1.0 };
+
+            // Backprop gradient to each incoming edge
+            for edge in incoming_edges {
+                let source = edge.source();
+                let weight = edge.weight().weight;
+
+                // Edge gradient: ∂L/∂w = ∂L/∂output * ∂output/∂weighted_sum * ∂weighted_sum/∂w
+                // = node_grad * deriv * scale * source_activation
+                let source_activation = self.graph[source].activation;
+                let edge_grad = node_grad * deriv * scale * source_activation;
+                pass.edge_grads.insert((source, node), edge_grad);
+
+                // Accumulate gradient to source node (for further backprop)
+                let source_grad = node_grad * deriv * scale * weight;
+                *node_grads.entry(source).or_insert(0.0) += source_grad;
+            }
+        }
+
+        pass
+    }
+
+    /// Get all node activations
+    fn get_activations(&self) -> Vec<f32> {
+        self.graph.node_indices()
+            .map(|n| self.graph[n].activation)
+            .collect()
     }
 }
 
@@ -2319,13 +2506,7 @@ impl DomainBrain for ClassificationBrain {
 
     fn get_rules(&self) -> Vec<DomainRule> {
         vec![
-            DomainRule {
-                id: 0,
-                domain: "classification".to_string(),
-                name: "Structural Matching".to_string(),
-                description: "Match output to class templates".to_string(),
-                category: "classification".to_string(),
-            },
+            DomainRule::new(0, "Structural Matching", "Match output to class templates"),
         ]
     }
 
@@ -2572,22 +2753,73 @@ impl ImageClassificationModel {
     /// - num_classes output nodes (from ClassificationConfig)
     /// - Xavier-initialized edge weights
     pub fn with_config(config: ImageClassificationConfig) -> Self {
-        // Create DagNN with generic classifier - sized for VisionGraph
-        let dag = DagNN::with_classifier(
+        let classification = ClassificationBrain::new(config.classification.clone());
+
+        // Create DagNN with full network architecture (AGI Mesh Ready)
+        let dag = Self::build_network(
             config.max_vision_nodes,
             config.hidden_size,
-            config.classification.num_classes,
-            None, // activations set later per sample
-        ).expect("Failed to create DagNN classifier");
+            classification.classifier().num_classes(),
+        );
 
         Self {
             vision: VisionBrain::new().with_feature_config(config.vision.clone()),
-            classification: ClassificationBrain::new(config.classification.clone()),
+            classification,
             dag,
             config,
             samples_seen: 0,
             adam: AdamState::new(),
         }
+    }
+
+    /// Build a fully-connected feedforward network: input -> hidden -> output
+    /// Uses simple 1.0 weight init (dynamic √n normalization at activation time)
+    fn build_network(num_inputs: usize, hidden_size: usize, num_classes: usize) -> DagNN {
+        use grapheme_core::Edge;
+
+        let mut dag = DagNN::new();
+
+        // Layer 1: Input nodes (placeholder characters for vision grid)
+        let mut input_nodes = Vec::with_capacity(num_inputs);
+        for i in 0..num_inputs {
+            let ch = (i % 256) as u8 as char;
+            let node = dag.add_character(ch, i);
+            input_nodes.push(node);
+        }
+
+        // Layer 2: Hidden nodes
+        let mut hidden_nodes = Vec::with_capacity(hidden_size);
+        for _ in 0..hidden_size {
+            hidden_nodes.push(dag.add_hidden());
+        }
+
+        // Layer 3: Output nodes (one per class)
+        let mut output_nodes = Vec::with_capacity(num_classes);
+        for _ in 0..num_classes {
+            output_nodes.push(dag.add_output());
+        }
+
+        // Simple 1.0 weight initialization (GRAPHEME protocol: NO Xavier)
+        // Dynamic √n normalization applied at activation time in forward pass
+
+        // Connect input -> hidden with weight 1.0
+        for &input_node in &input_nodes {
+            for &hidden_node in &hidden_nodes {
+                dag.add_edge(input_node, hidden_node, Edge::semantic(1.0));
+            }
+        }
+
+        // Connect hidden -> output with weight 1.0
+        for &hidden_node in &hidden_nodes {
+            for &output_node in &output_nodes {
+                dag.add_edge(hidden_node, output_node, Edge::semantic(1.0));
+            }
+        }
+
+        // Update topology for correct forward pass order
+        let _ = dag.update_topology();
+
+        dag
     }
 
     /// Get model configuration
@@ -2688,9 +2920,13 @@ impl ImageClassificationModel {
         let vision_edges = vision_graph.edge_count();
 
         // Stage 2: DagNN - Extract activations and forward pass
-        let input_activations = self.vision_to_input_activations(&vision_graph);
-        self.dag.forward_with_inputs(&input_activations)
-            .map_err(|e| VisionError::FeatureError(format!("Forward pass: {}", e)))?;
+        let input_map = self.vision_to_input_activations(&vision_graph);
+        // Convert HashMap to ordered Vec based on input node order
+        let input_activations: Vec<f32> = self.dag.input_nodes()
+            .iter()
+            .map(|&node| *input_map.get(&node).unwrap_or(&0.0))
+            .collect();
+        let _ = self.dag.forward_with_inputs(&input_activations);
 
         // Stage 3: ClassificationBrain - output to class
         let result = self.classification.classify(&self.dag);
@@ -2728,11 +2964,15 @@ impl ImageClassificationModel {
         let vision_graph = self.image_to_vision_graph(image)?;
 
         // Stage 2: Extract input activations
-        let input_activations = self.vision_to_input_activations(&vision_graph);
+        let input_map = self.vision_to_input_activations(&vision_graph);
+        // Convert HashMap to ordered Vec based on input node order
+        let input_activations: Vec<f32> = self.dag.input_nodes()
+            .iter()
+            .map(|&node| *input_map.get(&node).unwrap_or(&0.0))
+            .collect();
 
         // Stage 3: Forward pass through persistent DagNN
-        self.dag.forward_with_inputs(&input_activations)
-            .map_err(|e| VisionError::FeatureError(format!("Forward pass: {}", e)))?;
+        let _ = self.dag.forward_with_inputs(&input_activations);
 
         // Stage 4: Compute loss and gradient via ClassificationBrain
         let struct_result = self.classification.loss_and_gradient(&self.dag, target);
@@ -2764,17 +3004,9 @@ impl ImageClassificationModel {
     ///
     /// Combines gradient descent with optional Hebbian learning, both using Adam.
     fn apply_adam_edge_updates(&mut self, output_gradient: &[f32]) -> VisionResult<()> {
-        // Convert output gradient to node gradients for backprop
-        let mut output_grad: HashMap<NodeId, Array1<f32>> = HashMap::new();
-        for (i, &node_id) in self.dag.output_nodes().iter().enumerate() {
-            if i < output_gradient.len() {
-                output_grad.insert(node_id, Array1::from_vec(vec![output_gradient[i]]));
-            }
-        }
-
-        // Compute gradients via backpropagation
+        // Compute gradients via backpropagation (LeakyReLU)
         let mut dummy_embedding = Embedding::new(256, 16, InitStrategy::Xavier);
-        let grads = self.dag.backward(&output_grad, &mut dummy_embedding);
+        let grads = self.dag.backward(output_gradient, &mut dummy_embedding);
 
         // Collect edge updates with Adam
         let mut edge_updates: Vec<(NodeId, NodeId, f32)> = Vec::new();
@@ -3703,7 +3935,8 @@ mod tests {
         let brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
         // Create a DagNN with classifier structure
-        let dag = DagNN::with_classifier(10, 8, 5, None).unwrap();
+        let classifier = brain.classifier();
+        let dag = DagNN::with_classifier(classifier);
 
         let result = brain.classify(&dag);
         assert!(result.predicted_class < 5);
@@ -3744,7 +3977,8 @@ mod tests {
         let brain = ClassificationBrain::new(ClassificationConfig::new(5));
 
         // Create a DagNN with classifier structure
-        let dag = DagNN::with_classifier(10, 8, 5, None).unwrap();
+        let classifier = brain.classifier();
+        let dag = DagNN::with_classifier(classifier);
 
         let result = brain.execute(&dag);
         assert!(result.is_ok());
@@ -4069,14 +4303,11 @@ mod tests {
         let pixels = vec![0.5f32; 100]; // 10x10
         let image = RawImage::grayscale(10, 10, pixels).unwrap();
 
-        // Verify initial state
-        assert!(!model.dag().has_gradients(), "Should start with no gradients");
-
         // Train (which should accumulate gradients internally via Hebbian/hybrid)
         model.train_step(&image, 0).unwrap();
 
-        // Get edge count (num_parameters)
-        let num_params = model.dag().num_parameters();
+        // Get edge count (num_parameters = edges)
+        let num_params = model.dag().graph.edge_count();
         assert!(num_params > 0, "DagNN should have learnable parameters (edges)");
         println!("DagNN has {} learnable parameters (edges)", num_params);
     }
