@@ -36,6 +36,8 @@ pub enum TapeOp {
         input_indices: Vec<usize>,
         output_idx: usize,
         agg_type: AggregationType,
+        /// Index of max element (for Max aggregation backward pass)
+        max_idx: Option<usize>,
     },
     /// Linear transformation: input @ weights + bias
     Linear {
@@ -208,10 +210,29 @@ impl Tape {
     ) -> usize {
         let output_idx = self.store_value(output);
         if self.recording {
+            // For Max aggregation, find which input was the max (by L2 norm)
+            let max_idx = if agg_type == AggregationType::Max && !input_indices.is_empty() {
+                let mut max_norm = f32::NEG_INFINITY;
+                let mut max_i = 0;
+                for (i, &idx) in input_indices.iter().enumerate() {
+                    if let Some(val) = self.values.get(&idx) {
+                        let norm: f32 = val.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        if norm > max_norm {
+                            max_norm = norm;
+                            max_i = i;
+                        }
+                    }
+                }
+                Some(max_i)
+            } else {
+                None
+            };
+
             self.ops.push(TapeOp::Aggregate {
                 input_indices,
                 output_idx,
                 agg_type,
+                max_idx,
             });
         }
         output_idx
@@ -326,6 +347,7 @@ impl Tape {
                 input_indices,
                 output_idx,
                 agg_type,
+                max_idx,
             } => {
                 if let Some(grad) = self.gradients.get(output_idx).cloned() {
                     match agg_type {
@@ -344,13 +366,19 @@ impl Tape {
                             }
                         }
                         AggregationType::Max => {
-                            // Max: gradient only flows to the max element
-                            // This requires knowing which element was max during forward
-                            // For now, distribute equally (simplified)
-                            let n = input_indices.len() as f32;
-                            let scaled_grad = &grad / n;
-                            for idx in input_indices {
-                                self.accumulate_grad(*idx, scaled_grad.clone());
+                            // Max: gradient flows only to the max element
+                            if let Some(max_i) = max_idx {
+                                // Route gradient to the element that was max during forward
+                                if let Some(&max_input_idx) = input_indices.get(*max_i) {
+                                    self.accumulate_grad(max_input_idx, grad);
+                                }
+                            } else {
+                                // Fallback: distribute equally (shouldn't happen)
+                                let n = input_indices.len() as f32;
+                                let scaled_grad = &grad / n;
+                                for idx in input_indices {
+                                    self.accumulate_grad(*idx, scaled_grad.clone());
+                                }
                             }
                         }
                     }
