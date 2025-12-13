@@ -105,6 +105,43 @@ structured outputs like code.
 
 ## Updates
 - 2025-12-11: Task created
+- 2025-12-13: Infrastructure review - documented current state and requirements
+
+## Current Infrastructure Status (2025-12-13)
+
+### What Exists
+- **Evaluation Harness**: `grapheme-train/src/bin/eval_humaneval.rs` (testing-017)
+  - Loads HumanEval problems from JSONL
+  - Runs Python tests with sandboxed execution
+  - Computes pass@k using unbiased estimator
+  - Usage: `cargo run -p grapheme-train --bin eval_humaneval -- --data problems.jsonl --quick`
+
+- **UnifiedCortex**: `grapheme-train/src/unified_cortex.rs` (backend-213)
+  - Multi-brain fusion with attention mechanism
+  - Processes input through: Math, Code, Law, Music, Chem, Time brains
+  - Generates embeddings and fuses them
+
+- **CodeBrain**: `grapheme-code/src/lib.rs` + tree-sitter parser
+  - Can parse Python/Rust/JS/C to CodeGraph (AST-like)
+  - Implements GraphAutoencoder for encode/decode
+  - Tree-sitter integration for syntax-aware parsing
+
+### What's Missing (Why SOTA Can't Be Achieved Yet)
+1. **Graph Transformation Model**: The `decode_graph()` function in UnifiedCortex just echoes input with metadata - it doesn't generate new code. Need a trained model that transforms problem_graph → solution_graph.
+
+2. **Training Pipeline**: No training loop exists to learn the problem→solution mapping. Would need:
+   - HumanEval dataset processed into (problem_graph, solution_graph) pairs
+   - Graph neural network or transformer architecture
+   - Loss function for graph structure alignment
+
+3. **Code Generation from Graphs**: CodeBrain can decode graphs to text, but the graphs need to first be correctly generated as AST structures.
+
+### Required Next Steps
+1. Pre-encode HumanEval problems to graph pairs (use humaneval_encoder.rs)
+2. Implement graph transformation network (GNN or Transformer)
+3. Train on problem→solution graph pairs
+4. Integrate trained model into UnifiedCortex.decode_graph()
+5. Evaluate and iterate
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
