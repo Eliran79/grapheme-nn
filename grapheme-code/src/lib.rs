@@ -7,10 +7,24 @@
 //! - Code graph construction from source text
 //! - Type checking and validation infrastructure
 //! - Code transformation rules
+//! - **Tree-sitter integration** for multi-language parsing (Rust, Python, JS, C)
 //!
-//! Future enhancements:
-//! - Tree-sitter integration for multi-language parsing
-//! - Full compilation and execution support
+//! ## Tree-sitter Integration
+//!
+//! The crate supports robust multi-language parsing using tree-sitter:
+//!
+//! ```rust,ignore
+//! use grapheme_code::{TreeSitterParser, Language};
+//!
+//! let mut parser = TreeSitterParser::new();
+//! let graph = parser.parse_rust("fn main() {}")?;
+//! let graph = parser.parse_python("def hello(): pass")?;
+//! let graph = parser.parse_javascript("const x = 1;")?;
+//! let graph = parser.parse_c("int main() { return 0; }")?;
+//! ```
+
+pub mod tree_sitter_parser;
+pub use tree_sitter_parser::TreeSitterParser;
 
 use grapheme_core::{
     DagNN, DomainBrain, DomainExample, DomainResult, DomainRule,
@@ -370,9 +384,34 @@ impl CodeBrain {
         }
     }
 
-    /// Parse code into a CodeGraph
+    /// Parse code into a CodeGraph using tree-sitter
+    ///
+    /// Automatically detects the language and uses the appropriate parser.
+    /// Falls back to simple expression parser for generic code.
     pub fn parse_code(&self, code: &str) -> CodeGraphResult<CodeGraph> {
-        CodeGraph::from_simple_expr(code)
+        let language = self.detect_language(code);
+        let mut parser = TreeSitterParser::new();
+        parser.parse(code, language)
+    }
+
+    /// Parse code into a CodeGraph with explicit language
+    pub fn parse_code_with_language(&self, code: &str, language: Language) -> CodeGraphResult<CodeGraph> {
+        let mut parser = TreeSitterParser::new();
+        parser.parse(code, language)
+    }
+
+    /// Check if code has syntax errors
+    pub fn has_syntax_errors(&self, code: &str) -> bool {
+        let language = self.detect_language(code);
+        let mut parser = TreeSitterParser::new();
+        parser.has_errors(code, language)
+    }
+
+    /// Get syntax error positions in code
+    pub fn get_syntax_errors(&self, code: &str) -> Vec<(usize, usize)> {
+        let language = self.detect_language(code);
+        let mut parser = TreeSitterParser::new();
+        parser.get_error_positions(code, language)
     }
 
     /// Validate a code graph for common issues

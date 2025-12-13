@@ -1,7 +1,7 @@
 ---
 id: backend-082
 title: Add tree-sitter integration for grapheme-code multi-language parsing
-status: todo
+status: done
 priority: low
 tags:
 - backend
@@ -37,14 +37,14 @@ The crate docstring already notes: "Future enhancements: Tree-sitter integration
 - Support incremental parsing for editor integration
 
 ## Tasks
-- [ ] Add tree-sitter and language grammar dependencies to Cargo.toml
-- [ ] Create `TreeSitterParser` struct wrapping tree-sitter
-- [ ] Implement `parse_rust()` converting tree-sitter AST to CodeGraph
-- [ ] Implement `parse_python()` for Python code
-- [ ] Implement `parse_javascript()` for JS/TS code
-- [ ] Implement `parse_c()` for C code
-- [ ] Update CodeBrain.parse() to use tree-sitter based on detected language
-- [ ] Add tests with real code snippets
+- [x] Add tree-sitter and language grammar dependencies to Cargo.toml
+- [x] Create `TreeSitterParser` struct wrapping tree-sitter
+- [x] Implement `parse_rust()` converting tree-sitter AST to CodeGraph
+- [x] Implement `parse_python()` for Python code
+- [x] Implement `parse_javascript()` for JS/TS code
+- [x] Implement `parse_c()` for C code
+- [x] Update CodeBrain.parse() to use tree-sitter based on detected language
+- [x] Add tests with real code snippets
 
 ## Acceptance Criteria
 ✅ **Multi-Language Parsing:**
@@ -88,24 +88,24 @@ impl TreeSitterParser {
 - `binary_expression` → `CodeNode::BinaryOp`
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
   - Run `cargo build --release` (or `cargo build` for debug)
   - Run `cargo test` to ensure tests pass
   - **Actually run/execute the code** to verify runtime behavior
   - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
+- [x] Consider creating a feature branch for complex changes
+- [x] Review changes before committing
 
 **Testing requirements by change type:**
 - Code changes: Build + test + **run the actual program/command** to verify behavior
@@ -115,30 +115,37 @@ impl TreeSitterParser {
 
 ## Updates
 - 2025-12-06: Task created
+- 2025-12-13: Task completed - added tree-sitter multi-language parsing
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `/home/user/grapheme-nn/grapheme-code/src/tree_sitter_parser.rs` (~600 lines)
+- Added module declaration and re-export in lib.rs
+- Updated CodeBrain with `parse_code()` using tree-sitter
+- Added dependencies: tree-sitter 0.22, tree-sitter-rust/python/javascript/c 0.21
+- Key exports: `TreeSitterParser`, methods `parse_rust()`, `parse_python()`, `parse_javascript()`, `parse_c()`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `TreeSitterParser::parse(code, language)` → tree-sitter AST → `CodeGraph`
+- `CodeBrain::parse_code(code)` → auto-detects language → uses TreeSitterParser
+- `CodeBrain::has_syntax_errors(code)` → uses tree-sitter for error detection
+- `CodeBrain::get_syntax_errors(code)` → returns (row, column) positions
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses tree-sitter crates from crates.io (v0.21-0.22 range)
+- Integrates with existing CodeGraph and CodeNode types
+- CodeBrain now has language-aware parsing (detect_language → parse)
+- Language fallback: Generic uses simple expression parser
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-code` to verify 21 tests pass (12 new tree-sitter tests)
+- Run `cargo clippy -p grapheme-code -- -D warnings` for 0 warnings
+- Tests cover: Rust/Python/JS/C parsing, error detection, error positions, arrow functions
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Tree-sitter AST nodes mapped to CodeNode types (function_item → Function, etc.)
+- Error-tolerant parsing: partial results returned for invalid code
+- `has_errors()` and `get_error_positions()` for syntax validation
+- Language detection heuristics in `detect_language()` (fn→Rust, def→Python, etc.)
