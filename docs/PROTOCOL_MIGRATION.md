@@ -96,9 +96,15 @@ impl Default for InitStrategy {
 let embedding = Embedding::new(256, 64, InitStrategy::default());
 ```
 
-### Step 3: Set Adam as Default Optimizer
+### Step 3: Set Adam as Default Optimizer (SGD Deprecated)
 
 ```rust
+#[deprecated(note = "Use Adam per GRAPHEME protocol")]
+pub struct SGD { ... }
+
+/// Adam optimizer (GRAPHEME Protocol default)
+pub struct Adam { ... }
+
 impl Default for Adam {
     fn default() -> Self {
         Self::new(0.001)  // lr=0.001, beta1=0.9, beta2=0.999

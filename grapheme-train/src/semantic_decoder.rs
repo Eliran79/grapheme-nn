@@ -311,7 +311,7 @@ impl SemanticDecoder {
             }
         }
 
-        // Apply gradients (SGD)
+        // Apply gradients (simple gradient descent - consider upgrading to Adam per GRAPHEME protocol)
         for j in 0..hidden_dim {
             for i in 0..vocab_size {
                 self.output_projection[j][i] -= lr * d_output_proj[j][i] / n;

@@ -106,14 +106,14 @@ fn activation(x: f32) -> f32 {
 ```
 
 ### Adam Optimizer (Default)
-Adam is the default optimizer for GRAPHEME networks:
+Adam is the default optimizer for GRAPHEME networks. **SGD is DEPRECATED**.
 ```rust
 impl Default for Adam {
     fn default() -> Self {
         Self::new(0.001)  // lr=0.001, beta1=0.9, beta2=0.999
     }
 }
-// SGD is available but Adam is preferred for LeakyReLU + DynamicXavier
+// SGD is DEPRECATED - use Adam for LeakyReLU + DynamicXavier
 ```
 
 ### Dynamic √n Normalization

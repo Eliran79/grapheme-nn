@@ -1,8 +1,12 @@
 //! Optimizer Module
 //!
-//! Provides SGD, Adam, gradient clipping, and learning rate schedulers for training.
+//! Provides Adam (default), SGD, gradient clipping, and learning rate schedulers for training.
 //! Backend-028: Optimizer implementations.
 //! Backend-193: Gradient clipping for training stability.
+//!
+//! **GRAPHEME Protocol**: Use `Adam` (lr=0.001) as the default optimizer.
+//! Adam is preferred for LeakyReLU + DynamicXavier networks.
+//! SGD is deprecated and should only be used for specific research purposes.
 
 use grapheme_core::{Persistable, PersistenceError};
 use ndarray::Array2;
@@ -159,6 +163,13 @@ pub trait Optimizer {
 }
 
 /// Stochastic Gradient Descent with optional momentum
+///
+/// **GRAPHEME Protocol**: SGD is DEPRECATED. Use [`Adam`] as the default optimizer.
+/// Adam provides better convergence with LeakyReLU + DynamicXavier networks.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use Adam per GRAPHEME protocol - Adam provides better convergence with LeakyReLU + DynamicXavier"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SGD {
     /// Learning rate
@@ -171,6 +182,7 @@ pub struct SGD {
     velocity: Option<Array2<f32>>,
 }
 
+#[allow(deprecated)]
 impl SGD {
     /// Create a new SGD optimizer
     pub fn new(lr: f32) -> Self {
@@ -195,6 +207,7 @@ impl SGD {
     }
 }
 
+#[allow(deprecated)]
 impl Optimizer for SGD {
     fn step(&mut self, params: &mut Array2<f32>, grads: &Array2<f32>) {
         // Apply weight decay
@@ -233,7 +246,13 @@ impl Optimizer for SGD {
     }
 }
 
-/// Adam optimizer
+/// Adam optimizer (GRAPHEME Protocol default)
+///
+/// **GRAPHEME Protocol**: Adam is the default optimizer for GRAPHEME networks.
+/// Default parameters: lr=0.001, beta1=0.9, beta2=0.999
+/// Optimized for LeakyReLU + DynamicXavier architectures.
+///
+/// Use `Adam::default()` to get protocol-compliant settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Adam {
     /// Learning rate
@@ -609,6 +628,7 @@ impl<O: Optimizer> Optimizer for AccumulatedOptimizer<O> {
 
 // Persistence implementations
 
+#[allow(deprecated)]
 impl Persistable for SGD {
     fn persist_type_id() -> &'static str {
         "SGD_optimizer"
@@ -653,6 +673,7 @@ mod tests {
     use ndarray::arr2;
 
     #[test]
+    #[allow(deprecated)]
     fn test_sgd_basic() {
         let mut sgd = SGD::new(0.1);
         let mut params = arr2(&[[1.0, 2.0], [3.0, 4.0]]);
@@ -882,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_accumulated_optimizer() {
         let sgd = SGD::new(0.1);
         let mut acc_opt = AccumulatedOptimizer::new(sgd, 4);
@@ -902,6 +924,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_accumulated_optimizer_with_clipping() {
         let sgd = SGD::new(1.0);
         let mut acc_opt =
@@ -919,6 +942,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_accumulated_optimizer_force_step() {
         let sgd = SGD::new(0.1);
         let mut acc_opt = AccumulatedOptimizer::new(sgd, 4);
