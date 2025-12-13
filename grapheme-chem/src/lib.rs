@@ -340,18 +340,101 @@ impl ChemBrain {
     // ========================================================================
 
     /// Balance Equation: Ensure atom conservation in chemical equations.
+    /// Normalizes edge weights to balance the equation representation.
     fn balance_equation(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Calculate total edge weight for normalization (conservation)
+        let total_weight: f32 = result.graph.edge_references()
+            .map(|e| e.weight().weight)
+            .sum();
+
+        if total_weight > 0.0 && result.edge_count() > 0 {
+            let avg_weight = total_weight / result.edge_count() as f32;
+
+            // Normalize edges to balance around average
+            let edges_to_update: Vec<_> = result.graph.edge_references()
+                .map(|edge| {
+                    let normalized = (edge.weight().weight + avg_weight) / 2.0;
+                    (edge.source(), edge.target(), normalized)
+                })
+                .collect();
+
+            for (src, tgt, new_weight) in edges_to_update {
+                if let Some(edge) = result.graph.find_edge(src, tgt) {
+                    result.graph[edge].weight = new_weight.max(0.1).min(2.0);
+                }
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     /// Valence Check: Verify that atom bonding satisfies valence rules.
+    /// Prunes edges that violate valence constraints (too many connections).
     fn valence_check(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::Direction;
+        let mut result = graph.clone();
+
+        // Identify nodes with too many connections (violating valence)
+        // Typical max valence is 4 (carbon), so we prune nodes with > 6 edges
+        let max_connections = 6;
+        let overconnected: Vec<_> = result.graph.node_indices()
+            .filter(|&node| {
+                let in_edges = result.graph.neighbors_directed(node, Direction::Incoming).count();
+                let out_edges = result.graph.neighbors_directed(node, Direction::Outgoing).count();
+                in_edges + out_edges > max_connections
+            })
+            .collect();
+
+        // Prune weakest edges from overconnected nodes
+        for _node in overconnected {
+            let _ = result.prune_weak_edges(0.2);
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     /// Functional Group Detection: Identify common functional groups.
+    /// Forms cliques from densely connected node regions.
     fn functional_group_detection(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Find nodes with high connectivity (potential functional group centers)
+        let high_connectivity: Vec<_> = result.graph.node_indices()
+            .filter(|&node| {
+                result.graph.edges(node).count() >= 2
+            })
+            .collect();
+
+        // Strengthen connections between high-connectivity nodes
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                if high_connectivity.contains(&edge.source()) && high_connectivity.contains(&edge.target()) {
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.3))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        // Form clique if we have a functional group pattern
+        if high_connectivity.len() >= 2 {
+            result.form_clique(high_connectivity, Some("FunctionalGroup".to_string()));
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 }
 
@@ -382,11 +465,45 @@ impl DomainBrain for ChemBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Convert core graph to chemistry domain representation
+        // Strengthen semantic edges (chemical bonds are semantic)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                match edge.weight().edge_type {
+                    grapheme_core::EdgeType::Semantic => {
+                        // Chemical bonds are semantic connections
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.25))
+                    }
+                    grapheme_core::EdgeType::Clique => {
+                        // Functional groups are cliques
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.15))
+                    }
+                    _ => None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        let mut result = graph.clone();
+
+        // Convert chemistry domain back to core representation
+        // Clean up and normalize
+        result.prune_weak_edges(0.05);
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {

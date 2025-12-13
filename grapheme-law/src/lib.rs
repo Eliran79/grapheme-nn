@@ -292,20 +292,105 @@ impl LawBrain {
     // ========================================================================
 
     /// Stare Decisis: Strengthen connections to nodes with high activation.
+    /// In legal reasoning, precedent (high-activation nodes) should have stronger influence.
     fn stare_decisis(&self, graph: &DagNN) -> DomainResult<DagNN> {
+        use petgraph::visit::EdgeRef;
         let mut result = graph.clone();
+
+        // Find high-activation nodes (established precedents)
+        let precedent_nodes = result.get_nodes_by_activation(0.6);
+
+        // Strengthen edges connected to precedent nodes
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                let boost = if precedent_nodes.contains(&edge.source()) {
+                    1.3 // Outgoing from precedent
+                } else if precedent_nodes.contains(&edge.target()) {
+                    1.2 // Incoming to precedent
+                } else {
+                    1.0
+                };
+                if boost > 1.0 {
+                    Some((edge.source(), edge.target(), edge.weight().weight * boost))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
         let _ = result.update_topology();
         Ok(result)
     }
 
     /// Distinguish Precedent: Identify nodes that differ from common patterns.
+    /// Weakens edges to low-activation nodes (distinguishable cases).
     fn distinguish_precedent(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Weaken edges to low-activation nodes (cases that can be distinguished)
+        let edges_to_weaken: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                let tgt_act = result.graph[edge.target()].activation;
+                // Low activation = weak precedent, can be distinguished
+                if tgt_act < 0.3 {
+                    Some((edge.source(), edge.target(), edge.weight().weight * 0.7))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_weaken {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.max(0.1);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     /// IRAC Analysis: Structure for Issue, Rule, Application, Conclusion.
+    /// Forms cliques from connected high-activation node groups.
     fn irac_analysis(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Find clusters of connected nodes with moderate-to-high activation
+        // These represent the IRAC components
+        let strong_nodes = result.get_nodes_by_activation(0.5);
+
+        // Strengthen edges within the strong node set (IRAC structure)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                if strong_nodes.contains(&edge.source()) && strong_nodes.contains(&edge.target()) {
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.2))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        // Form a clique if we have enough strong nodes
+        if strong_nodes.len() >= 3 {
+            result.form_clique(strong_nodes, Some("IRAC".to_string()));
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 }
 
@@ -336,11 +421,42 @@ impl DomainBrain for LawBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Convert core graph to legal domain representation
+        // Strengthen structural edges (legal arguments are structural)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                match edge.weight().edge_type {
+                    grapheme_core::EdgeType::Structural => {
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.2))
+                    }
+                    grapheme_core::EdgeType::Semantic => {
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.1))
+                    }
+                    _ => None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        let mut result = graph.clone();
+
+        // Convert legal domain back to core representation
+        // Preserve structure and normalize
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {

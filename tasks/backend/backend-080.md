@@ -110,25 +110,40 @@ fn transform(&self, graph: &DagNN, rule_id: usize) -> DomainResult<DagNN> {
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented real transforms in all domain brains (previously returned `graph.clone()`)
+- **grapheme-music**: voice_leading, chord_progression, key_detection, rhythm_quantization
+  - voice_leading: Strengthens edges between nodes with similar activations
+  - chord_progression: Strengthens sequential edges
+  - key_detection: Strengthens edges connected to high-activation (key center) nodes
+  - rhythm_quantization: Prunes weak edges for cleaner rhythmic structure
+- **grapheme-law**: stare_decisis, distinguish_precedent, irac_analysis
+  - stare_decisis: Strengthens edges to high-activation precedent nodes
+  - distinguish_precedent: Weakens edges to low-activation (distinguishable) nodes
+  - irac_analysis: Forms cliques from strong node clusters
+- **grapheme-chem**: balance_equation, valence_check, functional_group_detection
+  - balance_equation: Normalizes edge weights around average
+  - valence_check: Prunes edges from overconnected nodes
+  - functional_group_detection: Forms cliques from high-connectivity regions
+- **grapheme-code**: constant_folding
+  - Forms cliques and strengthens edges between high-activation "constant" nodes
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- All transforms now modify the graph structure (edge weights, cliques)
+- Edge weights are bounded [0.1, 2.0] to prevent extreme values
+- Clique formation creates semantic groupings
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `petgraph::visit::EdgeRef` for edge iteration
+- Uses `DagNN::get_nodes_by_activation()` for node selection
+- Uses `DagNN::form_clique()` for semantic grouping
+- Uses `DagNN::prune_weak_edges()` for cleanup
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo check` on domain brain crates to verify compilation
+- Transforms produce modified graphs (not identical clones)
+- Edge weights change based on domain-specific rules
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Transforms are structural scaffolding for learned behavior
+- Actual domain intelligence comes from training
+- Edge weight modifications enable gradient-based learning

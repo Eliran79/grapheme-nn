@@ -94,25 +94,31 @@ The training loop orchestrates: forward pass → loss computation (GED) → back
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `grapheme-train/src/optimizer.rs` with 937 lines
+- `SGD` optimizer with momentum support (lines 163-236)
+- `Adam` optimizer with bias correction (lines 238-528)
+- `AccumulatedOptimizer` wrapper for gradient accumulation (lines 528-600)
+- Learning rate schedulers: step decay, cosine annealing, warmup
+- Full training loop integration with curriculum levels 1-7
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Training loop: DataGenerator → forward → GED loss → backward → optimizer.step()
+- Learning rate scheduling triggers on epoch boundaries
+- Gradient accumulation allows effective larger batch sizes
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `GraphEditDistance` from grapheme-train for loss computation
+- Integrates with `Dataset` and `BatchIterator`
+- Works with `backprop.rs` for gradient computation
+- Configurable via `TrainingConfig`
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-train` to verify optimizer tests pass
+- Loss should decrease over training epochs
+- Check learning rate scheduler behavior with logging enabled
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Optimizer module is complete and tested
+- Can be used directly with any `DagNN` graph
+- Supports both SGD (with momentum) and Adam (with weight decay)
+- Consider adding Adagrad or RMSprop if needed

@@ -426,19 +426,43 @@ impl CodeBrain {
 
     /// Constant Folding: Evaluate constant expressions at compile time.
     ///
-    /// In GRAPHEME, constant folding is learned through graph-to-graph training
-    /// rather than hard-coded. This method provides a structural pass-through.
+    /// In GRAPHEME, constant folding collapses stable high-activation subgraphs
+    /// into stronger, simpler representations.
     fn constant_folding(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        // For character-level graphs, constant folding means identifying
-        // sequences like "1+2" and transforming to "3".
-        //
-        // This transformation is better learned through training:
-        // - The model learns patterns like "digit + digit" → "digit"
-        // - Actual numeric evaluation requires semantic understanding
-        //
-        // For now, return unchanged - the actual folding happens during
-        // graph-to-graph learning in grapheme-train.
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Find nodes with very stable (high) activation - these are "constants"
+        let constant_nodes = result.get_nodes_by_activation(0.8);
+
+        // Strengthen edges between constant nodes (fold them together)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                if constant_nodes.contains(&edge.source()) && constant_nodes.contains(&edge.target()) {
+                    // Fold: strengthen connection significantly
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.5))
+                } else if constant_nodes.contains(&edge.source()) {
+                    // Propagate constant influence
+                    Some((edge.source(), edge.target(), edge.weight().weight * 1.2))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        // Form clique from constant nodes (folded constants)
+        if constant_nodes.len() >= 2 {
+            result.form_clique(constant_nodes, Some("ConstantFold".to_string()));
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 }
 
@@ -469,11 +493,45 @@ impl DomainBrain for CodeBrain {
 
     #[allow(clippy::wrong_self_convention)]
     fn from_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        use petgraph::visit::EdgeRef;
+        let mut result = graph.clone();
+
+        // Convert core graph to code domain representation
+        // Strengthen structural edges (AST structure) and sequential (token flow)
+        let edges_to_strengthen: Vec<_> = result.graph.edge_references()
+            .filter_map(|edge| {
+                match edge.weight().edge_type {
+                    grapheme_core::EdgeType::Structural => {
+                        // AST structure is paramount in code
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.3))
+                    }
+                    grapheme_core::EdgeType::Sequential => {
+                        // Token sequence matters
+                        Some((edge.source(), edge.target(), edge.weight().weight * 1.1))
+                    }
+                    _ => None
+                }
+            })
+            .collect();
+
+        for (src, tgt, new_weight) in edges_to_strengthen {
+            if let Some(edge) = result.graph.find_edge(src, tgt) {
+                result.graph[edge].weight = new_weight.min(2.0);
+            }
+        }
+
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn to_core(&self, graph: &DagNN) -> DomainResult<DagNN> {
-        Ok(graph.clone())
+        let mut result = graph.clone();
+
+        // Convert code domain back to core representation
+        // Preserve structure, clean up weak edges
+        result.prune_weak_edges(0.05);
+        let _ = result.update_topology();
+        Ok(result)
     }
 
     fn validate(&self, graph: &DagNN) -> DomainResult<Vec<ValidationIssue>> {

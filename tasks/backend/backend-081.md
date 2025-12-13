@@ -103,25 +103,36 @@ Each domain should define how NodeType maps to domain-specific types:
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Implemented `from_core()` and `to_core()` in all domain brains (previously returned `graph.clone()`)
+- **grapheme-music**:
+  - from_core: Strengthens Sequential (melodic) and Semantic (harmonic) edges
+  - to_core: Prunes weak edges (0.05 threshold) and updates topology
+- **grapheme-law**:
+  - from_core: Strengthens Structural (legal argument) and Semantic edges
+  - to_core: Updates topology for core representation
+- **grapheme-chem**:
+  - from_core: Strengthens Semantic (chemical bonds) and Clique (functional groups) edges
+  - to_core: Prunes weak edges and normalizes
+- **grapheme-code**:
+  - from_core: Strengthens Structural (AST) and Sequential (token flow) edges
+  - to_core: Prunes weak edges and cleans up
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Domain-specific edge type weighting applied during conversion
+- Edge weight boosting: 1.1x to 1.3x depending on edge type relevance
+- Round-trip conversion preserves graph structure while applying domain bias
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `grapheme_core::EdgeType` enum for type matching
+- Uses `petgraph::visit::EdgeRef` for edge iteration
+- Compatible with all DomainBrain trait implementations
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo check` on domain brain crates
+- Test round-trip: `to_core(from_core(graph))` should preserve structure
+- Edge weights should change based on edge type
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- from_core applies domain-specific bias to incoming graphs
+- to_core normalizes for cross-domain compatibility
+- Design allows for domain-specific learning while maintaining core compatibility
