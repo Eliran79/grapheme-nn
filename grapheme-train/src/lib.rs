@@ -32,6 +32,7 @@ pub mod graph_data;
 pub mod graph_trainer;
 pub mod graph_transform_net;
 pub mod humaneval_encoder;
+pub mod parallel_cortex;
 
 // Re-export key types
 pub use backprop::{
@@ -73,6 +74,13 @@ pub use graph_trainer::{
 pub use code_loss::{
     CodeStructuralLoss, CodeLossConfig, NodeCategory, EdgeCategory,
     OperationType, code_structural_loss, dagnn_code_loss, operation_distance,
+};
+
+// Re-export parallel cortex types (backend-212)
+pub use parallel_cortex::{
+    CollaborativeCortexConfig, CollaborativeCortexTrainer,
+    CollaborativeResult, BrainActivation, FusionLayer, BatchLoss,
+    TrainingStats, parallel_process_dataset, parallel_train_batch,
 };
 
 /// Training errors
