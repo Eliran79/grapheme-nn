@@ -11,12 +11,15 @@ description = "Multi-modal fusion for GRAPHEME: vision, audio, language, tactile
 # Workspace dependencies
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
 
 # Graph processing
 petgraph = { workspace = true, features = ["serde-1"] }
 
 # Core crate
 grapheme-core = { path = "../grapheme-core" }
+grapheme-memory = { path = "../grapheme-memory" }
 
 [dev-dependencies]
 criterion.workspace = true

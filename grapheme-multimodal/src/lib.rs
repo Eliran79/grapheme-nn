@@ -15,6 +15,23 @@
 //! - Cross-modal binding (word ↔ image region)
 //! - Unified multi-modal events
 //! - Modality translation (cross-modal inference)
+//! - Learnable multimodal fusion (backend-037)
+//!
+//! ## GRAPHEME Protocol
+//!
+//! Learnable components use:
+//! - LeakyReLU activation (α=0.01)
+//! - DynamicXavier initialization
+//! - Adam optimizer (lr=0.001)
+
+pub mod learnable;
+
+// Re-exports for learnable multimodal
+pub use learnable::{
+    CrossModalBinder, FusionNetwork, LearnableMultiModal, LearnableMultiModalConfig,
+    ModalityAttention, ModalityEncoder, MultiModalExperience, DEFAULT_LEARNING_RATE,
+    LEAKY_RELU_ALPHA, NUM_MODALITIES,
+};
 
 use grapheme_core::DagNN;
 use petgraph::graph::NodeIndex;

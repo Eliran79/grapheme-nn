@@ -1,7 +1,7 @@
 ---
 id: backend-037
 title: Add learnable multimodal fusion and cross-modal binding
-status: todo
+status: done
 priority: medium
 tags:
 - backend
@@ -28,82 +28,104 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Add learnable components to the multimodal module for adaptive fusion of
+multiple modalities, cross-modal binding with attention, and dynamic
+modality weighting. Follows GRAPHEME Protocol (LeakyReLU α=0.01, DynamicXavier, Adam lr=0.001).
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create learnable modality encoders for fixed-size representations
+- Implement learnable fusion network for combining modalities
+- Add learnable cross-modal binding with attention
+- Create learnable modality attention for dynamic focus
+- Enable experience-based learning from fusion outcomes
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Implement ModalityEncoder with per-modality encoding weights
+- [x] Implement FusionNetwork for combining multimodal embeddings
+- [x] Implement CrossModalBinder for learned binding strengths
+- [x] Implement ModalityAttention with Q/K/V projections
+- [x] Create LearnableMultiModal model combining all components
+- [x] Add experience buffer for learning from fusion outcomes
+- [x] Write comprehensive unit tests (17 new tests)
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Modality Encoding:**
+- Encodes modal graphs to L2-normalized embeddings
+- Per-modality learned weights for specialized processing
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Multimodal Fusion:**
+- Combines all 7 modality embeddings through learned network
+- Outputs normalized fused representation
+
+✅ **Cross-Modal Binding:**
+- Computes binding strength between modality pairs
+- Uses sigmoid for [0, 1] binding strength
+
+✅ **Modality Attention:**
+- Attention mechanism with Q/K/V projections
+- Softmax-normalized attention weights
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses GRAPHEME Protocol: LeakyReLU (α=0.01), lr=0.001, DynamicXavier
+- ModalityEncoder: 18 graph features → embed_dim (per modality)
+- FusionNetwork: 7 * embed_dim → embed_dim → hidden → embed_dim
+- CrossModalBinder: 2 * embed_dim → 1 (sigmoid)
+- ModalityAttention: scaled dot-product attention
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (17 new tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete (28 total in grapheme-multimodal)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
-  - Run `cargo build --release` (or `cargo build` for debug)
-  - Run `cargo test` to ensure tests pass
-  - **Actually run/execute the code** to verify runtime behavior
-  - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
-
-**Testing requirements by change type:**
-- Code changes: Build + test + **run the actual program/command** to verify behavior
-- Bug fixes: Verify the bug is actually fixed by running the code, not just compiling
-- New features: Test the feature works as intended by executing it
-- Minor changes: At minimum build, check warnings, and run basic functionality
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
+- [x] Review changes before committing
 
 ## Updates
 - 2025-12-06: Task created
+- 2025-12-13: Task completed - Learnable multimodal fusion added
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-multimodal/src/learnable.rs` (~750 lines)
+- Updated `grapheme-multimodal/src/lib.rs` with module declaration and re-exports
+- Updated `grapheme-multimodal/Cargo.toml` with ndarray, rand, grapheme-memory deps
+- Key structures:
+  - `ModalityEncoder`: Per-modality encoding weights
+  - `FusionNetwork`: Multi-layer fusion network
+  - `CrossModalBinder`: Learned binding strength computation
+  - `ModalityAttention`: Q/K/V attention mechanism
+  - `LearnableMultiModal`: Complete model with experience buffer
+  - `MultiModalExperience`: Experience tuple for learning
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Encoding flow: ModalGraph → encoder → embedding (L2 normalized)
+- Fusion flow: {modality → embed} → concatenate → FusionNetwork → fused_embed
+- Binding flow: (source_embed, target_embed) → binder → binding_strength
+- Attention flow: query + embeds → attention weights → weighted sum → output
+- All components use GRAPHEME Protocol (LeakyReLU α=0.01)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `ndarray.workspace = true`, `rand.workspace = true`, `grapheme-memory`
+- Re-exports from lib.rs: LearnableMultiModal, ModalityEncoder, FusionNetwork, etc.
+- Integrates with existing ModalGraph, Modality, MultiModalEvent types
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-multimodal` - 28 tests pass
+- Clippy: `cargo clippy -p grapheme-multimodal -- -D warnings` - 0 warnings
+- 17 new tests in `learnable::tests` module
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- Modality embeddings are L2-normalized for cosine similarity
+- Missing modalities in fusion use zero vectors
+- Cross-modal binding returns sigmoid [0, 1] strength
+- Attention weights are softmax-normalized (sum to 1.0)
+- Experience buffer limited to config.buffer_size (default 1000)
