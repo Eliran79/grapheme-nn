@@ -11,10 +11,13 @@ description = "Grounding layer for GRAPHEME: symbol-referent binding, perception
 # Workspace dependencies
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
+ndarray.workspace = true
+rand.workspace = true
 
 # Core crates
 grapheme-core = { path = "../grapheme-core" }
 grapheme-multimodal = { path = "../grapheme-multimodal" }
+grapheme-memory = { path = "../grapheme-memory" }
 
 [dev-dependencies]
 criterion.workspace = true

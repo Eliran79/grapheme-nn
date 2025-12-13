@@ -410,7 +410,10 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "grapheme-core",
+ "grapheme-memory",
  "grapheme-multimodal",
+ "ndarray",
+ "rand",
  "serde",
  "thiserror",
 ]

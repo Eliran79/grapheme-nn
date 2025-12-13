@@ -22,6 +22,14 @@
 //! - Simulated interaction (compromise)
 //! - Embodied interaction (ideal but hard)
 
+pub mod learnable;
+
+pub use learnable::{
+    ActionEncoder, GroundingExperience, GroundingNetwork, InteractionExperience,
+    InteractionPredictor, LearnableGrounding, LearnableGroundingConfig, PerceptionEncoder,
+    DEFAULT_LEARNING_RATE, LEAKY_RELU_ALPHA,
+};
+
 use grapheme_core::DagNN;
 use grapheme_multimodal::{ModalGraph, Modality};
 use serde::{Deserialize, Serialize};
