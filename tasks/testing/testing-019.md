@@ -1,7 +1,7 @@
 ---
 id: testing-019
 title: HumanEval benchmark integration
-status: todo
+status: done
 priority: high
 tags:
 - testing
@@ -32,49 +32,62 @@ area: testing
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+HumanEval is the standard benchmark for code generation models. This task integrates HumanEval evaluation with the graph-only training infrastructure built in backend-228, backend-229, and backend-230.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- [x] Create benchmark module integrating HumanEval with graph training
+- [x] Implement proper pass@k metrics (unbiased estimator)
+- [x] Use code-aware structural loss for evaluation
+- [x] Support both quick and full evaluation modes
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Create humaneval_benchmark.rs module
+- [x] Implement BenchmarkConfig for configuration
+- [x] Implement HumanEvalBenchmark for running evaluations
+- [x] Implement pass_at_k using unbiased estimator
+- [x] Add structural_distance for graph comparison
+- [x] Implement train_and_evaluate workflow
+- [x] Add 16 comprehensive tests
+- [x] Integrate with lib.rs re-exports
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Criteria 1: Benchmark Integration**
+- HumanEvalBenchmark loads datasets and runs evaluations
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Criteria 2: pass@k Metrics**
+- pass_at_k uses proper unbiased estimator formula
+- Supports standard k values: 1, 10, 100
+
+✅ **Criteria 3: All Tests Pass**
+- 16 tests in humaneval_benchmark module pass
+- 111 total tests in grapheme-train pass
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses HumanEvalEncoder from backend-228 for data loading
+- Uses dagnn_code_loss from backend-230 for code-aware evaluation
+- GraphTransformer trait provides abstraction for evaluation
+- IdentityTransformer for baseline evaluation
+- TrainedNetworkWrapper adapts GraphTransformNet for evaluation
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (16 tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete (111 tests)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
   - Run `cargo build --release` (or `cargo build` for debug)
   - Run `cargo test` to ensure tests pass
   - **Actually run/execute the code** to verify runtime behavior
   - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
+- [x] Consider creating a feature branch for complex changes
+- [x] Review changes before committing
 
 **Testing requirements by change type:**
 - Code changes: Build + test + **run the actual program/command** to verify behavior
@@ -84,30 +97,38 @@ Brief description of what needs to be done and why.
 
 ## Updates
 - 2025-12-12: Task created
+- 2025-12-13: Task completed - created HumanEval benchmark integration
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `/home/user/grapheme-nn/grapheme-train/src/humaneval_benchmark.rs` (~500 lines)
+- Added module declaration and re-exports to lib.rs
+- Key exports: `BenchmarkConfig`, `BenchmarkResult`, `BenchmarkError`, `HumanEvalBenchmark`, `ProblemEvaluation`, `GraphTransformer`, `IdentityTransformer`, `pass_at_k`, `quick_evaluate`, `full_evaluate`, `HUMANEVAL_SOTA`, `STANDARD_K_VALUES`
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `HumanEvalBenchmark::evaluate()` → evaluates model on dataset → `BenchmarkResult`
+- `HumanEvalBenchmark::train_and_evaluate()` → trains model then evaluates → `(TrainingHistory, BenchmarkResult)`
+- Uses `dagnn_code_loss` from code_loss.rs for code-aware evaluation
+- pass@k computed using unbiased estimator (1 - C(n-c,k)/C(n,k))
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Depends on: humaneval_encoder (HumanEvalEncoder, backend-228)
+- Depends on: graph_trainer (GraphTrainer, GraphTrainerConfig, TrainingHistory, backend-229)
+- Depends on: code_loss (dagnn_code_loss, CodeStructuralLoss, backend-230)
+- Depends on: graph_data (GraphDataset, GraphPair, backend-227)
+- Depends on: grapheme_core (DagNN, GraphTransformer)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-train humaneval_benchmark` to verify 16 tests pass
+- Run `cargo clippy -p grapheme-train -- -D warnings` to verify zero warnings
+- Key tests: test_pass_at_k_*, test_evaluate_with_identity, test_benchmark_*
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- `GraphTransformer` trait is local (different from grapheme_core::GraphTransformer)
+- `IdentityTransformer` returns input unchanged (baseline for testing)
+- `TrainedNetworkWrapper` wraps GraphTransformNet for evaluation
+- `HUMANEVAL_SOTA` = 96.2% (DeepSeek-Coder-V2, 2024)
+- `quick_evaluate()` runs with samples_per_problem=1, k_values=[1]
+- `full_evaluate()` runs with samples_per_problem=200, k_values=[1,10,100]

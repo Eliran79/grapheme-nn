@@ -31,6 +31,7 @@ pub mod code_loss;
 pub mod graph_data;
 pub mod graph_trainer;
 pub mod graph_transform_net;
+pub mod humaneval_benchmark;
 pub mod humaneval_encoder;
 pub mod parallel_cortex;
 
@@ -81,6 +82,14 @@ pub use parallel_cortex::{
     CollaborativeCortexConfig, CollaborativeCortexTrainer,
     CollaborativeResult, BrainActivation, FusionLayer, BatchLoss,
     TrainingStats, parallel_process_dataset, parallel_train_batch,
+};
+
+// Re-export HumanEval benchmark types (testing-019)
+pub use humaneval_benchmark::{
+    BenchmarkConfig, BenchmarkResult, BenchmarkError,
+    HumanEvalBenchmark, ProblemEvaluation, GraphTransformer,
+    IdentityTransformer, pass_at_k, quick_evaluate, full_evaluate,
+    HUMANEVAL_SOTA, STANDARD_K_VALUES,
 };
 
 /// Training errors
