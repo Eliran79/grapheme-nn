@@ -10,7 +10,7 @@
 //!
 //! Backend-027: Backpropagation through graph structures
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use std::collections::{HashMap, VecDeque};
 
 // ============================================================================
@@ -109,6 +109,10 @@ pub struct Tape {
     values: HashMap<usize, Array1<f32>>,
     /// Gradients accumulated at each index
     gradients: HashMap<usize, Array1<f32>>,
+    /// Weight matrices (weight_id -> weight matrix)
+    weights: HashMap<usize, Array2<f32>>,
+    /// Gradients accumulated for weights (weight_id -> gradient)
+    weight_grads: HashMap<usize, Array2<f32>>,
     /// Counter for generating unique indices
     next_idx: usize,
     /// Whether tape is recording
@@ -128,9 +132,34 @@ impl Tape {
             ops: Vec::new(),
             values: HashMap::new(),
             gradients: HashMap::new(),
+            weights: HashMap::new(),
+            weight_grads: HashMap::new(),
             next_idx: 0,
             recording: true,
         }
+    }
+
+    /// Register a weight matrix for gradient computation
+    pub fn register_weight(&mut self, weight_id: usize, weight: Array2<f32>) {
+        self.weights.insert(weight_id, weight);
+    }
+
+    /// Get the gradient for a weight matrix
+    pub fn get_weight_grad(&self, weight_id: usize) -> Option<&Array2<f32>> {
+        self.weight_grads.get(&weight_id)
+    }
+
+    /// Get all weight gradients
+    pub fn get_weight_grads(&self) -> &HashMap<usize, Array2<f32>> {
+        &self.weight_grads
+    }
+
+    /// Accumulate gradient for a weight
+    fn accumulate_weight_grad(&mut self, weight_id: usize, grad: Array2<f32>) {
+        self.weight_grads
+            .entry(weight_id)
+            .and_modify(|g| *g = &*g + &grad)
+            .or_insert(grad);
     }
 
     /// Start recording operations
@@ -387,11 +416,35 @@ impl Tape {
             TapeOp::Linear {
                 input_idx,
                 output_idx,
-                weight_id: _,
+                weight_id,
             } => {
-                // Linear: gradient flows through (simplified - assumes identity weights)
                 if let Some(grad) = self.gradients.get(output_idx).cloned() {
-                    self.accumulate_grad(*input_idx, grad);
+                    // Check if we have the weight matrix
+                    if let Some(weights) = self.weights.get(weight_id).cloned() {
+                        // Gradient w.r.t. input: grad @ weights.T
+                        // For 1D case: if grad is (out_dim,) and weights is (in_dim, out_dim)
+                        // input_grad = weights @ grad = (in_dim,)
+                        let input_grad = weights.dot(&grad);
+                        self.accumulate_grad(*input_idx, input_grad);
+
+                        // Gradient w.r.t. weights: input.T @ grad (outer product for 1D)
+                        // For 1D: input is (in_dim,), grad is (out_dim,)
+                        // weight_grad is (in_dim, out_dim)
+                        if let Some(input) = self.values.get(input_idx).cloned() {
+                            let in_dim = input.len();
+                            let out_dim = grad.len();
+                            let mut weight_grad = Array2::zeros((in_dim, out_dim));
+                            for i in 0..in_dim {
+                                for j in 0..out_dim {
+                                    weight_grad[[i, j]] = input[i] * grad[j];
+                                }
+                            }
+                            self.accumulate_weight_grad(*weight_id, weight_grad);
+                        }
+                    } else {
+                        // Fallback: no weights registered, pass gradient through
+                        self.accumulate_grad(*input_idx, grad);
+                    }
                 }
             }
             TapeOp::Activation {
