@@ -1,7 +1,7 @@
 ---
 id: testing-017
 title: Implement HumanEval evaluation harness with pass@1 scoring
-status: todo
+status: done
 priority: high
 tags:
 - testing
@@ -53,11 +53,11 @@ sampling strategies (graph perturbation vs temperature sampling).
 - Integrate with CortexMesh inference pipeline
 
 ## Tasks
-- [ ] Download and parse HumanEval dataset (164 problems)
-- [ ] Implement evaluation harness that executes Python code safely
-- [ ] Create pass@k calculation following OpenAI's unbiased estimator
-- [ ] Add batch inference support for CortexMesh
-- [ ] Generate evaluation report with per-problem breakdown
+- [x] Download and parse HumanEval dataset (164 problems)
+- [x] Implement evaluation harness that executes Python code safely
+- [x] Create pass@k calculation following OpenAI's unbiased estimator
+- [x] Add batch inference support for CortexMesh
+- [x] Generate evaluation report with per-problem breakdown
 
 ## Acceptance Criteria
 ✅ **Criteria 1:**
@@ -77,24 +77,24 @@ sampling strategies (graph perturbation vs temperature sampling).
 - Key files: `grapheme-train/src/bin/eval_humaneval.rs` (to create)
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
 **⚠️ CRITICAL: Always test AND run before committing!**
 
-- [ ] **BEFORE committing**: Build, test, AND run the code to verify it works
+- [x] **BEFORE committing**: Build, test, AND run the code to verify it works
   - Run `cargo build --release` (or `cargo build` for debug)
   - Run `cargo test` to ensure tests pass
   - **Actually run/execute the code** to verify runtime behavior
   - Fix all errors, warnings, and runtime issues
-- [ ] Commit changes incrementally with clear messages
-- [ ] Use descriptive commit messages that explain the "why"
-- [ ] Consider creating a feature branch for complex changes
-- [ ] Review changes before committing
+- [x] Commit changes incrementally with clear messages
+- [x] Use descriptive commit messages that explain the "why"
+- [x] Consider creating a feature branch for complex changes
+- [x] Review changes before committing
 
 **Testing requirements by change type:**
 - Code changes: Build + test + **run the actual program/command** to verify behavior
@@ -104,30 +104,41 @@ sampling strategies (graph perturbation vs temperature sampling).
 
 ## Updates
 - 2025-12-11: Task created
+- 2025-12-13: Task completed - created HumanEval evaluation harness using UnifiedCortex
 
 ## Session Handoff (AI: Complete this when marking task done)
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created `/home/user/grapheme-nn/grapheme-train/src/bin/eval_humaneval.rs` (~420 lines)
+- Added `wait-timeout = "0.2"` dependency to Cargo.toml
+- Key components: `HumanEvalProblem`, `ProblemResult`, `SampleResult`, `EvalSummary`
+- CLI args: --data, --samples, --k, --fusion, --timeout, --output, --verbose, --quick
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- `load_problems(path)` → loads JSONL → `Vec<HumanEvalProblem>`
+- `generate_code(cortex, prompt)` → `unified_process()` → `decoded_code`
+- `execute_test(prompt, generated, test, entry_point, timeout)` → Python subprocess → (syntax_valid, test_passed, error, time)
+- `pass_at_k(n, c, k)` → unbiased estimator → probability
+- Parallel evaluation with Rayon across samples per problem
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Uses `UnifiedCortex` from unified_cortex.rs (backend-213)
+- Uses `FusionType` for configurable brain fusion
+- Uses `wait-timeout` crate for subprocess timeout
+- Python 3 required for test execution
+- Sandboxed execution with stdin null, timeout protection
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run `cargo test -p grapheme-train --bin eval_humaneval` to verify 5 tests pass
+- Run `cargo clippy -p grapheme-train --bin eval_humaneval -- -D warnings` for 0 warnings
+- Usage: `cargo run -p grapheme-train --bin eval_humaneval -- --data problems.jsonl --quick`
+- 130 total tests pass in grapheme-train
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- `--quick` mode uses 10 samples, k=1 only for fast iteration
+- Full mode uses 200 samples, k=1,10,100 per problem
+- Each parallel sample creates its own UnifiedCortex (thread safety)
+- Timeout default is 5 seconds per Python execution
+- Output JSON includes per-problem samples if needed for analysis
+- SOTA target: 96.2% pass@1 (DeepSeek-Coder-V2, 2024)
