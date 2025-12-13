@@ -28,7 +28,7 @@ pub use graph::TypedGraph;
 pub use transform::{TextTransformRule, TransformRuleSet};
 pub use traits::{BaseDomainBrain, DomainConfig};
 pub use utils::{KeywordCapabilityDetector, TextNormalizer, math_normalizer, code_normalizer, legal_normalizer};
-pub use autoencoder::{GraphAutoencoder, LatentGraph, EncodedPair, AutoencoderError};
+pub use autoencoder::{GraphAutoencoder, LatentGraph, EncodedPair, AutoencoderError, AutoencoderMetrics};
 pub use text_brain::TextBrain;
 
 // Re-export commonly used types from dependencies

@@ -302,7 +302,199 @@ pub trait GraphAutoencoder: DomainBrain {
 
         Ok(())
     }
+
+    /// Evaluate autoencoder on a batch of inputs and collect metrics.
+    ///
+    /// This performs roundtrip encoding/decoding on each input and accumulates
+    /// metrics including loss, accuracy, perfect reconstruction rate, and graph stats.
+    ///
+    /// # Arguments
+    /// * `inputs` - Slice of input strings to evaluate
+    ///
+    /// # Returns
+    /// * `AutoencoderMetrics` with accumulated statistics
+    fn evaluate_batch(&self, inputs: &[&str]) -> AutoencoderMetrics {
+        let mut metrics = AutoencoderMetrics::new();
+
+        for &input in inputs {
+            match self.encode(input) {
+                Ok(graph) => {
+                    match self.decode(&graph) {
+                        Ok(reconstructed) => {
+                            let loss = self.reconstruction_loss(input, &reconstructed);
+                            metrics.record(input, &reconstructed, loss, &graph);
+                        }
+                        Err(_) => {
+                            metrics.record_decoding_error();
+                        }
+                    }
+                }
+                Err(_) => {
+                    metrics.record_encoding_error();
+                }
+            }
+        }
+
+        metrics
+    }
 }
+
+// ============================================================================
+// Autoencoder Metrics (Stage 1 Evaluation)
+// ============================================================================
+
+/// Metrics collected during autoencoder evaluation.
+///
+/// This struct accumulates statistics over multiple samples to measure
+/// autoencoder quality during Stage 1 training.
+#[derive(Debug, Clone, Default)]
+pub struct AutoencoderMetrics {
+    /// Total number of samples processed
+    pub samples: usize,
+    /// Sum of reconstruction losses (for averaging)
+    pub total_loss: f32,
+    /// Number of perfect reconstructions (loss == 0.0)
+    pub perfect_count: usize,
+    /// Sum of node counts (for averaging)
+    pub total_nodes: usize,
+    /// Sum of edge counts (for averaging)
+    pub total_edges: usize,
+    /// Number of encoding errors
+    pub encoding_errors: usize,
+    /// Number of decoding errors
+    pub decoding_errors: usize,
+}
+
+impl AutoencoderMetrics {
+    /// Create new empty metrics.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a successful roundtrip result.
+    pub fn record(&mut self, original: &str, reconstructed: &str, loss: f32, graph: &LatentGraph) {
+        self.samples += 1;
+        self.total_loss += loss;
+        self.total_nodes += graph.node_count();
+        self.total_edges += graph.edge_count();
+
+        // Loss of exactly 0.0 or very close counts as perfect
+        if loss < 1e-6 || original == reconstructed {
+            self.perfect_count += 1;
+        }
+    }
+
+    /// Record an encoding error.
+    pub fn record_encoding_error(&mut self) {
+        self.encoding_errors += 1;
+    }
+
+    /// Record a decoding error.
+    pub fn record_decoding_error(&mut self) {
+        self.decoding_errors += 1;
+    }
+
+    /// Get average reconstruction loss.
+    pub fn avg_loss(&self) -> f32 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.total_loss / self.samples as f32
+        }
+    }
+
+    /// Get reconstruction accuracy (1.0 - avg_loss).
+    pub fn accuracy(&self) -> f32 {
+        1.0 - self.avg_loss()
+    }
+
+    /// Get perfect reconstruction rate (0.0 to 1.0).
+    pub fn perfect_rate(&self) -> f32 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.perfect_count as f32 / self.samples as f32
+        }
+    }
+
+    /// Get average nodes per sample.
+    pub fn avg_nodes(&self) -> f32 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.total_nodes as f32 / self.samples as f32
+        }
+    }
+
+    /// Get average edges per sample.
+    pub fn avg_edges(&self) -> f32 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.total_edges as f32 / self.samples as f32
+        }
+    }
+
+    /// Get total error count (encoding + decoding).
+    pub fn error_count(&self) -> usize {
+        self.encoding_errors + self.decoding_errors
+    }
+
+    /// Merge metrics from another instance (for parallel evaluation).
+    pub fn merge(&mut self, other: &Self) {
+        self.samples += other.samples;
+        self.total_loss += other.total_loss;
+        self.perfect_count += other.perfect_count;
+        self.total_nodes += other.total_nodes;
+        self.total_edges += other.total_edges;
+        self.encoding_errors += other.encoding_errors;
+        self.decoding_errors += other.decoding_errors;
+    }
+
+    /// Generate a summary report string.
+    pub fn summary(&self) -> String {
+        format!(
+            "Autoencoder Metrics:\n\
+             - Samples: {}\n\
+             - Avg Loss: {:.4}\n\
+             - Accuracy: {:.2}%\n\
+             - Perfect: {}/{} ({:.2}%)\n\
+             - Avg Nodes: {:.1}\n\
+             - Avg Edges: {:.1}\n\
+             - Errors: {} (enc: {}, dec: {})",
+            self.samples,
+            self.avg_loss(),
+            self.accuracy() * 100.0,
+            self.perfect_count,
+            self.samples,
+            self.perfect_rate() * 100.0,
+            self.avg_nodes(),
+            self.avg_edges(),
+            self.error_count(),
+            self.encoding_errors,
+            self.decoding_errors,
+        )
+    }
+}
+
+impl std::fmt::Display for AutoencoderMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "loss={:.4} acc={:.2}% perfect={:.2}% n={} nodes={:.1} edges={:.1}",
+            self.avg_loss(),
+            self.accuracy() * 100.0,
+            self.perfect_rate() * 100.0,
+            self.samples,
+            self.avg_nodes(),
+            self.avg_edges(),
+        )
+    }
+}
+
+// ============================================================================
+// Stage 2 Training Data
+// ============================================================================
 
 /// A pre-encoded training pair for Stage 2 (graph-only) training.
 ///
@@ -478,5 +670,130 @@ mod tests {
         // Length difference
         let loss = test_loss("hello", "helloworld");
         assert!(loss > 0.0);
+    }
+
+    // Tests for AutoencoderMetrics
+    #[test]
+    fn test_autoencoder_metrics_new() {
+        let metrics = AutoencoderMetrics::new();
+        assert_eq!(metrics.samples, 0);
+        assert_eq!(metrics.total_loss, 0.0);
+        assert_eq!(metrics.perfect_count, 0);
+        assert_eq!(metrics.avg_loss(), 0.0);
+        assert_eq!(metrics.accuracy(), 1.0); // 1 - 0 = 1
+        assert_eq!(metrics.perfect_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_record_perfect() {
+        let mut metrics = AutoencoderMetrics::new();
+        let graph = DagNN::from_text("hello").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        // Perfect reconstruction (loss = 0)
+        metrics.record("hello", "hello", 0.0, &latent);
+
+        assert_eq!(metrics.samples, 1);
+        assert_eq!(metrics.perfect_count, 1);
+        assert_eq!(metrics.avg_loss(), 0.0);
+        assert_eq!(metrics.accuracy(), 1.0);
+        assert_eq!(metrics.perfect_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_record_imperfect() {
+        let mut metrics = AutoencoderMetrics::new();
+        let graph = DagNN::from_text("hello").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        // Imperfect reconstruction
+        metrics.record("hello", "hella", 0.2, &latent);
+
+        assert_eq!(metrics.samples, 1);
+        assert_eq!(metrics.perfect_count, 0);
+        assert!((metrics.avg_loss() - 0.2).abs() < 0.001);
+        assert!((metrics.accuracy() - 0.8).abs() < 0.001);
+        assert_eq!(metrics.perfect_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_multiple_records() {
+        let mut metrics = AutoencoderMetrics::new();
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        // Record 3 samples: perfect, imperfect, perfect
+        metrics.record("a", "a", 0.0, &latent);
+        metrics.record("b", "x", 0.5, &latent);
+        metrics.record("c", "c", 0.0, &latent);
+
+        assert_eq!(metrics.samples, 3);
+        assert_eq!(metrics.perfect_count, 2);
+        assert!((metrics.avg_loss() - 0.5 / 3.0).abs() < 0.001);
+        assert!((metrics.perfect_rate() - 2.0 / 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_errors() {
+        let mut metrics = AutoencoderMetrics::new();
+
+        metrics.record_encoding_error();
+        metrics.record_decoding_error();
+        metrics.record_decoding_error();
+
+        assert_eq!(metrics.encoding_errors, 1);
+        assert_eq!(metrics.decoding_errors, 2);
+        assert_eq!(metrics.error_count(), 3);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_merge() {
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        let mut m1 = AutoencoderMetrics::new();
+        m1.record("a", "a", 0.0, &latent);
+        m1.record_encoding_error();
+
+        let mut m2 = AutoencoderMetrics::new();
+        m2.record("b", "x", 0.4, &latent);
+        m2.record_decoding_error();
+
+        m1.merge(&m2);
+
+        assert_eq!(m1.samples, 2);
+        assert_eq!(m1.perfect_count, 1);
+        assert!((m1.total_loss - 0.4).abs() < 0.001);
+        assert_eq!(m1.encoding_errors, 1);
+        assert_eq!(m1.decoding_errors, 1);
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_display() {
+        let mut metrics = AutoencoderMetrics::new();
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        metrics.record("hello", "hello", 0.0, &latent);
+        metrics.record("world", "worxx", 0.4, &latent);
+
+        let display = format!("{}", metrics);
+        assert!(display.contains("loss="));
+        assert!(display.contains("acc="));
+        assert!(display.contains("perfect="));
+    }
+
+    #[test]
+    fn test_autoencoder_metrics_summary() {
+        let mut metrics = AutoencoderMetrics::new();
+        let graph = DagNN::from_text("test").unwrap();
+        let latent = LatentGraph::new("text", graph);
+
+        metrics.record("hello", "hello", 0.0, &latent);
+
+        let summary = metrics.summary();
+        assert!(summary.contains("Autoencoder Metrics:"));
+        assert!(summary.contains("Samples: 1"));
+        assert!(summary.contains("Perfect: 1/1"));
     }
 }
