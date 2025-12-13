@@ -1,7 +1,7 @@
 ---
 id: backend-032
 title: Add learnable memory retrieval and consolidation
-status: todo
+status: done
 priority: high
 tags:
 - backend
@@ -28,35 +28,46 @@ area: backend
 > **If this task has dependents,** the next task will be handled in a NEW session and depends on your handoff for context.
 
 ## Context
-Brief description of what needs to be done and why.
+Add learnable components to the memory system that can be optimized via gradient descent,
+replacing fixed heuristics with neural network-based retrieval and consolidation.
 
 ## Objectives
-- Clear, actionable objectives
-- Measurable outcomes
-- Success criteria
+- Create learnable graph encoders for fixed-size embeddings
+- Implement learnable similarity functions for retrieval
+- Add learnable importance scoring for memory consolidation
+- Provide gradient flow for all learnable components
 
 ## Tasks
-- [ ] Break down the work into specific tasks
-- [ ] Each task should be clear and actionable
-- [ ] Mark tasks as completed when done
+- [x] Implement GraphEncoder with DynamicXavier initialization
+- [x] Implement LearnableSimilarity with bilinear attention
+- [x] Implement ImportanceScorer for consolidation decisions
+- [x] Create LearnableEpisodicMemory with learned retrieval
+- [x] Create LearnableSemanticGraph with learned queries
+- [x] Create LearnableContinualLearning with experience replay
+- [x] Add gradient methods (zero_grad, step, num_parameters)
+- [x] Write comprehensive unit tests
 
 ## Acceptance Criteria
-✅ **Criteria 1:**
-- Specific, testable criteria
+✅ **Learnable Components:**
+- GraphEncoder produces L2-normalized embeddings
+- LearnableSimilarity computes [0,1] bounded similarity scores
+- ImportanceScorer outputs [0,1] importance scores
 
-✅ **Criteria 2:**
-- Additional criteria as needed
+✅ **Gradient Flow:**
+- All components have zero_grad and step methods
+- num_parameters returns correct parameter counts
 
 ## Technical Notes
-- Implementation details
-- Architecture considerations
-- Dependencies and constraints
+- Uses GRAPHEME Protocol: LeakyReLU (α=0.01), Adam (lr=0.001)
+- GraphEncoder: 18 input features → embed_dim → hidden_dim → embed_dim (L2 normalized)
+- LearnableSimilarity: bilinear attention (a^T W b) with temperature scaling
+- ImportanceScorer: weighted combination of recency, access count, valence, embedding norm
 
 ## Testing
-- [ ] Write unit tests for new functionality
-- [ ] Write integration tests if applicable
-- [ ] Ensure all tests pass before marking task complete
-- [ ] Consider edge cases and error conditions
+- [x] Write unit tests for new functionality (10 new tests)
+- [x] Write integration tests if applicable
+- [x] Ensure all tests pass before marking task complete (23 tests pass)
+- [x] Consider edge cases and error conditions
 
 ## Version Control
 
@@ -85,25 +96,35 @@ Brief description of what needs to be done and why.
 **For the next session/agent working on dependent tasks:**
 
 ### What Changed
-- [Document code changes, new files, modified functions]
-- [What runtime behavior is new or different]
+- Created new file: `grapheme-memory/src/learnable.rs`
+- Updated `grapheme-memory/src/lib.rs` with module and re-exports
+- Updated `grapheme-memory/Cargo.toml` with ndarray and rand dependencies
+- Key structures:
+  - `GraphEncoder`: MLP that encodes graphs to fixed-size L2-normalized embeddings
+  - `LearnableSimilarity`: Bilinear attention for computing similarity scores
+  - `ImportanceScorer`: Learned importance function for consolidation
+  - `LearnableEpisodicMemory`: Episodic memory with learned retrieval
+  - `LearnableSemanticGraph`: Semantic graph with learned queries
+  - `LearnableContinualLearning`: Experience replay with learned importance
 
 ### Causality Impact
-- [What causal chains were created or modified]
-- [What events trigger what other events]
-- [Any async flows or timing considerations]
+- Retrieval flow: graph → GraphEncoder → embedding → LearnableSimilarity → similarity scores
+- Consolidation: importance score determines which memories to keep/prune
+- Learning: zero_grad → forward → backward → step cycle for gradient updates
+- All components use GRAPHEME Protocol (LeakyReLU α=0.01)
 
 ### Dependencies & Integration
-- [What dependencies were added/changed]
-- [How this integrates with existing code]
-- [What other tasks/areas are affected]
+- Added `ndarray.workspace = true` and `rand.workspace = true` to Cargo.toml
+- Re-exports from lib.rs: GraphEncoder, LearnableSimilarity, ImportanceScorer, etc.
+- Compatible with existing memory traits (EpisodicMemory, SemanticGraph, etc.)
 
 ### Verification & Testing
-- [How to verify this works]
-- [What to test when building on this]
-- [Any known edge cases or limitations]
+- Run: `cargo test -p grapheme-memory` - 23 tests pass
+- Clippy: `cargo clippy -p grapheme-memory -- -D warnings` - 0 warnings
+- 10 new tests in `learnable::tests` module
 
 ### Context for Next Task
-- [What the next developer/AI should know]
-- [Important decisions made and why]
-- [Gotchas or non-obvious behavior]
+- GraphFingerprint features: 2 counts + 8 node_types + 8 degree_hist = 18 features
+- Embeddings are L2-normalized for cosine similarity via dot product
+- ImportanceScorer uses sigmoid for [0,1] bounded output
+- Experience buffer uses FIFO eviction when at capacity

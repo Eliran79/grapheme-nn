@@ -393,7 +393,9 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "grapheme-core",
+ "ndarray",
  "petgraph",
+ "rand",
  "serde",
  "thiserror",
 ]

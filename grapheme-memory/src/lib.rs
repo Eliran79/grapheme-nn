@@ -25,8 +25,25 @@
 //! - Weisfeiler-Leman kernel for O(n*m*k) similarity
 //! - Feature-based hashing for O(n) approximate retrieval
 //! - Index by structural features (node count, edge count, degree histogram)
+//!
+//! ## Learnable Memory (backend-032)
+//!
+//! The `learnable` module provides gradient-based learning for memory retrieval:
+//! - Learnable graph encoders for fixed-size embeddings
+//! - Learnable similarity functions for retrieval
+//! - Learnable importance scoring for consolidation
 
 use grapheme_core::{DagNN, TransformRule};
+
+// Learnable memory module (backend-032)
+pub mod learnable;
+
+// Re-export learnable types
+pub use learnable::{
+    GraphEncoder, LearnableSimilarity, ImportanceScorer,
+    LearnableEpisodicMemory, LearnableSemanticGraph, LearnableContinualLearning,
+    LearnableMemoryConfig, LEAKY_RELU_ALPHA, DEFAULT_EMBED_DIM,
+};
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
