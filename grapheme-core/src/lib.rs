@@ -17,6 +17,7 @@
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
+use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -539,6 +540,43 @@ impl DagNN {
     /// Add an edge between two nodes
     pub fn add_edge(&mut self, source: NodeId, target: NodeId, edge: Edge) {
         self.graph.add_edge(source, target, edge);
+        // DynamicXavier: scale the newly added edge's weight
+        self.apply_dynamic_xavier(source, target);
+    }
+
+    /// Apply DynamicXavier scaling to a specific edge
+    /// Per GRAPHEME Protocol: weight *= sqrt(2 / (fan_in + fan_out))
+    fn apply_dynamic_xavier(&mut self, source: NodeId, target: NodeId) {
+        if let Some(edge_idx) = self.graph.find_edge(source, target) {
+            let fan_in = self.graph.edges_directed(target, Direction::Incoming).count();
+            let fan_out = self.graph.edges_directed(source, Direction::Outgoing).count();
+            if fan_in + fan_out > 0 {
+                let scale = (2.0 / (fan_in + fan_out) as f32).sqrt();
+                self.graph[edge_idx].weight *= scale;
+            }
+        }
+    }
+
+    /// Update weights for all edges connected to a node (DynamicXavier)
+    /// Call this after node removal to recompute neighbor weights
+    pub fn update_node_weights(&mut self, node: NodeId) {
+        // Update incoming edges
+        let incoming: Vec<NodeId> = self.graph
+            .edges_directed(node, Direction::Incoming)
+            .map(|e| e.source())
+            .collect();
+        for src in incoming {
+            self.apply_dynamic_xavier(src, node);
+        }
+
+        // Update outgoing edges
+        let outgoing: Vec<NodeId> = self.graph
+            .edges_directed(node, Direction::Outgoing)
+            .map(|e| e.target())
+            .collect();
+        for tgt in outgoing {
+            self.apply_dynamic_xavier(node, tgt);
+        }
     }
 
     /// Update topological order after graph modifications
@@ -1131,9 +1169,11 @@ impl CliqueProcessor for DagNN {
                 // Find and strengthen the edge if it exists
                 if let Some(edge_idx) = self.graph.find_edge(source, target) {
                     self.graph[edge_idx].weight *= factor;
+                    // DynamicXavier: recompute weight after modification
+                    self.apply_dynamic_xavier(source, target);
                 } else {
-                    // Add clique edge if it doesn't exist
-                    self.graph.add_edge(source, target, Edge::clique(factor));
+                    // Add clique edge if it doesn't exist (uses DynamicXavier via add_edge)
+                    self.add_edge(source, target, Edge::clique(factor));
                 }
             }
         }
